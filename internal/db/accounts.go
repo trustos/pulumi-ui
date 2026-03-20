@@ -107,7 +107,7 @@ func (s *AccountStore) ListForUser(userID string) ([]OCIAccount, error) {
 		SELECT a.id, a.user_id, a.name, a.tenancy_name, a.tenancy_ocid, a.region,
 		       a.user_ocid, a.fingerprint, a.private_key, a.ssh_public_key,
 		       a.status, a.verified_at, a.created_at,
-		       COUNT(s.id) AS stack_count
+		       COUNT(s.name) AS stack_count
 		FROM oci_accounts a
 		LEFT JOIN stacks s ON s.oci_account_id = a.id
 		WHERE a.user_id = ?
