@@ -1,0 +1,193 @@
+// Package oci provides a minimal OCI REST client with HTTP Signature authentication.
+// It uses no external SDK — only stdlib crypto and net/http.
+package oci
+
+import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// Client is a minimal OCI REST API client that handles HTTP Signature auth (no SDK needed).
+type Client struct {
+	tenancyOCID string
+	userOCID    string
+	fingerprint string
+	privateKey  *rsa.PrivateKey
+	region      string
+	http        *http.Client
+}
+
+// NewClient parses the PEM private key and returns a ready-to-use Client.
+func NewClient(tenancyOCID, userOCID, fingerprint, privateKeyPEM, region string) (*Client, error) {
+	key, err := parseRSAKey(privateKeyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse private key: %w", err)
+	}
+	return &Client{
+		tenancyOCID: tenancyOCID,
+		userOCID:    userOCID,
+		fingerprint: fingerprint,
+		privateKey:  key,
+		region:      region,
+		http:        &http.Client{Timeout: 20 * time.Second},
+	}, nil
+}
+
+func parseRSAKey(pemStr string) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, errors.New("no PEM block found in private key")
+	}
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		return x509.ParsePKCS1PrivateKey(block.Bytes)
+	case "PRIVATE KEY":
+		k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		rk, ok := k.(*rsa.PrivateKey)
+		if !ok {
+			return nil, errors.New("PKCS8 key is not RSA")
+		}
+		return rk, nil
+	default:
+		return nil, fmt.Errorf("unsupported PEM block type: %s", block.Type)
+	}
+}
+
+// signRequest adds the OCI HTTP Signature Authorization header to a GET request.
+// Signing covers: (request-target), date, host.
+func (c *Client) signRequest(req *http.Request) error {
+	date := time.Now().UTC().Format(http.TimeFormat)
+	req.Header.Set("Date", date)
+
+	requestTarget := strings.ToLower(req.Method) + " " + req.URL.RequestURI()
+	host := req.URL.Host
+
+	signingString := "(request-target): " + requestTarget + "\n" +
+		"date: " + date + "\n" +
+		"host: " + host
+
+	sum := sha256.Sum256([]byte(signingString))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, c.privateKey, crypto.SHA256, sum[:])
+	if err != nil {
+		return fmt.Errorf("sign: %w", err)
+	}
+
+	keyID := c.tenancyOCID + "/" + c.userOCID + "/" + c.fingerprint
+	req.Header.Set("Authorization", fmt.Sprintf(
+		`Signature version="1",keyId="%s",algorithm="rsa-sha256",headers="(request-target) date host",signature="%s"`,
+		keyID, base64.StdEncoding.EncodeToString(sig),
+	))
+	return nil
+}
+
+// get performs a signed GET request and unmarshals the JSON response body into dst.
+// Pass dst=nil to just check for a 2xx status.
+func (c *Client) get(rawURL string, dst any) error {
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return err
+	}
+	if err := c.signRequest(req); err != nil {
+		return err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("OCI request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		// Try to extract OCI error message
+		var ociErr struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body, &ociErr) == nil && ociErr.Message != "" {
+			return fmt.Errorf("OCI %s: %s", ociErr.Code, ociErr.Message)
+		}
+		return fmt.Errorf("OCI API returned HTTP %d", resp.StatusCode)
+	}
+	if dst != nil {
+		return json.Unmarshal(body, dst)
+	}
+	return nil
+}
+
+// Shape is a simplified OCI compute shape.
+type Shape struct {
+	Shape                string `json:"shape"`
+	ProcessorDescription string `json:"processorDescription"`
+}
+
+// Image is a simplified OCI platform image.
+type Image struct {
+	ID                     string `json:"id"`
+	DisplayName            string `json:"displayName"`
+	OperatingSystem        string `json:"operatingSystem"`
+	OperatingSystemVersion string `json:"operatingSystemVersion"`
+}
+
+// VerifyCredentials calls GET /users/{userOCID} on the OCI Identity API.
+// Any authenticated user can always read their own profile, making this
+// the most reliable way to confirm that key + fingerprint + OCIDs are valid.
+func (c *Client) VerifyCredentials() error {
+	return c.get(UserURL(c.region, c.userOCID), nil)
+}
+
+// VerifyViaTenanacy calls GET /tenancies/{tenancyOCID}. This requires the
+// 'inspect tenancy' IAM policy and is exposed for debug/comparison purposes.
+func (c *Client) VerifyViaTenanacy() error {
+	return c.get(TenancyURL(c.region, c.tenancyOCID), nil)
+}
+
+// GetTenancyName fetches the human-readable tenancy name from the OCI Identity API.
+// Returns an empty string if the call fails (e.g. missing 'inspect tenancy' IAM policy).
+func (c *Client) GetTenancyName() string {
+	var resp struct {
+		Name string `json:"name"`
+	}
+	if err := c.get(TenancyURL(c.region, c.tenancyOCID), &resp); err != nil {
+		return ""
+	}
+	return resp.Name
+}
+
+// ListShapes returns all compute shapes available in the account's region.
+func (c *Client) ListShapes() ([]Shape, error) {
+	var shapes []Shape
+	if err := c.get(ShapesURL(c.region, c.tenancyOCID), &shapes); err != nil {
+		return nil, err
+	}
+	return shapes, nil
+}
+
+// ListImages returns Oracle Linux and Canonical Ubuntu images compatible with
+// VM.Standard.A1.Flex (ARM), sorted newest-first within each OS group.
+func (c *Client) ListImages() ([]Image, error) {
+	var combined []Image
+	for _, os := range []string{"Oracle Linux", "Canonical Ubuntu"} {
+		var batch []Image
+		if err := c.get(ImagesURL(c.region, c.tenancyOCID, os), &batch); err != nil {
+			return nil, fmt.Errorf("%s images: %w", os, err)
+		}
+		combined = append(combined, batch...)
+	}
+	return combined, nil
+}

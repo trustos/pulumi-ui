@@ -1,0 +1,132 @@
+package api
+
+import (
+	"database/sql"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/trustos/pulumi-ui/internal/auth"
+	"github.com/trustos/pulumi-ui/internal/db"
+	"github.com/trustos/pulumi-ui/internal/engine"
+)
+
+// Handler holds all dependencies wired in main.go.
+type Handler struct {
+	DB          *sql.DB
+	Creds       *db.CredentialStore
+	Ops         *db.OperationStore
+	Stacks      *db.StackStore
+	Users       *db.UserStore
+	Sessions    *db.SessionStore
+	Accounts    *db.AccountStore
+	Passphrases *db.PassphraseStore
+	Engine      *engine.Engine
+}
+
+func NewHandler(
+	sqlDB *sql.DB,
+	creds *db.CredentialStore,
+	ops *db.OperationStore,
+	stacks *db.StackStore,
+	users *db.UserStore,
+	sessions *db.SessionStore,
+	accounts *db.AccountStore,
+	passphrases *db.PassphraseStore,
+	eng *engine.Engine,
+) *Handler {
+	return &Handler{
+		DB:          sqlDB,
+		Creds:       creds,
+		Ops:         ops,
+		Stacks:      stacks,
+		Users:       users,
+		Sessions:    sessions,
+		Accounts:    accounts,
+		Passphrases: passphrases,
+		Engine:      eng,
+	}
+}
+
+func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
+	r := chi.NewRouter()
+
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.RequestID)
+
+	r.Route("/api", func(r chi.Router) {
+		// Auth — no authentication required
+		r.Get("/auth/status", h.AuthStatus)
+		r.Post("/auth/register", h.Register)
+		r.Post("/auth/login", h.Login)
+
+		// Authenticated routes
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAuth(h.Users, h.Sessions))
+
+			r.Post("/auth/logout", h.Logout)
+			r.Get("/auth/me", h.Me)
+
+			// OCI Accounts
+			r.Get("/accounts", h.ListAccounts)
+			r.Post("/accounts", h.CreateAccount)
+			r.Post("/accounts/import/preview/path", h.ImportPreviewPath)
+			r.Post("/accounts/import/preview/upload", h.ImportPreviewUpload)
+			r.Post("/accounts/import/confirm/path", h.ImportConfirmPath)
+			r.Post("/accounts/import/confirm/upload", h.ImportConfirmUpload)
+			r.Get("/accounts/{id}", h.GetAccount)
+			r.Put("/accounts/{id}", h.UpdateAccount)
+			r.Delete("/accounts/{id}", h.DeleteAccount)
+			r.Post("/accounts/{id}/verify", h.VerifyAccount)
+			r.Get("/accounts/{id}/shapes", h.ListShapes)
+			r.Get("/accounts/{id}/images", h.ListImages)
+
+			// Programs & Stacks
+			r.Get("/programs", h.ListPrograms)
+			r.Get("/stacks", h.ListStacks)
+			r.Put("/stacks/{name}", h.PutStack)
+			r.Delete("/stacks/{name}", h.DeleteStack)
+			r.Get("/stacks/{name}/info", h.GetStackInfo)
+			r.Get("/stacks/{name}/yaml", h.ExportStackYAML)
+			r.Post("/stacks/{name}/up", h.StackUp)
+			r.Post("/stacks/{name}/destroy", h.StackDestroy)
+			r.Post("/stacks/{name}/refresh", h.StackRefresh)
+			r.Post("/stacks/{name}/cancel", h.StackCancel)
+			r.Post("/stacks/{name}/unlock", h.StackUnlock)
+			r.Get("/stacks/{name}/logs", h.GetStackLogs)
+
+			// Passphrases
+			r.Get("/passphrases", h.ListPassphrases)
+			r.Post("/passphrases", h.CreatePassphrase)
+			r.Patch("/passphrases/{id}", h.RenamePassphrase)
+			r.Delete("/passphrases/{id}", h.DeletePassphrase)
+
+			// Settings & Credentials
+			r.Get("/settings", h.GetSettings)
+			r.Put("/settings", h.PutSettings)
+			r.Get("/settings/credentials", h.GetCredentials)
+			r.Put("/settings/credentials", h.PutCredentials)
+			r.Get("/settings/health", h.GetHealth)
+		})
+	})
+
+	// Serve embedded Svelte SPA — all non-API routes return index.html.
+	r.Handle("/*", spaHandler(frontendFS))
+
+	return r
+}
+
+// spaHandler serves static files and falls back to index.html for client-side routing.
+func spaHandler(fs http.FileSystem) http.Handler {
+	fileServer := http.FileServer(fs)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, err := fs.Open(r.URL.Path)
+		if err != nil {
+			r.URL.Path = "/"
+		} else {
+			f.Close()
+		}
+		fileServer.ServeHTTP(w, r)
+	})
+}

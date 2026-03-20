@@ -1,0 +1,377 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"github.com/trustos/pulumi-ui/internal/db"
+	"github.com/trustos/pulumi-ui/internal/engine"
+	"github.com/trustos/pulumi-ui/internal/programs"
+	"github.com/trustos/pulumi-ui/internal/stacks"
+)
+
+// resolveCredentials builds engine credentials for a stack.
+// OCI credentials come from the account (or global fallback).
+// The passphrase is looked up from the named passphrases table.
+func (h *Handler) resolveCredentials(ociAccountID, passphraseID *string) (engine.Credentials, error) {
+	var oci db.OCICredentials
+	var err error
+
+	if ociAccountID != nil && *ociAccountID != "" {
+		account, err := h.Accounts.Get(*ociAccountID)
+		if err != nil {
+			return engine.Credentials{}, fmt.Errorf("load OCI account: %w", err)
+		}
+		if account == nil {
+			return engine.Credentials{}, fmt.Errorf("OCI account not found")
+		}
+		oci = account.ToOCICredentials()
+	} else {
+		oci, err = h.Creds.GetOCICredentials()
+		if err != nil {
+			return engine.Credentials{}, fmt.Errorf("load global OCI credentials: %w", err)
+		}
+	}
+
+	if passphraseID == nil || *passphraseID == "" {
+		return engine.Credentials{}, fmt.Errorf("no passphrase assigned to this stack — assign one in Settings")
+	}
+	passphrase, err := h.Passphrases.GetValue(*passphraseID)
+	if err != nil {
+		return engine.Credentials{}, fmt.Errorf("load passphrase: %w", err)
+	}
+
+	return engine.Credentials{OCI: oci, Passphrase: passphrase}, nil
+}
+
+// ListStacks returns all stacks from SQLite merged with last-operation status.
+func (h *Handler) ListStacks(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.Stacks.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type StackSummary struct {
+		Name          string  `json:"name"`
+		Program       string  `json:"program"`
+		OciAccountID  *string `json:"ociAccountId"`
+		PassphraseID  *string `json:"passphraseId"`
+		LastOperation *string `json:"lastOperation"`
+		Status        string  `json:"status"`
+		ResourceCount int     `json:"resourceCount"`
+	}
+
+	result := make([]StackSummary, 0, len(rows))
+	for _, row := range rows {
+		ops, _ := h.Ops.ListForStack(row.Name, 1)
+		summary := StackSummary{
+			Name:          row.Name,
+			Program:       row.Program,
+			OciAccountID:  row.OciAccountID,
+			PassphraseID:  row.PassphraseID,
+			ResourceCount: 0,
+			Status:        "not deployed",
+		}
+		if len(ops) > 0 {
+			ts := time.Unix(ops[0].StartedAt, 0).Format(time.RFC3339)
+			summary.LastOperation = &ts
+			summary.Status = ops[0].Status
+		}
+		result = append(result, summary)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// PutStack saves or updates a stack config in SQLite.
+func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
+	stackName := chi.URLParam(r, "name")
+
+	var body struct {
+		Program      string            `json:"program"`
+		Description  string            `json:"description"`
+		Config       map[string]string `json:"config"`
+		OciAccountID *string           `json:"ociAccountId"`
+		PassphraseID *string           `json:"passphraseId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.Program == "" {
+		http.Error(w, "program is required", http.StatusBadRequest)
+		return
+	}
+	if _, ok := programs.Get(body.Program); !ok {
+		http.Error(w, "unknown program: "+body.Program, http.StatusBadRequest)
+		return
+	}
+
+	cfg := &stacks.StackConfig{
+		APIVersion: "pulumi.io/v1",
+		Kind:       "Stack",
+		Metadata: stacks.StackMetadata{
+			Name:        stackName,
+			Program:     body.Program,
+			Description: body.Description,
+		},
+		Config: body.Config,
+	}
+	if err := cfg.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	yamlStr, err := cfg.ToYAML()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.Stacks.Upsert(stackName, body.Program, yamlStr, body.OciAccountID, body.PassphraseID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// GetStackInfo returns full stack details including Pulumi outputs and last operation.
+func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
+	stackName := chi.URLParam(r, "name")
+
+	row, err := h.Stacks.Get(stackName)
+	if err != nil || row == nil {
+		http.Error(w, "stack not found", http.StatusNotFound)
+		return
+	}
+
+	cfg, err := stacks.ParseYAML(row.ConfigYAML)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type StackInfo struct {
+		Name         string                 `json:"name"`
+		Program      string                 `json:"program"`
+		OciAccountID *string                `json:"ociAccountId"`
+		PassphraseID *string                `json:"passphraseId"`
+		Config       map[string]string      `json:"config"`
+		Outputs      map[string]interface{} `json:"outputs"`
+		Resources    int                    `json:"resources"`
+		LastUpdated  *string                `json:"lastUpdated"`
+		Status       string                 `json:"status"`
+		Running      bool                   `json:"running"`
+	}
+
+	info := StackInfo{
+		Name:         stackName,
+		Program:      row.Program,
+		OciAccountID: row.OciAccountID,
+		PassphraseID: row.PassphraseID,
+		Config:       cfg.Config,
+		Outputs:      map[string]interface{}{},
+		Status:       "not deployed",
+		Running:      h.Engine.IsRunning(stackName),
+	}
+
+	ops, _ := h.Ops.ListForStack(stackName, 1)
+	if len(ops) > 0 {
+		ts := time.Unix(ops[0].StartedAt, 0).Format(time.RFC3339)
+		info.LastUpdated = &ts
+		info.Status = ops[0].Status
+	}
+
+	if info.Status == "succeeded" || info.Status == "failed" {
+		creds, err := h.resolveCredentials(row.OciAccountID, row.PassphraseID)
+		if err == nil {
+			outputs, err := h.Engine.GetStackOutputs(r.Context(), stackName, row.Program, cfg.Config, creds)
+			if err == nil {
+				for k, v := range outputs {
+					info.Outputs[k] = v.Value
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(info)
+}
+
+// DeleteStack removes the stack config from SQLite.
+func (h *Handler) DeleteStack(w http.ResponseWriter, r *http.Request) {
+	stackName := chi.URLParam(r, "name")
+	if err := h.Stacks.Delete(stackName); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// ExportStackYAML returns the stack config as a downloadable YAML file.
+func (h *Handler) ExportStackYAML(w http.ResponseWriter, r *http.Request) {
+	stackName := chi.URLParam(r, "name")
+
+	stackDir := os.Getenv("PULUMI_UI_STACK_DIR")
+	var cfg *stacks.StackConfig
+	var err error
+
+	if stackDir != "" {
+		cfg, err = stacks.LoadFromFile(filepath.Join(stackDir, stackName+".yaml"))
+	} else {
+		row, rowErr := h.Stacks.Get(stackName)
+		if rowErr != nil || row == nil {
+			http.Error(w, "stack not found", http.StatusNotFound)
+			return
+		}
+		cfg, err = stacks.ParseYAML(row.ConfigYAML)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	data, _ := cfg.ToYAML()
+	w.Header().Set("Content-Type", "application/yaml")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.yaml"`, stackName))
+	w.Write([]byte(data))
+}
+
+// loadStackConfig loads a stack config and returns the stack row alongside it.
+func (h *Handler) loadStackConfig(stackName string) (*stacks.StackConfig, *db.StackRow, error) {
+	stackDir := os.Getenv("PULUMI_UI_STACK_DIR")
+	if stackDir != "" {
+		cfg, err := stacks.LoadFromFile(filepath.Join(stackDir, stackName+".yaml"))
+		return cfg, nil, err
+	}
+	row, err := h.Stacks.Get(stackName)
+	if err != nil {
+		return nil, nil, err
+	}
+	if row == nil {
+		return nil, nil, fmt.Errorf("stack %q not found — create it with PUT /api/stacks/%s first", stackName, stackName)
+	}
+	cfg, err := stacks.ParseYAML(row.ConfigYAML)
+	return cfg, row, err
+}
+
+// runOperation is the shared SSE operation runner.
+func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation string) {
+	stackName := chi.URLParam(r, "name")
+
+	cfg, row, err := h.loadStackConfig(stackName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var ociAccountID, passphraseID *string
+	if row != nil {
+		ociAccountID = row.OciAccountID
+		passphraseID = row.PassphraseID
+	}
+
+	creds, err := h.resolveCredentials(ociAccountID, passphraseID)
+	if err != nil {
+		http.Error(w, "credentials not configured: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	send, ok := engine.SSEResponseWriter(w)
+	if !ok {
+		return
+	}
+
+	opID := uuid.New().String()
+	h.Ops.Create(opID, stackName, operation)
+
+	logSend := func(event engine.SSEEvent) {
+		send(event)
+		if event.Type == "output" || event.Type == "error" {
+			h.Ops.AppendLog(opID, event.Data)
+		}
+	}
+
+	// Use a background context so the Pulumi operation survives browser close or
+	// navigation away. The only way to cancel is via the explicit /cancel endpoint.
+	opCtx := context.Background()
+
+	var status string
+	switch operation {
+	case "up":
+		status = h.Engine.Up(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
+	case "destroy":
+		status = h.Engine.Destroy(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
+	case "refresh":
+		status = h.Engine.Refresh(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
+	}
+
+	h.Ops.Finish(opID, status)
+	send(engine.SSEEvent{Type: "done", Data: status})
+}
+
+func (h *Handler) StackUp(w http.ResponseWriter, r *http.Request) {
+	h.runOperation(w, r, "up")
+}
+
+func (h *Handler) StackDestroy(w http.ResponseWriter, r *http.Request) {
+	h.runOperation(w, r, "destroy")
+}
+
+func (h *Handler) StackRefresh(w http.ResponseWriter, r *http.Request) {
+	h.runOperation(w, r, "refresh")
+}
+
+func (h *Handler) StackCancel(w http.ResponseWriter, r *http.Request) {
+	stackName := chi.URLParam(r, "name")
+	h.Engine.Cancel(stackName)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) StackUnlock(w http.ResponseWriter, r *http.Request) {
+	stackName := chi.URLParam(r, "name")
+	if err := h.Engine.Unlock(stackName); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// GetStackLogs returns the log history for a stack (last 20 operations, oldest first).
+func (h *Handler) GetStackLogs(w http.ResponseWriter, r *http.Request) {
+	stackName := chi.URLParam(r, "name")
+
+	ops, err := h.Ops.ListLogsForStack(stackName, 20)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type LogEntry struct {
+		Operation string `json:"operation"`
+		Status    string `json:"status"`
+		Log       string `json:"log"`
+		StartedAt int64  `json:"startedAt"`
+	}
+
+	result := make([]LogEntry, 0, len(ops))
+	for _, op := range ops {
+		result = append(result, LogEntry{
+			Operation: op.Operation,
+			Status:    op.Status,
+			Log:       op.Log,
+			StartedAt: op.StartedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}

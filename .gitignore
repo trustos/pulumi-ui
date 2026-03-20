@@ -1,0 +1,22 @@
+# ── Binary & build outputs ────────────────────────────────────────────────────
+pulumi-ui
+cmd/server/frontend/dist/
+
+# ── Go ────────────────────────────────────────────────────────────────────────
+*.test
+*.out
+vendor/
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
+frontend/node_modules/
+.svelte-kit/
+
+# ── Local dev data ────────────────────────────────────────────────────────────
+dev-data/
+
+# ── Secrets (encryption key lives in dev-data/, already ignored above) ────────
+# No .env files needed — key is auto-generated into the data directory.
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
