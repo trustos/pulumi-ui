@@ -19,10 +19,7 @@
   let addError = $state('');
   let addGenerating = $state(false);
   let addGeneratedPublicKeyPem = $state('');
-
-  let addForm = $state({
-    name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '', sshPublicKey: '',
-  });
+  let addForm = $state({ name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '', sshPublicKey: '' });
 
   // ── Edit dialog ──────────────────────────────────────────────────────────────
   let editDialogOpen = $state(false);
@@ -31,12 +28,9 @@
   let editError = $state('');
   let editGenerating = $state(false);
   let editGeneratedPublicKeyPem = $state('');
+  let editForm = $state({ name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '', sshPublicKey: '' });
 
-  let editForm = $state({
-    name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '', sshPublicKey: '',
-  });
-
-  // ── Misc state ───────────────────────────────────────────────────────────────
+  // ── Misc ─────────────────────────────────────────────────────────────────────
   let verifying = $state<string | null>(null);
   let verifyErrors = $state<Record<string, string>>({});
   let expandedErrors = $state<Record<string, boolean>>({});
@@ -56,7 +50,7 @@
 
   load();
 
-  // ── Add account ──────────────────────────────────────────────────────────────
+  // ── Add ───────────────────────────────────────────────────────────────────────
   function openAdd() {
     addForm = { name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '', sshPublicKey: '' };
     addError = '';
@@ -83,7 +77,9 @@
     addGenerating = true;
     try {
       const kp = await generateKeyPair();
-      addForm = { ...addForm, privateKey: kp.privateKey, fingerprint: kp.fingerprint, sshPublicKey: kp.sshPublicKey };
+      addForm.privateKey = kp.privateKey;
+      addForm.fingerprint = kp.fingerprint;
+      addForm.sshPublicKey = kp.sshPublicKey;
       addGeneratedPublicKeyPem = kp.publicKeyPem;
     } catch (err) {
       addError = err instanceof Error ? err.message : String(err);
@@ -92,7 +88,7 @@
     }
   }
 
-  // ── Edit account ─────────────────────────────────────────────────────────────
+  // ── Edit ─────────────────────────────────────────────────────────────────────
   function openEdit(account: OciAccount) {
     editAccount = account;
     editForm = {
@@ -138,7 +134,9 @@
     editGenerating = true;
     try {
       const kp = await generateKeyPair();
-      editForm = { ...editForm, privateKey: kp.privateKey, fingerprint: kp.fingerprint, sshPublicKey: kp.sshPublicKey };
+      editForm.privateKey = kp.privateKey;
+      editForm.fingerprint = kp.fingerprint;
+      editForm.sshPublicKey = kp.sshPublicKey;
       editGeneratedPublicKeyPem = kp.publicKeyPem;
     } catch (err) {
       editError = err instanceof Error ? err.message : String(err);
@@ -156,11 +154,7 @@
       const result = await verifyAccount(id);
       if ('status' in result) {
         accounts = accounts.map(a =>
-          a.id === id ? {
-            ...a,
-            status: result.status as OciAccount['status'],
-            tenancyName: (result as any).tenancyName ?? a.tenancyName,
-          } : a
+          a.id === id ? { ...a, status: result.status as OciAccount['status'], tenancyName: (result as any).tenancyName ?? a.tenancyName } : a
         );
       } else {
         verifyErrors = { ...verifyErrors, [id]: result.error };
@@ -187,13 +181,13 @@
     }
   }
 
-  function statusLabel(status: string) {
-    if (status === 'verified') return 'Verified';
-    if (status === 'error') return 'Verification failed';
+  function statusLabel(s: string) {
+    if (s === 'verified') return 'Verified';
+    if (s === 'error') return 'Verification failed';
     return 'Not verified';
   }
 
-  function copyToClipboard(text: string) {
+  function copy(text: string) {
     navigator.clipboard.writeText(text).catch(() => {});
   }
 </script>
@@ -205,7 +199,11 @@
       <p class="text-sm text-muted-foreground">Manage Oracle Cloud credentials for provisioning</p>
     </div>
     <div class="flex items-center gap-2">
-      <a href={exportAccountsUrl()} download class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">
+      <a
+        href={exportAccountsUrl()}
+        download
+        class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
+      >
         Export config
       </a>
       <Button variant="outline" onclick={() => { importDialogOpen = true; }}>Import from config</Button>
@@ -265,12 +263,7 @@
             {/if}
           </div>
           <div class="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={verifying === account.id}
-              onclick={() => handleVerify(account.id)}
-            >
+            <Button variant="outline" size="sm" disabled={verifying === account.id} onclick={() => handleVerify(account.id)}>
               {verifying === account.id ? 'Testing...' : 'Test credentials'}
             </Button>
             <Button variant="outline" size="sm" onclick={() => openEdit(account)}>Edit</Button>
@@ -295,7 +288,49 @@
     {/if}
 
     <form onsubmit={handleAdd} class="space-y-4 max-h-[60vh] overflow-y-auto py-2 pr-1">
-      <AccountFormFields form={addForm} generating={addGenerating} generatedPublicKeyPem={addGeneratedPublicKeyPem} onGenerate={handleAddGenerate} {copyToClipboard} />
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="a-name">Account Name <span class="text-destructive">*</span></label>
+        <Input id="a-name" bind:value={addForm.name} placeholder="Production" required />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="a-tenancy">Tenancy OCID <span class="text-destructive">*</span></label>
+        <Input id="a-tenancy" bind:value={addForm.tenancyOcid} placeholder="ocid1.tenancy.oc1.." required />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="a-region">Region <span class="text-destructive">*</span></label>
+        <Input id="a-region" bind:value={addForm.region} placeholder="eu-frankfurt-1" required />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="a-userocid">User OCID <span class="text-destructive">*</span></label>
+        <Input id="a-userocid" bind:value={addForm.userOcid} placeholder="ocid1.user.oc1.." required />
+      </div>
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-medium">API Key</span>
+        <Button type="button" variant="outline" size="sm" disabled={addGenerating} onclick={handleAddGenerate}>
+          {addGenerating ? 'Generating...' : 'Generate new key pair'}
+        </Button>
+      </div>
+      {#if addGeneratedPublicKeyPem}
+        <div class="p-3 bg-blue-500/10 border border-blue-500/30 rounded space-y-2 text-sm">
+          <p class="font-medium text-blue-700 dark:text-blue-400">Upload this public key to OCI Console → Identity → API Keys → Add API Key:</p>
+          <div class="relative">
+            <pre class="font-mono text-xs bg-background rounded p-2 overflow-x-auto whitespace-pre-wrap break-all">{addGeneratedPublicKeyPem}</pre>
+            <button type="button" class="absolute top-1 right-1 text-xs text-muted-foreground hover:text-foreground px-1" onclick={() => copy(addGeneratedPublicKeyPem)}>Copy</button>
+          </div>
+        </div>
+      {/if}
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="a-fingerprint">API Key Fingerprint <span class="text-destructive">*</span></label>
+        <Input id="a-fingerprint" bind:value={addForm.fingerprint} placeholder="aa:bb:cc:..." required />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="a-privatekey">Private Key (PEM) <span class="text-destructive">*</span></label>
+        <Textarea id="a-privatekey" bind:value={addForm.privateKey} placeholder="-----BEGIN RSA PRIVATE KEY-----" rows={5} required />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="a-sshkey">SSH Public Key</label>
+        <Textarea id="a-sshkey" bind:value={addForm.sshPublicKey} placeholder="ssh-rsa AAAA..." rows={3} />
+      </div>
       <Dialog.Footer>
         <Button variant="outline" type="button" onclick={() => { addDialogOpen = false; }}>Cancel</Button>
         <Button type="submit" disabled={addSaving}>{addSaving ? 'Saving...' : 'Add Account'}</Button>
@@ -324,7 +359,50 @@
     {/if}
 
     <form onsubmit={handleEdit} class="space-y-4 max-h-[60vh] overflow-y-auto py-2 pr-1">
-      <AccountFormFields form={editForm} generating={editGenerating} generatedPublicKeyPem={editGeneratedPublicKeyPem} onGenerate={handleEditGenerate} {copyToClipboard} isEdit />
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="e-name">Account Name <span class="text-destructive">*</span></label>
+        <Input id="e-name" bind:value={editForm.name} placeholder="Production" required />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="e-tenancy">Tenancy OCID <span class="text-destructive">*</span></label>
+        <Input id="e-tenancy" bind:value={editForm.tenancyOcid} placeholder="ocid1.tenancy.oc1.." required />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="e-region">Region <span class="text-destructive">*</span></label>
+        <Input id="e-region" bind:value={editForm.region} placeholder="eu-frankfurt-1" required />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="e-userocid">User OCID <span class="text-destructive">*</span></label>
+        <Input id="e-userocid" bind:value={editForm.userOcid} placeholder="ocid1.user.oc1.." required />
+      </div>
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-medium">API Key</span>
+        <Button type="button" variant="outline" size="sm" disabled={editGenerating} onclick={handleEditGenerate}>
+          {editGenerating ? 'Generating...' : 'Generate new key pair'}
+        </Button>
+      </div>
+      {#if editGeneratedPublicKeyPem}
+        <div class="p-3 bg-blue-500/10 border border-blue-500/30 rounded space-y-2 text-sm">
+          <p class="font-medium text-blue-700 dark:text-blue-400">Upload this public key to OCI Console → Identity → API Keys → Add API Key:</p>
+          <div class="relative">
+            <pre class="font-mono text-xs bg-background rounded p-2 overflow-x-auto whitespace-pre-wrap break-all">{editGeneratedPublicKeyPem}</pre>
+            <button type="button" class="absolute top-1 right-1 text-xs text-muted-foreground hover:text-foreground px-1" onclick={() => copy(editGeneratedPublicKeyPem)}>Copy</button>
+          </div>
+        </div>
+      {/if}
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="e-fingerprint">API Key Fingerprint</label>
+        <Input id="e-fingerprint" bind:value={editForm.fingerprint} placeholder="aa:bb:cc:..." />
+        <p class="text-xs text-muted-foreground">Auto-filled when generating a key pair above.</p>
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="e-privatekey">Private Key (PEM)</label>
+        <Textarea id="e-privatekey" bind:value={editForm.privateKey} placeholder="Leave blank to keep current private key" rows={5} />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium" for="e-sshkey">SSH Public Key</label>
+        <Textarea id="e-sshkey" bind:value={editForm.sshPublicKey} placeholder="Leave blank to keep current SSH public key" rows={3} />
+      </div>
       <Dialog.Footer>
         <Button variant="outline" type="button" onclick={() => { editDialogOpen = false; }}>Cancel</Button>
         <Button type="submit" disabled={editSaving}>{editSaving ? 'Saving...' : 'Save Changes'}</Button>
@@ -334,65 +412,3 @@
 </Dialog.Root>
 
 <OciImportDialog bind:open={importDialogOpen} onImported={load} />
-
-{#snippet AccountFormFields({ form, generating, generatedPublicKeyPem, onGenerate, copyToClipboard: copy, isEdit = false }: {
-  form: { name: string; tenancyOcid: string; region: string; userOcid: string; fingerprint: string; privateKey: string; sshPublicKey: string };
-  generating: boolean;
-  generatedPublicKeyPem: string;
-  onGenerate: () => void;
-  copyToClipboard: (t: string) => void;
-  isEdit?: boolean;
-})}
-  <div class="space-y-1">
-    <label class="text-sm font-medium" for="f-name">Account Name <span class="text-destructive">*</span></label>
-    <Input id="f-name" bind:value={form.name} placeholder="Production" required />
-  </div>
-  <div class="space-y-1">
-    <label class="text-sm font-medium" for="f-tenancy">Tenancy OCID <span class="text-destructive">*</span></label>
-    <Input id="f-tenancy" bind:value={form.tenancyOcid} placeholder="ocid1.tenancy.oc1.." required />
-  </div>
-  <div class="space-y-1">
-    <label class="text-sm font-medium" for="f-region">Region <span class="text-destructive">*</span></label>
-    <Input id="f-region" bind:value={form.region} placeholder="eu-frankfurt-1" required />
-  </div>
-  <div class="space-y-1">
-    <label class="text-sm font-medium" for="f-userocid">User OCID <span class="text-destructive">*</span></label>
-    <Input id="f-userocid" bind:value={form.userOcid} placeholder="ocid1.user.oc1.." required />
-  </div>
-
-  <!-- Key pair generation -->
-  <div class="flex items-center justify-between">
-    <span class="text-sm font-medium">API Key</span>
-    <Button type="button" variant="outline" size="sm" disabled={generating} onclick={onGenerate}>
-      {generating ? 'Generating...' : 'Generate new key pair'}
-    </Button>
-  </div>
-
-  {#if generatedPublicKeyPem}
-    <div class="p-3 bg-blue-500/10 border border-blue-500/30 rounded space-y-2 text-sm">
-      <p class="font-medium text-blue-700 dark:text-blue-400">Upload this public key to OCI Console → Identity → API Keys → Add API Key:</p>
-      <div class="relative">
-        <pre class="font-mono text-xs bg-background rounded p-2 overflow-x-auto whitespace-pre-wrap break-all">{generatedPublicKeyPem}</pre>
-        <button
-          type="button"
-          class="absolute top-1 right-1 text-xs text-muted-foreground hover:text-foreground px-1"
-          onclick={() => copy(generatedPublicKeyPem)}
-        >Copy</button>
-      </div>
-    </div>
-  {/if}
-
-  <div class="space-y-1">
-    <label class="text-sm font-medium" for="f-fingerprint">API Key Fingerprint <span class="text-destructive">*</span></label>
-    <Input id="f-fingerprint" bind:value={form.fingerprint} placeholder="aa:bb:cc:..." required={!isEdit} />
-    {#if isEdit}<p class="text-xs text-muted-foreground">Auto-filled when you generate a key pair above.</p>{/if}
-  </div>
-  <div class="space-y-1">
-    <label class="text-sm font-medium" for="f-privatekey">Private Key (PEM){#if !isEdit} <span class="text-destructive">*</span>{/if}</label>
-    <Textarea id="f-privatekey" bind:value={form.privateKey} placeholder={isEdit ? 'Leave blank to keep current private key' : '-----BEGIN RSA PRIVATE KEY-----'} rows={5} required={!isEdit} />
-  </div>
-  <div class="space-y-1">
-    <label class="text-sm font-medium" for="f-sshkey">SSH Public Key</label>
-    <Textarea id="f-sshkey" bind:value={form.sshPublicKey} placeholder={isEdit ? 'Leave blank to keep current SSH public key' : 'ssh-rsa AAAA...'} rows={3} />
-  </div>
-{/snippet}
