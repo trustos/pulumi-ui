@@ -71,6 +71,8 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			// OCI Accounts
 			r.Get("/accounts", h.ListAccounts)
 			r.Post("/accounts", h.CreateAccount)
+			r.Get("/accounts/export", h.ExportAccounts)
+			r.Post("/accounts/generate-keypair", h.GenerateKeyPair)
 			r.Post("/accounts/import/preview/path", h.ImportPreviewPath)
 			r.Post("/accounts/import/preview/upload", h.ImportPreviewUpload)
 			r.Post("/accounts/import/confirm/path", h.ImportConfirmPath)

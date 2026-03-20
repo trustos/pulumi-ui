@@ -1,4 +1,4 @@
-import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, Passphrase, OciImportPreview, OciImportResult } from './types';
+import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair } from './types';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -323,4 +323,14 @@ export async function importConfirmUpload(
     throw new Error(text.trim() || `HTTP ${res.status}`);
   }
   return res.json();
+}
+
+export async function generateKeyPair(): Promise<GeneratedKeyPair> {
+  const res = await fetch('/api/accounts/generate-keypair', { method: 'POST' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export function exportAccountsUrl(): string {
+  return '/api/accounts/export';
 }

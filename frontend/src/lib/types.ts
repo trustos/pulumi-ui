@@ -72,9 +72,19 @@ export interface OciAccount {
   tenancyName: string;
   tenancyOcid: string;
   region: string;
+  userOcid: string;
+  fingerprint: string;
   status: 'unverified' | 'verified' | 'error';
   verifiedAt: string | null;
   createdAt: string;
+  stackCount: number;
+}
+
+export interface GeneratedKeyPair {
+  privateKey: string;
+  publicKeyPem: string;
+  fingerprint: string;
+  sshPublicKey: string;
 }
 
 export interface OciImportPreview {

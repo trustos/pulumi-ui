@@ -11,14 +11,17 @@ import (
 
 // Profile holds the raw key/value pairs from one INI section.
 type Profile struct {
-	Name   string
-	Values map[string]string
+	Name      string
+	Values    map[string]string
+	ConfigDir string // directory of the config file, for key file fallback resolution
 }
 
 // ParseFile reads an OCI config file and returns all profiles.
 // The DEFAULT section is applied as a fallback to every named profile.
-// configDir is used to resolve relative key_file paths.
 func ParseFile(path string) ([]Profile, error) {
+	// Expand ~ in path
+	path = expandHome(path)
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open config file: %w", err)
@@ -82,11 +85,11 @@ func ParseFile(path string) ([]Profile, error) {
 		for k, v := range p.Values {
 			merged[k] = v
 		}
-		// Resolve key_file relative to config file location.
-		if kf, ok := merged["key_file"]; ok && kf != "" && !filepath.IsAbs(kf) {
-			merged["key_file"] = filepath.Join(configDir, kf)
+		// Resolve key_file: expand ~ then resolve relative paths against configDir.
+		if kf, ok := merged["key_file"]; ok && kf != "" {
+			merged["key_file"] = resolveKeyFilePath(kf, configDir)
 		}
-		result = append(result, Profile{Name: p.Name, Values: merged})
+		result = append(result, Profile{Name: p.Name, Values: merged, ConfigDir: configDir})
 	}
 
 	// If only DEFAULT was defined (no named sections), treat DEFAULT itself as one profile.
@@ -95,17 +98,17 @@ func ParseFile(path string) ([]Profile, error) {
 		for k, v := range defaults {
 			merged[k] = v
 		}
-		if kf, ok := merged["key_file"]; ok && kf != "" && !filepath.IsAbs(kf) {
-			merged["key_file"] = filepath.Join(configDir, kf)
+		if kf, ok := merged["key_file"]; ok && kf != "" {
+			merged["key_file"] = resolveKeyFilePath(kf, configDir)
 		}
-		result = append(result, Profile{Name: "DEFAULT", Values: merged})
+		result = append(result, Profile{Name: "DEFAULT", Values: merged, ConfigDir: configDir})
 	}
 
 	return result, nil
 }
 
 // ParseContent parses an OCI config from raw text (for browser upload).
-// key_file paths are kept as-is (caller must handle resolution separately).
+// key_file paths are kept as-is; caller must resolve them separately.
 func ParseContent(content string) ([]Profile, error) {
 	var profiles []Profile
 	defaults := map[string]string{}
@@ -177,12 +180,14 @@ type ProfileEntry struct {
 	UserOCID     string
 	Fingerprint  string
 	Region       string
-	KeyFilePath  string // empty for upload-based imports
+	KeyFilePath  string // resolved path (or raw path for upload)
 	PrivateKey   string // resolved PEM content (empty if not yet read)
 	KeyFileError string // non-empty if key_file could not be read
 }
 
 // ToEntries converts raw profiles into ProfileEntry structs, reading key files when possible.
+// When readKeyFiles is true, it tries to read the PEM key at the resolved path,
+// with a fallback to basename(key_file) inside the profile's ConfigDir.
 func ToEntries(profiles []Profile, readKeyFiles bool) []ProfileEntry {
 	entries := make([]ProfileEntry, 0, len(profiles))
 	for _, p := range profiles {
@@ -195,14 +200,60 @@ func ToEntries(profiles []Profile, readKeyFiles bool) []ProfileEntry {
 			KeyFilePath: p.Values["key_file"],
 		}
 		if readKeyFiles && e.KeyFilePath != "" {
-			pem, err := os.ReadFile(e.KeyFilePath)
-			if err != nil {
-				e.KeyFileError = fmt.Sprintf("cannot read key file: %s", err.Error())
+			pem, errMsg := readKeyFileWithFallback(e.KeyFilePath, p.ConfigDir)
+			if errMsg != "" {
+				e.KeyFileError = errMsg
 			} else {
-				e.PrivateKey = string(pem)
+				e.PrivateKey = pem
 			}
 		}
 		entries = append(entries, e)
 	}
 	return entries
+}
+
+// readKeyFileWithFallback tries to read the key file from:
+//  1. The path as-is (already resolved absolute or relative to configDir)
+//  2. Basename of the path relative to configDir (handles absolute paths from another machine)
+func readKeyFileWithFallback(keyFilePath, configDir string) (string, string) {
+	if data, err := os.ReadFile(keyFilePath); err == nil {
+		return string(data), ""
+	}
+
+	// Fallback: try just the filename in the config directory
+	if configDir != "" {
+		alt := filepath.Join(configDir, filepath.Base(keyFilePath))
+		if alt != keyFilePath {
+			if data, err := os.ReadFile(alt); err == nil {
+				return string(data), ""
+			}
+		}
+	}
+
+	if configDir != "" {
+		alt := filepath.Join(configDir, filepath.Base(keyFilePath))
+		return "", fmt.Sprintf("key file not found: tried %q and %q", keyFilePath, alt)
+	}
+	return "", fmt.Sprintf("key file not found: %q", keyFilePath)
+}
+
+// resolveKeyFilePath expands ~ and resolves relative paths against configDir.
+func resolveKeyFilePath(keyFile, configDir string) string {
+	keyFile = expandHome(keyFile)
+	if !filepath.IsAbs(keyFile) {
+		keyFile = filepath.Join(configDir, keyFile)
+	}
+	return keyFile
+}
+
+// expandHome replaces a leading ~ with the user's home directory.
+func expandHome(path string) string {
+	if !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, path[1:])
 }

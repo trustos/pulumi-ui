@@ -24,6 +24,7 @@ type OCIAccount struct {
 	Status       string
 	VerifiedAt   *int64
 	CreatedAt    int64
+	StackCount   int // populated by ListForUser only
 }
 
 // ToOCICredentials converts the account to the OCICredentials bundle used by the engine.
@@ -103,8 +104,15 @@ func (s *AccountStore) Get(id string) (*OCIAccount, error) {
 
 func (s *AccountStore) ListForUser(userID string) ([]OCIAccount, error) {
 	rows, err := s.db.Query(`
-		SELECT id, user_id, name, tenancy_name, tenancy_ocid, region, user_ocid, fingerprint, private_key, ssh_public_key, status, verified_at, created_at
-		FROM oci_accounts WHERE user_id = ? ORDER BY created_at`, userID,
+		SELECT a.id, a.user_id, a.name, a.tenancy_name, a.tenancy_ocid, a.region,
+		       a.user_ocid, a.fingerprint, a.private_key, a.ssh_public_key,
+		       a.status, a.verified_at, a.created_at,
+		       COUNT(s.id) AS stack_count
+		FROM oci_accounts a
+		LEFT JOIN stacks s ON s.oci_account_id = a.id
+		WHERE a.user_id = ?
+		GROUP BY a.id
+		ORDER BY a.created_at`, userID,
 	)
 	if err != nil {
 		return nil, err
@@ -117,7 +125,7 @@ func (s *AccountStore) ListForUser(userID string) ([]OCIAccount, error) {
 		var encUserOCID, encFingerprint, encPrivateKey, encSSHPublicKey []byte
 		if err := rows.Scan(&a.ID, &a.UserID, &a.Name, &a.TenancyName, &a.TenancyOCID, &a.Region,
 			&encUserOCID, &encFingerprint, &encPrivateKey, &encSSHPublicKey,
-			&a.Status, &a.VerifiedAt, &a.CreatedAt); err != nil {
+			&a.Status, &a.VerifiedAt, &a.CreatedAt, &a.StackCount); err != nil {
 			return nil, err
 		}
 		dec, err := s.decrypt(a, encUserOCID, encFingerprint, encPrivateKey, encSSHPublicKey)
@@ -152,6 +160,48 @@ func (s *AccountStore) Update(id, name, tenancyName, tenancyOCID, region, userOC
 		name, tenancyName, tenancyOCID, region, encUserOCID, encFingerprint, encPrivateKey, encSSHPublicKey, id,
 	)
 	return err
+}
+
+// UpdatePartial updates account fields. If privateKey or sshPublicKey is empty,
+// the existing encrypted values are preserved.
+func (s *AccountStore) UpdatePartial(id, name, tenancyName, tenancyOCID, region, userOCID, fingerprint, privateKey, sshPublicKey string) error {
+	encUserOCID, err := s.enc.Encrypt(userOCID)
+	if err != nil {
+		return err
+	}
+	encFingerprint, err := s.enc.Encrypt(fingerprint)
+	if err != nil {
+		return err
+	}
+
+	if privateKey == "" && sshPublicKey == "" {
+		// Skip key updates entirely
+		_, err = s.db.Exec(`
+			UPDATE oci_accounts SET name=?, tenancy_name=?, tenancy_ocid=?, region=?, user_ocid=?, fingerprint=?, status='unverified', verified_at=NULL
+			WHERE id=?`,
+			name, tenancyName, tenancyOCID, region, encUserOCID, encFingerprint, id,
+		)
+		return err
+	}
+
+	if privateKey == "" || sshPublicKey == "" {
+		// Need the existing encrypted values for the fields we're keeping
+		existing, err := s.Get(id)
+		if err != nil {
+			return err
+		}
+		if existing == nil {
+			return fmt.Errorf("account not found")
+		}
+		if privateKey == "" {
+			privateKey = existing.PrivateKey
+		}
+		if sshPublicKey == "" {
+			sshPublicKey = existing.SSHPublicKey
+		}
+	}
+
+	return s.Update(id, name, tenancyName, tenancyOCID, region, userOCID, fingerprint, privateKey, sshPublicKey)
 }
 
 func (s *AccountStore) SetStatus(id, status string, verifiedAt *int64) error {

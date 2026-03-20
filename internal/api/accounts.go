@@ -17,9 +17,12 @@ type accountResponse struct {
 	TenancyName string  `json:"tenancyName"`
 	TenancyOCID string  `json:"tenancyOcid"`
 	Region      string  `json:"region"`
+	UserOCID    string  `json:"userOcid"`
+	Fingerprint string  `json:"fingerprint"`
 	Status      string  `json:"status"`
 	VerifiedAt  *string `json:"verifiedAt"`
 	CreatedAt   string  `json:"createdAt"`
+	StackCount  int     `json:"stackCount"`
 }
 
 // ListAccounts returns all OCI accounts for the authenticated user.
@@ -33,7 +36,9 @@ func (h *Handler) ListAccounts(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]accountResponse, 0, len(accounts))
 	for _, a := range accounts {
-		result = append(result, toAccountResponse(a.ID, a.Name, a.TenancyName, a.TenancyOCID, a.Region, a.Status, a.VerifiedAt, a.CreatedAt))
+		r := toAccountResponse(a.ID, a.Name, a.TenancyName, a.TenancyOCID, a.Region, a.UserOCID, a.Fingerprint, a.Status, a.VerifiedAt, a.CreatedAt)
+		r.StackCount = a.StackCount
+		result = append(result, r)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -73,7 +78,7 @@ func (h *Handler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(toAccountResponse(account.ID, account.Name, account.TenancyName, account.TenancyOCID, account.Region, account.Status, account.VerifiedAt, account.CreatedAt))
+	json.NewEncoder(w).Encode(toAccountResponse(account.ID, account.Name, account.TenancyName, account.TenancyOCID, account.Region, account.UserOCID, account.Fingerprint, account.Status, account.VerifiedAt, account.CreatedAt))
 }
 
 // GetAccount returns a single OCI account.
@@ -88,7 +93,7 @@ func (h *Handler) GetAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(toAccountResponse(account.ID, account.Name, account.TenancyName, account.TenancyOCID, account.Region, account.Status, account.VerifiedAt, account.CreatedAt))
+	json.NewEncoder(w).Encode(toAccountResponse(account.ID, account.Name, account.TenancyName, account.TenancyOCID, account.Region, account.UserOCID, account.Fingerprint, account.Status, account.VerifiedAt, account.CreatedAt))
 }
 
 // UpdateAccount replaces the credentials of an existing OCI account.
@@ -117,7 +122,7 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Accounts.Update(id, body.Name, body.TenancyName, body.TenancyOCID, body.Region,
+	if err := h.Accounts.UpdatePartial(id, body.Name, body.TenancyName, body.TenancyOCID, body.Region,
 		body.UserOCID, body.Fingerprint, body.PrivateKey, body.SSHPublicKey); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -253,13 +258,15 @@ func (h *Handler) ListImages(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(images)
 }
 
-func toAccountResponse(id, name, tenancyName, tenancyOCID, region, status string, verifiedAt *int64, createdAt int64) accountResponse {
+func toAccountResponse(id, name, tenancyName, tenancyOCID, region, userOCID, fingerprint, status string, verifiedAt *int64, createdAt int64) accountResponse {
 	resp := accountResponse{
 		ID:          id,
 		Name:        name,
 		TenancyName: tenancyName,
 		TenancyOCID: tenancyOCID,
 		Region:      region,
+		UserOCID:    userOCID,
+		Fingerprint: fingerprint,
 		Status:      status,
 		CreatedAt:   time.Unix(createdAt, 0).Format(time.RFC3339),
 	}
