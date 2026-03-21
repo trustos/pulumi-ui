@@ -3,12 +3,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
-  import {
-    importPreviewPath,
-    importPreviewUpload,
-    importConfirmPath,
-    importConfirmUpload,
-  } from '$lib/api';
+  import { importPreviewUpload, importPreviewZip, importConfirmUpload, importConfirmZip } from '$lib/api';
   import type { OciImportPreview, OciImportResult } from '$lib/types';
 
   let { open = $bindable(false), onImported }: {
@@ -16,68 +11,113 @@
     onImported: () => void;
   } = $props();
 
-  // --- step: 'method' | 'input' | 'preview' | 'result'
-  let step = $state<'method' | 'input' | 'preview' | 'result'>('method');
-  let method = $state<'path' | 'upload' | null>(null);
+  type ImportMode = 'files' | 'zip';
 
-  // path import
-  let configPath = $state('');
-
-  // upload import
-  let configContent = $state('');
-  let uploadedKeyFiles = $state<Record<string, string>>({}); // keyFilePath -> pem content
-
+  let step = $state<'upload' | 'preview' | 'result'>('upload');
+  let importMode = $state<ImportMode | null>(null);
   let loading = $state(false);
   let error = $state('');
 
   let previews = $state<OciImportPreview[]>([]);
-  // Per-profile: account name override + ssh key + selected
   let selections = $state<Array<{ profileName: string; accountName: string; sshPublicKey: string; selected: boolean }>>([]);
-
   let results = $state<OciImportResult[]>([]);
 
+  // Files mode: keys map { raw_key_file_path → pem_content } for confirm step
+  let uploadKeys = $state<Record<string, string>>({});
+  // ZIP mode: base64 zip for confirm step
+  let zipBase64 = $state('');
+
   function reset() {
-    step = 'method';
-    method = null;
-    configPath = '';
-    configContent = '';
-    uploadedKeyFiles = {};
+    step = 'upload';
+    importMode = null;
     loading = false;
     error = '';
     previews = [];
     selections = [];
     results = [];
+    uploadKeys = {};
+    zipBase64 = '';
   }
 
-  $effect(() => {
-    if (!open) reset();
-  });
+  $effect(() => { if (!open) reset(); });
 
-  function chooseMethod(m: 'path' | 'upload') {
-    method = m;
-    step = 'input';
-  }
-
-  async function handlePreview() {
-    loading = true;
-    error = '';
-    try {
-      if (method === 'path') {
-        previews = await importPreviewPath(configPath.trim());
-      } else {
-        previews = await importPreviewUpload(configContent, uploadedKeyFiles);
+  // ── Client-side config parsing ──────────────────────────────────────────────
+  // Extracts raw key_file values from OCI config INI text.
+  function extractKeyFilePaths(configText: string): string[] {
+    const paths: string[] = [];
+    for (const line of configText.split('\n')) {
+      const t = line.trim();
+      if (t.toLowerCase().startsWith('key_file')) {
+        const eq = t.indexOf('=');
+        if (eq > 0) paths.push(t.slice(eq + 1).trim());
       }
-      if (previews.length === 0) {
-        error = 'No profiles found in the config file.';
+    }
+    return paths;
+  }
+
+  // Given config text and a map of { filename → content }, builds the keys map
+  // { raw_key_file_path → pem_content } by basename matching.
+  function buildKeysMap(configText: string, filesByName: Record<string, string>): Record<string, string> {
+    const keys: Record<string, string> = {};
+    for (const kf of extractKeyFilePaths(configText)) {
+      const base = kf.split('/').pop()?.split('\\').pop() ?? kf;
+      for (const [fname, content] of Object.entries(filesByName)) {
+        if (fname === base || fname.toLowerCase() === base.toLowerCase()) {
+          keys[kf] = content;
+          break;
+        }
+      }
+    }
+    return keys;
+  }
+
+  // ── File input handlers ─────────────────────────────────────────────────────
+  async function handleFilesSelected(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    error = '';
+
+    // Collect config files (named "config", "*.ini", "*.cfg") and .pem files
+    let configContent = '';
+    const pemsByName: Record<string, string> = {};
+
+    await Promise.all(Array.from(fileList).map(async (file) => {
+      const name = file.name;
+      const lower = name.toLowerCase();
+      if (lower === 'config' || lower.endsWith('.ini') || lower.endsWith('.cfg')) {
+        configContent = await file.text();
+      } else if (lower.endsWith('.pem') || lower.endsWith('.key')) {
+        pemsByName[name] = await file.text();
+      }
+    }));
+
+    if (!configContent) {
+      error = 'No config file found. Expected a file named "config" or with a .ini / .cfg extension.';
+      return;
+    }
+
+    const keys = buildKeysMap(configContent, pemsByName);
+    await runPreviewUpload(configContent, keys);
+  }
+
+  async function handleZipSelected(file: File) {
+    error = '';
+    const ab = await file.arrayBuffer();
+    // Convert ArrayBuffer to base64
+    const bytes = new Uint8Array(ab);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    const b64 = btoa(binary);
+    zipBase64 = b64;
+    importMode = 'zip';
+    loading = true;
+    try {
+      const result = await importPreviewZip(b64);
+      if (!result || result.length === 0) {
+        error = 'No profiles found in the ZIP. Expected a "config" file inside.';
         loading = false;
         return;
       }
-      selections = previews.map(p => ({
-        profileName: p.profileName,
-        accountName: p.profileName === 'DEFAULT' ? 'Default' : p.profileName,
-        sshPublicKey: '',
-        selected: p.keyFileOk,
-      }));
+      applyPreviews(result);
       step = 'preview';
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -86,19 +126,46 @@
     }
   }
 
+  async function runPreviewUpload(content: string, keys: Record<string, string>) {
+    importMode = 'files';
+    uploadKeys = keys;
+    loading = true;
+    try {
+      const result = await importPreviewUpload(content, keys);
+      if (!result || result.length === 0) {
+        error = 'No profiles found in the config file.';
+        loading = false;
+        return;
+      }
+      applyPreviews(result);
+      step = 'preview';
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      loading = false;
+    }
+  }
+
+  function applyPreviews(p: OciImportPreview[]) {
+    previews = p;
+    selections = p.map(pr => ({
+      profileName: pr.profileName,
+      accountName: pr.profileName === 'DEFAULT' ? 'Default' : pr.profileName,
+      sshPublicKey: '',
+      selected: pr.keyFileOk,
+    }));
+  }
+
+  // ── Confirm ─────────────────────────────────────────────────────────────────
   async function handleConfirm() {
     const chosen = selections.filter(s => s.selected);
-    if (chosen.length === 0) {
-      error = 'Select at least one profile to import.';
-      return;
-    }
-    loading = true;
+    if (chosen.length === 0) { error = 'Select at least one profile.'; return; }
     error = '';
+    loading = true;
     try {
-      if (method === 'path') {
-        results = await importConfirmPath(configPath.trim(), chosen);
+      if (importMode === 'zip') {
+        results = await importConfirmZip(zipBase64, chosen);
       } else {
-        // Build full entries from previews + user selections
         const previewMap = Object.fromEntries(previews.map(p => [p.profileName, p]));
         const entries = chosen.map(s => {
           const p = previewMap[s.profileName];
@@ -109,31 +176,19 @@
             userOcid: p.userOcid,
             fingerprint: p.fingerprint,
             region: p.region,
-            privateKey: uploadedKeyFiles[p.keyFilePath] ?? '',
+            privateKey: uploadKeys[p.keyFilePath] ?? '',
             sshPublicKey: s.sshPublicKey,
           };
         });
         results = await importConfirmUpload(entries);
       }
       step = 'result';
-      const anyOk = results.some(r => r.accountId);
-      if (anyOk) onImported();
+      if (results.some(r => r.accountId)) onImported();
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
     }
-  }
-
-  function handleKeyFileUpload(keyPath: string, fileList: FileList | null) {
-    if (!fileList || fileList.length === 0) return;
-    const file = fileList[0];
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const content = e.target?.result as string;
-      uploadedKeyFiles = { ...uploadedKeyFiles, [keyPath]: content };
-    };
-    reader.readAsText(file);
   }
 
   const selectedCount = $derived(selections.filter(s => s.selected).length);
@@ -142,11 +197,10 @@
 <Dialog.Root bind:open>
   <Dialog.Content class="max-w-2xl">
     <Dialog.Header>
-      <Dialog.Title>Import OCI Config</Dialog.Title>
+      <Dialog.Title>Import OCI Accounts</Dialog.Title>
       <Dialog.Description>
-        {#if step === 'method'}Import accounts from an OCI SDK config file{/if}
-        {#if step === 'input'}{method === 'path' ? 'Enter the path to your OCI config file' : 'Upload your OCI config file'}{/if}
-        {#if step === 'preview'}Review profiles found in the config{/if}
+        {#if step === 'upload'}Import from an OCI config file, folder, or a pulumi-ui export ZIP{/if}
+        {#if step === 'preview'}Review profiles found — select which to import{/if}
         {#if step === 'result'}Import complete{/if}
       </Dialog.Description>
     </Dialog.Header>
@@ -155,86 +209,76 @@
       <div class="p-3 bg-destructive/10 text-destructive text-sm rounded">{error}</div>
     {/if}
 
-    <!-- Step: choose method -->
-    {#if step === 'method'}
-      <div class="grid grid-cols-2 gap-4 py-4">
-        <button
-          class="flex flex-col items-center gap-3 p-6 border rounded-lg hover:bg-muted/50 transition-colors text-left"
-          onclick={() => chooseMethod('path')}
-        >
-          <span class="text-2xl">📁</span>
-          <div>
-            <div class="font-medium">File path</div>
-            <div class="text-sm text-muted-foreground mt-1">
-              Enter the path to a config file on the server. Key files are read automatically from the paths specified in the config.
+    <!-- ── Upload step ──────────────────────────────────────────────────────── -->
+    {#if step === 'upload'}
+      {#if loading}
+        <div class="py-10 text-center text-muted-foreground text-sm">Parsing...</div>
+      {:else}
+        <div class="space-y-4 py-2">
+          <!-- Option 1: Select folder -->
+          <label class="flex items-start gap-4 p-4 border rounded-lg cursor-pointer hover:bg-muted/40 transition-colors">
+            <span class="text-2xl mt-0.5">📁</span>
+            <div class="flex-1">
+              <div class="font-medium">Select folder</div>
+              <div class="text-sm text-muted-foreground mt-0.5">
+                Select your <code class="text-xs bg-muted px-1 rounded">.oci</code> directory. Automatically reads the <code class="text-xs bg-muted px-1 rounded">config</code> file and any <code class="text-xs bg-muted px-1 rounded">.pem</code> key files inside.
+              </div>
             </div>
-          </div>
-        </button>
-        <button
-          class="flex flex-col items-center gap-3 p-6 border rounded-lg hover:bg-muted/50 transition-colors text-left"
-          onclick={() => chooseMethod('upload')}
-        >
-          <span class="text-2xl">⬆️</span>
-          <div>
-            <div class="font-medium">Upload files</div>
-            <div class="text-sm text-muted-foreground mt-1">
-              Upload the config file from your browser. You will be asked to upload each referenced key file separately.
-            </div>
-          </div>
-        </button>
-      </div>
-    {/if}
-
-    <!-- Step: input -->
-    {#if step === 'input'}
-      <div class="space-y-4 py-2">
-        {#if method === 'path'}
-          <div class="space-y-1">
-            <label class="text-sm font-medium" for="config-path">Config file path</label>
-            <Input
-              id="config-path"
-              bind:value={configPath}
-              placeholder="~/.oci/config"
-            />
-            <p class="text-xs text-muted-foreground">Absolute path on the server where Pulumi UI is running.</p>
-          </div>
-        {:else}
-          <div class="space-y-1">
-            <label class="text-sm font-medium" for="upload-config">Config file</label>
             <input
-              id="upload-config"
               type="file"
-              accept=".ini,.cfg,text/plain"
-              class="w-full text-sm file:mr-2 file:py-1 file:px-3 file:rounded file:border file:text-sm file:font-medium cursor-pointer"
+              class="sr-only"
+              webkitdirectory
+              onchange={(e) => handleFilesSelected((e.target as HTMLInputElement).files)}
+            />
+          </label>
+
+          <!-- Option 2: Select individual files -->
+          <label class="flex items-start gap-4 p-4 border rounded-lg cursor-pointer hover:bg-muted/40 transition-colors">
+            <span class="text-2xl mt-0.5">📄</span>
+            <div class="flex-1">
+              <div class="font-medium">Select files</div>
+              <div class="text-sm text-muted-foreground mt-0.5">
+                Select your <code class="text-xs bg-muted px-1 rounded">config</code> file and any associated <code class="text-xs bg-muted px-1 rounded">.pem</code> key files together (multi-select supported).
+              </div>
+            </div>
+            <input
+              type="file"
+              class="sr-only"
+              multiple
+              accept=".ini,.cfg,.pem,.key,text/plain"
+              onchange={(e) => handleFilesSelected((e.target as HTMLInputElement).files)}
+            />
+          </label>
+
+          <!-- Option 3: Select ZIP export -->
+          <label class="flex items-start gap-4 p-4 border rounded-lg cursor-pointer hover:bg-muted/40 transition-colors">
+            <span class="text-2xl mt-0.5">🗜️</span>
+            <div class="flex-1">
+              <div class="font-medium">Select pulumi-ui export ZIP</div>
+              <div class="text-sm text-muted-foreground mt-0.5">
+                Import from a ZIP previously exported via the <span class="font-medium">Export config</span> button. Contains all profiles and their private keys.
+              </div>
+            </div>
+            <input
+              type="file"
+              class="sr-only"
+              accept=".zip,application/zip"
               onchange={(e) => {
-                const file = (e.target as HTMLInputElement).files?.[0];
-                if (file) {
-                  const r = new FileReader();
-                  r.onload = (ev) => { configContent = ev.target?.result as string; };
-                  r.readAsText(file);
-                }
+                const f = (e.target as HTMLInputElement).files?.[0];
+                if (f) handleZipSelected(f);
               }}
             />
-          </div>
-        {/if}
-      </div>
-      <Dialog.Footer>
-        <Button variant="outline" onclick={() => { step = 'method'; error = ''; }}>Back</Button>
-        <Button
-          onclick={handlePreview}
-          disabled={loading || (method === 'path' ? !configPath.trim() : !configContent)}
-        >
-          {loading ? 'Parsing...' : 'Preview'}
-        </Button>
-      </Dialog.Footer>
+          </label>
+        </div>
+      {/if}
     {/if}
 
-    <!-- Step: preview -->
+    <!-- ── Preview step ─────────────────────────────────────────────────────── -->
     {#if step === 'preview'}
       <div class="space-y-3 max-h-[50vh] overflow-y-auto py-2 pr-1">
         {#each previews as preview, i}
           {@const sel = selections[i]}
-          <div class="border rounded-lg p-4 space-y-3">
+          <div class="border rounded-lg p-4 space-y-2">
             <div class="flex items-start justify-between gap-3">
               <div class="flex items-center gap-3">
                 <input
@@ -246,11 +290,11 @@
                 />
                 <div>
                   <label for="sel-{i}" class="font-medium cursor-pointer">{preview.profileName}</label>
-                  <div class="text-xs text-muted-foreground mt-0.5">{preview.region}</div>
+                  <div class="text-xs text-muted-foreground">{preview.region}</div>
                 </div>
               </div>
               {#if preview.keyFileOk}
-                <Badge variant="default">Key OK</Badge>
+                <Badge variant="default">Key ready</Badge>
               {:else}
                 <Badge variant="destructive">Key missing</Badge>
               {/if}
@@ -260,50 +304,32 @@
               <p class="text-xs text-destructive">{preview.keyFileError}</p>
             {/if}
 
-            {#if method === 'upload' && !preview.keyFileOk && preview.keyFilePath}
-              <div class="space-y-1">
-                <label class="text-xs font-medium text-muted-foreground" for="key-{i}">
-                  Upload key file: <span class="font-mono">{preview.keyFilePath}</span>
-                </label>
-                <input
-                  id="key-{i}"
-                  type="file"
-                  accept=".pem,text/plain"
-                  class="w-full text-xs file:mr-2 file:py-1 file:px-2 file:rounded file:border file:text-xs file:font-medium cursor-pointer"
-                  onchange={(e) => {
-                    handleKeyFileUpload(preview.keyFilePath, (e.target as HTMLInputElement).files);
-                    // Re-run preview to refresh key status
-                    setTimeout(handlePreview, 100);
-                  }}
-                />
-              </div>
-            {/if}
-
             {#if sel.selected}
-              <div class="space-y-2">
+              <div class="space-y-2 pt-1">
                 <div class="space-y-1">
                   <label class="text-xs font-medium text-muted-foreground" for="name-{i}">Account name</label>
                   <Input id="name-{i}" bind:value={sel.accountName} class="h-7 text-sm" />
                 </div>
-                <div class="text-xs text-muted-foreground space-y-0.5">
-                  <div><span class="font-medium">Tenancy:</span> {preview.tenancyOcid}</div>
-                  <div><span class="font-medium">User:</span> {preview.userOcid}</div>
-                  <div><span class="font-medium">Fingerprint:</span> {preview.fingerprint}</div>
+                <div class="text-xs text-muted-foreground space-y-0.5 font-mono">
+                  <div><span class="not-italic font-medium font-sans">Tenancy:</span> {preview.tenancyOcid}</div>
+                  <div><span class="not-italic font-medium font-sans">User:</span> {preview.userOcid}</div>
+                  <div><span class="not-italic font-medium font-sans">Fingerprint:</span> {preview.fingerprint}</div>
                 </div>
               </div>
             {/if}
           </div>
         {/each}
       </div>
+
       <Dialog.Footer>
-        <Button variant="outline" onclick={() => { step = 'input'; error = ''; }}>Back</Button>
+        <Button variant="outline" onclick={() => { step = 'upload'; error = ''; }}>Back</Button>
         <Button onclick={handleConfirm} disabled={loading || selectedCount === 0}>
           {loading ? 'Importing...' : `Import ${selectedCount} account${selectedCount !== 1 ? 's' : ''}`}
         </Button>
       </Dialog.Footer>
     {/if}
 
-    <!-- Step: result -->
+    <!-- ── Result step ──────────────────────────────────────────────────────── -->
     {#if step === 'result'}
       <div class="space-y-2 py-2 max-h-[50vh] overflow-y-auto">
         {#each results as r}
@@ -312,9 +338,9 @@
             {#if r.accountId}
               <Badge variant="default">Imported</Badge>
             {:else}
-              <div class="text-right">
+              <div class="text-right space-y-0.5">
                 <Badge variant="destructive">Failed</Badge>
-                <div class="text-xs text-destructive mt-0.5">{r.error}</div>
+                <div class="text-xs text-destructive">{r.error}</div>
               </div>
             {/if}
           </div>

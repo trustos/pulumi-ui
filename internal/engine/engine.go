@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optdestroy"
+	"github.com/pulumi/pulumi/sdk/v3/go/auto/optpreview"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optrefresh"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optup"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
@@ -106,6 +108,80 @@ func (e *Engine) getOrCreateStack(ctx context.Context, stackName string, prog pr
 	)
 }
 
+// getOrCreateYAMLStack renders the program's Go-templated YAML body with cfg,
+// writes the result to a temp directory, and creates a stack via
+// UpsertStackLocalSource. OCI credentials are injected as Pulumi provider
+// config (YAML programs cannot read environment variables directly).
+func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yamlProg programs.YAMLProgramProvider, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
+	// Merge program defaults into cfg so that fields with a default: value in
+	// the config: section are never absent from the template context.
+	cfg = programs.ApplyConfigDefaults(yamlProg.YAMLBody(), cfg)
+
+	// Render the Go template.
+	rendered, err := programs.RenderTemplate(yamlProg.YAMLBody(), cfg)
+	if err != nil {
+		return auto.Stack{}, nil, fmt.Errorf("template render: %w", err)
+	}
+
+	// Strip potentially dangerous fn::readFile directives.
+	sanitized := programs.SanitizeYAML(rendered)
+
+	// Write to a unique temp directory.
+	tempDir, err := os.MkdirTemp("", "pulumi-yaml-")
+	if err != nil {
+		return auto.Stack{}, nil, fmt.Errorf("creating temp dir: %w", err)
+	}
+	cleanup := func() { os.RemoveAll(tempDir) }
+
+	if err := os.WriteFile(filepath.Join(tempDir, "Pulumi.yaml"), []byte(sanitized), 0644); err != nil {
+		cleanup()
+		return auto.Stack{}, nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
+	}
+
+	stack, err := auto.UpsertStackLocalSource(ctx, stackName, tempDir,
+		auto.EnvVars(envVars),
+		auto.Project(workspace.Project{
+			Name:    tokens.PackageName("pulumi-ui"),
+			Backend: &workspace.ProjectBackend{URL: e.backendURL()},
+		}),
+	)
+	if err != nil {
+		cleanup()
+		return auto.Stack{}, nil, fmt.Errorf("upsert YAML stack: %w", err)
+	}
+
+	// Inject OCI credentials as Pulumi provider config keys.
+	// The Pulumi OCI provider (Terraform bridge) reads these from stack config.
+	keyPath := envVars["OCI_PRIVATE_KEY_PATH"]
+	oci := creds.OCI
+	configs := map[string]auto.ConfigValue{
+		"oci:tenancyOcid":   {Value: oci.TenancyOCID},
+		"oci:userOcid":      {Value: oci.UserOCID},
+		"oci:fingerprint":   {Value: oci.Fingerprint},
+		"oci:privateKeyPath": {Value: keyPath},
+		"oci:region":        {Value: oci.Region},
+	}
+	for k, v := range configs {
+		if err := stack.SetConfig(ctx, k, v); err != nil {
+			cleanup()
+			return auto.Stack{}, nil, fmt.Errorf("set OCI config %s: %w", k, err)
+		}
+	}
+
+	return stack, cleanup, nil
+}
+
+// resolveStack returns the correct auto.Stack for the given program, using
+// either the inline Go path or the YAML local-source path depending on the
+// program type. The returned cleanup func must be called after the operation.
+func (e *Engine) resolveStack(ctx context.Context, stackName string, prog programs.Program, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
+	if yp, ok := prog.(programs.YAMLProgramProvider); ok {
+		return e.getOrCreateYAMLStack(ctx, stackName, yp, cfg, envVars, creds)
+	}
+	stack, err := e.getOrCreateStack(ctx, stackName, prog, cfg, envVars)
+	return stack, func() {}, err
+}
+
 // Up runs pulumi up for the given stack.
 func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
 	if !e.tryLock(stackName) {
@@ -138,7 +214,8 @@ func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[
 		cancel()
 	}()
 
-	stack, err := e.getOrCreateStack(opCtx, stackName, prog, cfg, envVars)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
+	defer stackCleanup()
 	if err != nil {
 		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
 		return "failed"
@@ -187,7 +264,8 @@ func (e *Engine) Destroy(ctx context.Context, stackName, programName string, cfg
 		cancel()
 	}()
 
-	stack, err := e.getOrCreateStack(opCtx, stackName, prog, cfg, envVars)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
+	defer stackCleanup()
 	if err != nil {
 		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
 		return "failed"
@@ -236,13 +314,64 @@ func (e *Engine) Refresh(ctx context.Context, stackName, programName string, cfg
 		cancel()
 	}()
 
-	stack, err := e.getOrCreateStack(opCtx, stackName, prog, cfg, envVars)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
+	defer stackCleanup()
 	if err != nil {
 		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
 		return "failed"
 	}
 
 	_, err = stack.Refresh(opCtx, optrefresh.ProgressStreams(&sseWriter{send: send}))
+	if err != nil {
+		if ctx.Err() != nil {
+			return "cancelled"
+		}
+		send(SSEEvent{Type: "error", Data: err.Error()})
+		return "failed"
+	}
+	return "succeeded"
+}
+
+// Preview runs pulumi preview for the given stack (dry-run, no changes applied).
+func (e *Engine) Preview(ctx context.Context, stackName, programName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
+	if !e.tryLock(stackName) {
+		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
+		return "conflict"
+	}
+	defer e.unlock(stackName)
+
+	prog, ok := programs.Get(programName)
+	if !ok {
+		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
+		return "failed"
+	}
+
+	envVars, cleanup, err := e.buildEnvVars(creds)
+	if err != nil {
+		send(SSEEvent{Type: "error", Data: err.Error()})
+		return "failed"
+	}
+	defer cleanup()
+
+	opCtx, cancel := context.WithCancel(ctx)
+	e.mu.Lock()
+	e.cancels[stackName] = cancel
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.cancels, stackName)
+		e.mu.Unlock()
+		cancel()
+	}()
+
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
+	defer stackCleanup()
+	if err != nil {
+		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
+		return "failed"
+	}
+
+	_, err = stack.Preview(opCtx, optpreview.ProgressStreams(&sseWriter{send: send}))
 	if err != nil {
 		if ctx.Err() != nil {
 			return "cancelled"
@@ -318,7 +447,8 @@ func (e *Engine) GetStackOutputs(ctx context.Context, stackName, programName str
 		return nil, fmt.Errorf("unknown program: %s", programName)
 	}
 
-	stack, err := e.getOrCreateStack(ctx, stackName, prog, cfg, envVars)
+	stack, stackCleanup, err := e.resolveStack(ctx, stackName, prog, cfg, envVars, creds)
+	defer stackCleanup()
 	if err != nil {
 		return nil, err
 	}

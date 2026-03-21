@@ -22,6 +22,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.0.0",
     "lucide-svelte": "^0.577.0",
+    "marked": "^17.0.5",
     "tailwind-merge": "^2.0.0"
   }
 }

@@ -19,7 +19,7 @@
   let addError = $state('');
   let addGenerating = $state(false);
   let addGeneratedPublicKeyPem = $state('');
-  let addForm = $state({ name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '', sshPublicKey: '' });
+  let addForm = $state({ name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '' });
 
   // ── Edit dialog ──────────────────────────────────────────────────────────────
   let editDialogOpen = $state(false);
@@ -28,7 +28,7 @@
   let editError = $state('');
   let editGenerating = $state(false);
   let editGeneratedPublicKeyPem = $state('');
-  let editForm = $state({ name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '', sshPublicKey: '' });
+  let editForm = $state({ name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '' });
 
   // ── Misc ─────────────────────────────────────────────────────────────────────
   let verifying = $state<string | null>(null);
@@ -52,7 +52,7 @@
 
   // ── Add ───────────────────────────────────────────────────────────────────────
   function openAdd() {
-    addForm = { name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '', sshPublicKey: '' };
+    addForm = { name: '', tenancyOcid: '', region: '', userOcid: '', fingerprint: '', privateKey: '' };
     addError = '';
     addGeneratedPublicKeyPem = '';
     addDialogOpen = true;
@@ -63,7 +63,7 @@
     addSaving = true;
     addError = '';
     try {
-      const account = await createAccount(addForm);
+      const account = await createAccount({ ...addForm, sshPublicKey: '' });
       accounts = [...accounts, account];
       addDialogOpen = false;
     } catch (err) {
@@ -79,7 +79,6 @@
       const kp = await generateKeyPair();
       addForm.privateKey = kp.privateKey;
       addForm.fingerprint = kp.fingerprint;
-      addForm.sshPublicKey = kp.sshPublicKey;
       addGeneratedPublicKeyPem = kp.publicKeyPem;
     } catch (err) {
       addError = err instanceof Error ? err.message : String(err);
@@ -98,7 +97,6 @@
       userOcid: account.userOcid,
       fingerprint: account.fingerprint,
       privateKey: '',
-      sshPublicKey: '',
     };
     editError = '';
     editGeneratedPublicKeyPem = '';
@@ -119,7 +117,7 @@
         userOcid: editForm.userOcid,
         fingerprint: editForm.fingerprint,
         privateKey: editForm.privateKey,
-        sshPublicKey: editForm.sshPublicKey,
+        sshPublicKey: '',
       });
       await load();
       editDialogOpen = false;
@@ -136,7 +134,6 @@
       const kp = await generateKeyPair();
       editForm.privateKey = kp.privateKey;
       editForm.fingerprint = kp.fingerprint;
-      editForm.sshPublicKey = kp.sshPublicKey;
       editGeneratedPublicKeyPem = kp.publicKeyPem;
     } catch (err) {
       editError = err instanceof Error ? err.message : String(err);
@@ -304,11 +301,14 @@
         <label class="text-sm font-medium" for="a-userocid">User OCID <span class="text-destructive">*</span></label>
         <Input id="a-userocid" bind:value={addForm.userOcid} placeholder="ocid1.user.oc1.." required />
       </div>
-      <div class="flex items-center justify-between">
-        <span class="text-sm font-medium">API Key</span>
-        <Button type="button" variant="outline" size="sm" disabled={addGenerating} onclick={handleAddGenerate}>
-          {addGenerating ? 'Generating...' : 'Generate new key pair'}
-        </Button>
+      <div class="space-y-1">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium">API Key</span>
+          <Button type="button" variant="outline" size="sm" disabled={addGenerating} onclick={handleAddGenerate}>
+            {addGenerating ? 'Generating...' : 'Generate new key pair'}
+          </Button>
+        </div>
+        <p class="text-xs text-muted-foreground">Only use this if you want to create brand-new OCI API keys. You must then upload the generated public key to OCI Console → Identity → API Keys. If you already have keys, paste them directly below.</p>
       </div>
       {#if addGeneratedPublicKeyPem}
         <div class="p-3 bg-blue-500/10 border border-blue-500/30 rounded space-y-2 text-sm">
@@ -326,10 +326,6 @@
       <div class="space-y-1">
         <label class="text-sm font-medium" for="a-privatekey">Private Key (PEM) <span class="text-destructive">*</span></label>
         <Textarea id="a-privatekey" bind:value={addForm.privateKey} placeholder="-----BEGIN RSA PRIVATE KEY-----" rows={5} required />
-      </div>
-      <div class="space-y-1">
-        <label class="text-sm font-medium" for="a-sshkey">SSH Public Key</label>
-        <Textarea id="a-sshkey" bind:value={addForm.sshPublicKey} placeholder="ssh-rsa AAAA..." rows={3} />
       </div>
       <Dialog.Footer>
         <Button variant="outline" type="button" onclick={() => { addDialogOpen = false; }}>Cancel</Button>
@@ -375,11 +371,14 @@
         <label class="text-sm font-medium" for="e-userocid">User OCID <span class="text-destructive">*</span></label>
         <Input id="e-userocid" bind:value={editForm.userOcid} placeholder="ocid1.user.oc1.." required />
       </div>
-      <div class="flex items-center justify-between">
-        <span class="text-sm font-medium">API Key</span>
-        <Button type="button" variant="outline" size="sm" disabled={editGenerating} onclick={handleEditGenerate}>
-          {editGenerating ? 'Generating...' : 'Generate new key pair'}
-        </Button>
+      <div class="space-y-1">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium">API Key</span>
+          <Button type="button" variant="outline" size="sm" disabled={editGenerating} onclick={handleEditGenerate}>
+            {editGenerating ? 'Generating...' : 'Generate new key pair'}
+          </Button>
+        </div>
+        <p class="text-xs text-muted-foreground">Only use this to create brand-new OCI API keys — you must then upload the generated public key to OCI Console → Identity → API Keys. To keep your existing key, leave the fields below blank.</p>
       </div>
       {#if editGeneratedPublicKeyPem}
         <div class="p-3 bg-blue-500/10 border border-blue-500/30 rounded space-y-2 text-sm">
@@ -398,10 +397,6 @@
       <div class="space-y-1">
         <label class="text-sm font-medium" for="e-privatekey">Private Key (PEM)</label>
         <Textarea id="e-privatekey" bind:value={editForm.privateKey} placeholder="Leave blank to keep current private key" rows={5} />
-      </div>
-      <div class="space-y-1">
-        <label class="text-sm font-medium" for="e-sshkey">SSH Public Key</label>
-        <Textarea id="e-sshkey" bind:value={editForm.sshPublicKey} placeholder="Leave blank to keep current SSH public key" rows={3} />
       </div>
       <Dialog.Footer>
         <Button variant="outline" type="button" onclick={() => { editDialogOpen = false; }}>Cancel</Button>

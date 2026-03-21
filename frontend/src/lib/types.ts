@@ -18,6 +18,8 @@ export interface ConfigField {
   default?: string;
   description?: string;
   options?: string[];
+  group?: string;
+  groupLabel?: string;
 }
 
 export interface ProgramMeta {
@@ -25,6 +27,19 @@ export interface ProgramMeta {
   displayName: string;
   description: string;
   configFields: ConfigField[];
+  isCustom: boolean;
+}
+
+export interface ValidationError {
+  level: 1 | 2 | 3 | 4 | 5;
+  field?: string;
+  message: string;
+  line?: number;
+}
+
+export interface ValidateProgramResult {
+  valid: boolean;
+  errors: ValidationError[];
 }
 
 export interface Passphrase {
@@ -38,6 +53,7 @@ export interface StackSummary {
   name: string;
   program: string;
   passphraseId: string | null;
+  sshKeyId: string | null;
   lastOperation: string | null;
   status: string;
   resourceCount: number;
@@ -46,13 +62,24 @@ export interface StackSummary {
 export interface StackInfo {
   name: string;
   program: string;
+  ociAccountId: string | null;
   passphraseId: string | null;
+  sshKeyId: string | null;
   config: Record<string, string>;
   outputs: Record<string, unknown>;
   resources: number;
   lastUpdated: string | null;
   status: string;
   running: boolean;
+}
+
+export interface SshKey {
+  id: string;
+  name: string;
+  publicKey: string;
+  hasPrivateKey: boolean;
+  stackCount: number;
+  createdAt: number;
 }
 
 export interface SSEEvent {

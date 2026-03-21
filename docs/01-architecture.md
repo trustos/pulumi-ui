@@ -9,7 +9,7 @@
 | Auth | Session-based: `users` + `sessions` tables in SQLite |
 | Credentials | SQLite (embedded, in-process), AES-256-GCM encrypted |
 | Pulumi runtime | Automation API for Go |
-| Pulumi programs | Go inline functions |
+| Pulumi programs | Go inline functions + user-defined Go-templated Pulumi YAML |
 | Deployment unit | Single Go binary + Pulumi plugins |
 
 ### Why Go
@@ -49,6 +49,7 @@ Svelte SPA ◄────── JSON ──── Go HTTP handlers             
                  API handler resolves credentials:                     │
                    - oci_account_id → AccountStore                    │
                    - nil → global CredentialStore (compat)            │
+                   - ssh_key_id → SSHKeyStore (overrides account key) │
                    - passphrase_id → PassphraseStore (required)       │
                                │                                      │
                                ▼                                      │
@@ -75,6 +76,44 @@ Svelte SPA ◄────── JSON ──── Go HTTP handlers             
 
 ---
 
+## YAML Program Execution Path
+
+User-defined programs stored in the `custom_programs` table use a different execution path than built-in Go programs:
+
+```
+Browser ──────────────────────────────────────────────────────────────┐
+  │                                                                    │
+  POST /api/stacks/{name}/up                                           │
+  ▼                                                                    │
+API handler resolves credentials (same as built-in path)              │
+  │                                                                    │
+  ▼                                                                    │
+internal/engine/engine.go                                             │
+  resolveStack() → type-asserts prog.(YAMLProgramProvider)            │
+  │                                                                    │
+  ▼                                                                    │
+getOrCreateYAMLStack()                                                │
+  ├─ programs.RenderTemplate(yamlBody, config)                         │
+  │   text/template + Sprig + custom OCI helpers                       │
+  │   {{ range $i := until nodeCount }} → static YAML                 │
+  ├─ programs.SanitizeYAML()  — strips fn::readFile                    │
+  ├─ os.MkdirTemp() + WriteFile("Pulumi.yaml", rendered)               │
+  ├─ auto.UpsertStackLocalSource(ctx, stackName, tempDir)              │
+  ├─ stack.SetConfig("oci:tenancyOcid", ...)  — inject OCI creds       │
+  └─ defer os.RemoveAll(tempDir)                                        │
+  │                                                                    │
+  ▼                                                                    │
+Pulumi YAML runtime (pulumi-language-yaml binary, bundled in CLI)     │
+  ${resource.property} resolved at apply time                          │
+  │                                                                    │
+  ▼                                                                    │
+OCI APIs ──────────────────────────────────────────────────────────────┘
+```
+
+Key difference from built-in programs: OCI credentials are passed as Pulumi provider config keys (`oci:tenancyOcid`, etc.) via `stack.SetConfig()` rather than as environment variables, because YAML programs cannot read environment variables directly — the Pulumi OCI provider reads its config from the Pulumi config system.
+
+---
+
 ## Module Boundaries
 
 | Package | Path | Responsibility |
@@ -82,11 +121,12 @@ Svelte SPA ◄────── JSON ──── Go HTTP handlers             
 | `main` | `cmd/server/` | HTTP server bootstrap, `go:embed` directives, graceful shutdown |
 | `api` | `internal/api/` | HTTP handlers, request parsing, SSE response writing, credential resolution |
 | `auth` | `internal/auth/` | Session middleware, user context extraction |
-| `engine` | `internal/engine/` | Pulumi Automation API: up/destroy/refresh/cancel; accepts `Credentials` struct |
-| `programs` | `internal/programs/` | `Program` interface, registry, inline `PulumiFn` implementations |
+| `engine` | `internal/engine/` | Pulumi Automation API: up/destroy/refresh/preview/cancel/unlock; accepts `Credentials` struct |
+| `programs` | `internal/programs/` | Program interface, registry, built-in Go `PulumiFn` implementations, YAML program type, Go template renderer (Sprig + custom OCI helpers), YAML config field parser |
 | `stacks` | `internal/stacks/` | YAML `StackConfig` schema, validation, config field metadata |
 | `db` | `internal/db/` | SQLite connection, migrations, all CRUD stores |
 | `oci` | `internal/oci/` | OCI HTTP signature client: credential verification, shapes, images |
+| `oci/configparser` | `internal/oci/configparser/` | Parses OCI SDK config files (INI format) for account import |
 | `crypto` | `internal/crypto/` | AES-256-GCM encrypt/decrypt, key derivation |
 | `keystore` | `internal/keystore/` | Encryption key resolution: env override → load from store → auto-generate; `file` and `consul` backends |
 
@@ -94,7 +134,7 @@ Svelte SPA ◄────── JSON ──── Go HTTP handlers             
 - `api` imports `engine`, `db`, `auth`, `stacks`, `programs` — but not `crypto` directly
 - `auth` imports `db` only (reads users/sessions)
 - `engine` imports `programs` and `db` (for the `OCICredentials` and `Credentials` types) — but not `api`
-- `programs` has no imports from other internal packages (pure Pulumi + OCI SDK)
+- `programs` imports `github.com/Masterminds/sprig/v3` (template functions) and `gopkg.in/yaml.v3` (config parser) — no other internal packages
 - `oci` has no internal imports (standalone HTTP client used by `api/accounts.go`)
 - `crypto` has no internal imports (pure stdlib crypto)
 - `keystore` has no internal imports (only stdlib `net/http` and `os`); imported only by `main`
@@ -110,9 +150,10 @@ require (
     github.com/pulumi/pulumi/sdk/v3       v3.x      // Automation API
     github.com/pulumi/pulumi-oci/sdk/v2   v2.x      // OCI Go SDK
     modernc.org/sqlite                    v1.x      // Pure Go SQLite (no CGO)
-    golang.org/x/crypto                   v0.x      // bcrypt for password hashing
+    golang.org/x/crypto                   v0.x      // bcrypt for password hashing + SSH key marshalling
     gopkg.in/yaml.v3                      v3.x      // YAML config parsing
-    github.com/google/uuid                v1.x      // Operation + account + passphrase IDs
+    github.com/Masterminds/sprig/v3       v3.x      // Go template function library (same as Helm) — used by YAML program renderer
+    github.com/google/uuid                v1.x      // Operation + account + passphrase + SSH key IDs
 )
 ```
 
@@ -140,13 +181,14 @@ RUN pulumi plugin install resource oci 4.x.x
 | User passwords | SQLite `users` table | bcrypt (Go `golang.org/x/crypto/bcrypt`) |
 | Session tokens | SQLite `sessions` table | Plaintext (random 32-byte hex, expires in 30 days) |
 | OCI credentials (per account) | SQLite `oci_accounts` table | AES-256-GCM, app-level |
+| SSH key private keys | SQLite `ssh_keys` table | AES-256-GCM, app-level (nullable — may be public-key only) |
 | Pulumi passphrases (named, per-stack) | SQLite `passphrases` table | AES-256-GCM, app-level |
 | Encryption key itself | Key store (`file` or `consul`) or `PULUMI_UI_ENCRYPTION_KEY` env var | Auto-generated on first run, persisted to store |
 | Pulumi stack state | Local file (`/data/state/`) | Pulumi native encryption (passphrase-derived key + per-stack salt) |
 
 The encryption key is resolved at startup: `PULUMI_UI_ENCRYPTION_KEY` env var takes priority (used by Nomad Variables injection), then the configured key store, then auto-generate and persist. In production the env var is injected by the Nomad job template.
 
-**The API never returns raw credential values.** All sensitive fields are write-only from the UI perspective. Passphrase values are never returned after creation.
+**The API never returns raw credential values.** All sensitive fields are write-only from the UI perspective. Passphrase values and SSH private keys are never returned after creation.
 
 ### Passphrase design
 

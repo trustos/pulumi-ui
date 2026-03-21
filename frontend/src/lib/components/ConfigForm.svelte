@@ -11,18 +11,36 @@
   let {
     fields,
     accountId = '',
+    initialValues = {},
     onSubmit,
     submitLabel = 'Deploy',
   }: {
     fields: ConfigField[];
     accountId?: string;
+    initialValues?: Record<string, string>;
     onSubmit: (values: Record<string, string>) => void;
     submitLabel?: string;
   } = $props();
 
   let values = $state<Record<string, string>>(
-    untrack(() => Object.fromEntries(fields.map(f => [f.key, f.default ?? ''])))
+    untrack(() => Object.fromEntries(fields.map(f => [f.key, initialValues[f.key] ?? f.default ?? ''])))
   );
+
+  // Group fields by their group key, preserving insertion order.
+  // Fields without a group are collected under the empty-string key.
+  const groupedFields = $derived(() => {
+    const order: string[] = [];
+    const map: Record<string, { label: string; fields: typeof fields }> = {};
+    for (const f of fields) {
+      const key = f.group ?? '';
+      if (!map[key]) {
+        order.push(key);
+        map[key] = { label: f.groupLabel ?? '', fields: [] };
+      }
+      map[key].fields.push(f);
+    }
+    return order.map(k => ({ key: k, label: map[k].label, fields: map[k].fields }));
+  });
 
   let shapes = $state<OciShape[]>([]);
   let images = $state<OciImage[]>([]);
@@ -97,85 +115,97 @@
   }
 </script>
 
-<form onsubmit={handleSubmit} class="space-y-4">
-  {#each fields as field}
-    <div class="space-y-1">
-      <label class="text-sm font-medium" for={field.key}>
-        {field.label}
-        {#if field.required}
-          <span class="text-destructive ml-1">*</span>
-        {/if}
-      </label>
-      {#if field.description}
-        <p class="text-xs text-muted-foreground">{field.description}</p>
+<form onsubmit={handleSubmit} class="space-y-6">
+  {#each groupedFields() as group}
+    <div class="space-y-3">
+      {#if group.label}
+        <div class="flex items-center gap-2">
+          <p class="text-sm font-semibold text-foreground">{group.label}</p>
+          <div class="flex-1 h-px bg-border"></div>
+        </div>
       {/if}
+      <div class="space-y-3">
+        {#each group.fields as field}
+          <div class="space-y-1">
+            <label class="text-sm font-medium" for={field.key}>
+              {field.label}
+              {#if field.required}
+                <span class="text-destructive ml-1">*</span>
+              {/if}
+            </label>
+            {#if field.description}
+              <p class="text-xs text-muted-foreground">{field.description}</p>
+            {/if}
 
-      {#if field.type === 'oci-shape'}
-        {#if shapesError}
-          <p class="text-xs text-destructive">{shapesError}</p>
-          <Input id={field.key} bind:value={values[field.key]} placeholder="VM.Standard.A1.Flex" />
-        {:else if shapesLoading}
-          <div class="h-9 rounded-md border bg-muted animate-pulse"></div>
-        {:else if shapes.length > 0}
-          <Combobox
-            items={shapeItems}
-            bind:value={values[field.key]}
-            placeholder="Select a shape..."
-            searchPlaceholder="Search shapes..."
-            emptyText="No shapes match your search."
-          />
-        {:else}
-          <Input id={field.key} bind:value={values[field.key]} placeholder="VM.Standard.A1.Flex" />
-        {/if}
+            {#if field.type === 'oci-shape'}
+              {#if shapesError}
+                <p class="text-xs text-destructive">{shapesError}</p>
+                <Input id={field.key} bind:value={values[field.key]} placeholder="VM.Standard.A1.Flex" />
+              {:else if shapesLoading}
+                <div class="h-9 rounded-md border bg-muted animate-pulse"></div>
+              {:else if shapes.length > 0}
+                <Combobox
+                  items={shapeItems}
+                  bind:value={values[field.key]}
+                  placeholder="Select a shape..."
+                  searchPlaceholder="Search shapes..."
+                  emptyText="No shapes match your search."
+                />
+              {:else}
+                <Input id={field.key} bind:value={values[field.key]} placeholder="VM.Standard.A1.Flex" />
+              {/if}
 
-      {:else if field.type === 'oci-image'}
-        {#if imagesError}
-          <p class="text-xs text-destructive">{imagesError}</p>
-          <Input id={field.key} bind:value={values[field.key]} placeholder="ocid1.image.oc1.." />
-        {:else if imagesLoading}
-          <div class="h-9 rounded-md border bg-muted animate-pulse"></div>
-        {:else if images.length > 0}
-          <Combobox
-            items={imageItems}
-            bind:value={values[field.key]}
-            placeholder="Select an image..."
-            searchPlaceholder="Search by name or OS (Ubuntu, Oracle Linux...)"
-            emptyText="No images match your search."
-          />
-        {:else}
-          <Input id={field.key} bind:value={values[field.key]} placeholder="ocid1.image.oc1.." />
-        {/if}
+            {:else if field.type === 'oci-image'}
+              {#if imagesError}
+                <p class="text-xs text-destructive">{imagesError}</p>
+                <Input id={field.key} bind:value={values[field.key]} placeholder="ocid1.image.oc1.." />
+              {:else if imagesLoading}
+                <div class="h-9 rounded-md border bg-muted animate-pulse"></div>
+              {:else if images.length > 0}
+                <Combobox
+                  items={imageItems}
+                  bind:value={values[field.key]}
+                  placeholder="Select an image..."
+                  searchPlaceholder="Search by name or OS (Ubuntu, Oracle Linux...)"
+                  emptyText="No images match your search."
+                />
+              {:else}
+                <Input id={field.key} bind:value={values[field.key]} placeholder="ocid1.image.oc1.." />
+              {/if}
 
-      {:else if field.type === 'select' && field.options}
-        <Select.Root type="single" bind:value={values[field.key]}>
-          <Select.Trigger id={field.key}>
-            {values[field.key] || 'Select...'}
-          </Select.Trigger>
-          <Select.Content>
-            {#each field.options as opt}
-              <Select.Item value={opt}>{opt}</Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
+            {:else if field.type === 'select' && field.options}
+              <Select.Root type="single" bind:value={values[field.key]}>
+                <Select.Trigger id={field.key}>
+                  {values[field.key] || 'Select...'}
+                </Select.Trigger>
+                <Select.Content>
+                  {#each field.options as opt}
+                    <Select.Item value={opt}>{opt}</Select.Item>
+                  {/each}
+                </Select.Content>
+              </Select.Root>
 
-      {:else if field.type === 'textarea'}
-        <Textarea
-          id={field.key}
-          bind:value={values[field.key]}
-          placeholder={field.description}
-          rows={4}
-          required={field.required}
-        />
+            {:else if field.type === 'textarea'}
+              <Textarea
+                id={field.key}
+                bind:value={values[field.key]}
+                placeholder={field.description}
+                rows={4}
+                required={field.required}
+              />
 
-      {:else}
-        <Input
-          id={field.key}
-          type={field.type === 'number' ? 'number' : 'text'}
-          bind:value={values[field.key]}
-          placeholder={field.description ?? field.default}
-          required={field.required}
-        />
-      {/if}
+            {:else}
+              <Input
+                id={field.key}
+                type={field.type === 'number' ? 'number' : 'text'}
+                bind:value={values[field.key]}
+                placeholder={field.description ?? field.default}
+                required={field.required}
+              />
+            {/if}
+          </div>
+        {/each}
+      </div>
     </div>
   {/each}
   <Button type="submit" class="w-full">{submitLabel}</Button>

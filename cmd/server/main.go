@@ -17,9 +17,9 @@ import (
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
 	"github.com/trustos/pulumi-ui/internal/keystore"
-
-	// Blank imports trigger init() in each program file, registering them.
-	_ "github.com/trustos/pulumi-ui/internal/programs"
+	// Importing programs runs init() in nomad_cluster.go and test_vcn.go,
+	// registering the built-in programs before main() executes.
+	"github.com/trustos/pulumi-ui/internal/programs"
 )
 
 // The frontend/dist/ directory is built by `cd frontend && npm run build`
@@ -84,15 +84,27 @@ func main() {
 	sessions := db.NewSessionStore(database)
 	accounts := db.NewAccountStore(database, enc)
 	passphrases := db.NewPassphraseStore(database, enc)
+	sshKeys := db.NewSSHKeyStore(database, enc)
+	customPrograms := db.NewCustomProgramStore(database)
 
 	// Prune expired sessions on startup
 	sessions.DeleteExpired()
+
+	// Load user-defined YAML programs from the database into the registry.
+	if rows, err := customPrograms.List(); err != nil {
+		log.Printf("Warning: could not load custom programs: %v", err)
+	} else {
+		for _, cp := range rows {
+			programs.RegisterYAML(cp.Name, cp.DisplayName, cp.Description, cp.ProgramYAML)
+			log.Printf("[programs] loaded custom program %q", cp.Name)
+		}
+	}
 
 	// Engine
 	eng := engine.New(stateDir)
 
 	// HTTP handler
-	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, eng)
+	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customPrograms, eng)
 
 	// Embedded frontend — serve from the embed.FS sub-tree
 	sub, err := fs.Sub(frontendDist, "frontend/dist")

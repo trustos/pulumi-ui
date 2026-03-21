@@ -197,11 +197,11 @@ bash deploy/bootstrap.sh
 After deployment (local or Nomad), these steps are required before stacks can be operated:
 
 1. **Register** — visit the UI and create your account (shown automatically on first visit)
-2. **Add an OCI account** — navigate to Accounts and add your tenancy credentials; click "Test credentials" to verify
+2. **Add an OCI account** — navigate to Accounts and add your tenancy credentials; click "Test credentials" to verify. You can use "Generate key pair" to create a new RSA key pair in-browser, or import from an existing OCI config file.
 3. **Create a passphrase** — navigate to Settings → Passphrases and create at least one named passphrase (e.g. "production")
 4. **Create a stack** — from the Dashboard, select program, account, and passphrase; fill in config
 
-Steps 2–4 can be done in any order but all three are required before running stack operations.
+Optionally add SSH keys at `/ssh-keys` if you want to use keys that are decoupled from the OCI account credentials. Steps 2–4 can be done in any order but all three are required before running stack operations.
 
 ---
 
@@ -271,7 +271,7 @@ cp /opt/pulumi-ui/encryption.key /backup/pulumi-ui-key-$(date +%Y%m%d).key  # fi
 tar czf /backup/pulumi-ui-state-$(date +%Y%m%d).tar.gz /opt/pulumi-ui/state/
 ```
 
-**Important:** back up `encryption.key` alongside the database. Without it, the credential blobs in SQLite (OCI credentials, passphrase values) cannot be decrypted and all stacks become inoperable.
+**Important:** back up `encryption.key` alongside the database. Without it, the credential blobs in SQLite (OCI credentials, passphrase values, SSH private keys) cannot be decrypted and all stacks become inoperable.
 
 If using the Nomad Variables key store instead, back that up too:
 
@@ -283,6 +283,6 @@ nomad var get -namespace default nomad/jobs/pulumi-ui
 
 | Path | Contents | Required for recovery |
 |---|---|---|
-| `/data/pulumi-ui.db` | All stacks, accounts, passphrases, users, sessions, operations | Yes |
+| `/data/pulumi-ui.db` | All stacks, accounts, passphrases, SSH keys, users, sessions, operations | Yes |
 | `/data/encryption.key` | AES-256 key for all credential blobs | Yes (file store) |
 | `/data/state/` | Pulumi stack state files | Yes (to resume existing stacks) |

@@ -1,0 +1,126 @@
+package programs
+
+import (
+	"bytes"
+	"encoding/base64"
+	"fmt"
+	"strconv"
+	"strings"
+	"text/template"
+
+	"github.com/Masterminds/sprig/v3"
+)
+
+// TemplateContext is passed into every program template at render time.
+type TemplateContext struct {
+	Config map[string]string
+}
+
+// buildFuncMap returns the complete template.FuncMap used for all program
+// rendering and validation. Keeping a single source ensures they stay in sync.
+func buildFuncMap() template.FuncMap {
+	fm := sprig.FuncMap()
+	fm["instanceOcpus"] = templateInstanceOcpus
+	fm["instanceMemoryGb"] = templateInstanceMemoryGb
+	fm["cloudInit"] = templateCloudInit
+	fm["groupRef"] = templateGroupRef
+	return fm
+}
+
+// RenderTemplate renders a Go-templated Pulumi YAML body using the supplied
+// config map and the Sprig function library (same as Helm). Custom OCI helper
+// functions are also registered.
+func RenderTemplate(templateBody string, config map[string]string) (string, error) {
+	tmpl, err := template.New("program").
+		Delims("{{", "}}").
+		Funcs(buildFuncMap()).
+		Option("missingkey=error").
+		Parse(templateBody)
+	if err != nil {
+		return "", fmt.Errorf("template parse: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, TemplateContext{Config: config}); err != nil {
+		return "", fmt.Errorf("template render: %w", err)
+	}
+
+	return buf.String(), nil
+}
+
+// SanitizeYAML strips fn::readFile directives from a YAML body so that
+// user-defined programs cannot read arbitrary files from the server filesystem.
+func SanitizeYAML(yamlBody string) string {
+	lines := strings.Split(yamlBody, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.Contains(line, "fn::readFile") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// templateInstanceOcpus returns the OCPU count for a given node index and total
+// node count, mirroring the Always Free allocation strategy in nomad_cluster.go.
+func templateInstanceOcpus(nodeIndex, nodeCount int) int {
+	switch nodeCount {
+	case 1:
+		return 4
+	case 2:
+		return 2
+	case 3:
+		if nodeIndex < 2 {
+			return 1
+		}
+		return 2
+	case 4:
+		return 1
+	default:
+		return 1
+	}
+}
+
+// templateInstanceMemoryGb returns the memory (GiB) for a given node given
+// that the OCI Always Free A1 pool is 24 GB total across up to 4 OCPUs.
+func templateInstanceMemoryGb(nodeIndex, nodeCount int) int {
+	ocpus := templateInstanceOcpus(nodeIndex, nodeCount)
+	return ocpus * 6
+}
+
+// templateCloudInit renders and base64-encodes the cloud-init script for a
+// single node.  Only static config values are available at template render
+// time; COMPARTMENT_OCID and SUBNET_OCID are left empty (they are not needed
+// for the nomad auto-join mechanism when using Consul on OCI).
+func templateCloudInit(nodeIndex int, config map[string]string) string {
+	nodeCount, _ := strconv.Atoi(config["nodeCount"])
+	ocpus := templateInstanceOcpus(nodeIndex, nodeCount)
+	memGb := templateInstanceMemoryGb(nodeIndex, nodeCount)
+
+	replacements := map[string]string{
+		"NOMAD_CLIENT_CPU":       strconv.Itoa(ocpus * 3000),
+		"NOMAD_CLIENT_MEMORY":    strconv.Itoa(memGb*1024 - 512),
+		"NOMAD_BOOTSTRAP_EXPECT": config["nodeCount"],
+		"COMPARTMENT_OCID":       "",
+		"SUBNET_OCID":            "",
+		"NOMAD_VERSION":          config["nomadVersion"],
+		"CONSUL_VERSION":         config["consulVersion"],
+	}
+
+	result := cloudInitScript
+	for k, v := range replacements {
+		result = strings.ReplaceAll(result, "@@"+k+"@@", v)
+	}
+	return base64.StdEncoding.EncodeToString([]byte(result))
+}
+
+// templateGroupRef formats a Pulumi OCI IAM policy statement that references
+// a group in either the old IDCS domain format ("Allow group Name to ...") or
+// the new Identity Domain format ("Allow group 'Domain'/Name to ...").
+func templateGroupRef(groupName, domain, statement string) string {
+	if domain != "" {
+		return fmt.Sprintf("Allow group '%s'/%s to %s", domain, groupName, statement)
+	}
+	return fmt.Sprintf("Allow group %s to %s", groupName, statement)
+}

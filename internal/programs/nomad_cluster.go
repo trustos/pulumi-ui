@@ -26,35 +26,77 @@ func (p *NomadClusterProgram) Description() string {
 }
 
 func (p *NomadClusterProgram) ConfigFields() []ConfigField {
+	const (
+		gIAM   = "iam"
+		lIAM   = "IAM & Permissions"
+		gInfra = "infrastructure"
+		lInfra = "Infrastructure"
+		gComp  = "compute"
+		lComp  = "Compute & Storage"
+		gSW    = "software"
+		lSW    = "Software Versions"
+	)
 	return []ConfigField{
+		// ── IAM & Permissions ──────────────────────────────────────────────
+		{Key: "skipDynamicGroup", Label: "Skip Dynamic Group", Type: "select",
+			Required: false, Default: "false", Options: []string{"false", "true"},
+			Description: "Set to true to skip Dynamic Group creation if your OCI user lacks tenancy-level IAM permissions",
+			Group: gIAM, GroupLabel: lIAM},
+		{Key: "adminGroupName", Label: "Admin IAM Group Name", Type: "text",
+			Required: false,
+			Description: "IAM group name of the deploying user — needed to grant permission to create Dynamic Groups and Policies (not required when Skip Dynamic Group is true)",
+			Group: gIAM, GroupLabel: lIAM},
+		{Key: "identityDomain", Label: "Identity Domain Name", Type: "text",
+			Required: false, Default: "",
+			Description: "Leave empty for old-style tenancies (OracleIdentityCloudService). Set to 'Default' for new Identity Domain tenancies",
+			Group: gIAM, GroupLabel: lIAM},
+
+		// ── Infrastructure ─────────────────────────────────────────────────
 		{Key: "nodeCount", Label: "Node Count", Type: "select", Required: false,
 			Default: "3", Options: []string{"1", "2", "3", "4"},
-			Description: "Number of nodes (Always Free limit: 4 OCPUs / 24 GB total)"},
+			Description: "Number of nodes (Always Free limit: 4 OCPUs / 24 GB total)",
+			Group: gInfra, GroupLabel: lInfra},
 		{Key: "compartmentName", Label: "Compartment Name", Type: "text",
-			Required: false, Default: "nomad-compartment"},
+			Required: false, Default: "nomad-compartment",
+			Group: gInfra, GroupLabel: lInfra},
 		{Key: "compartmentDescription", Label: "Compartment Description", Type: "text",
-			Required: false, Default: "Compartment for Nomad cluster"},
+			Required: false, Default: "Compartment for Nomad cluster",
+			Group: gInfra, GroupLabel: lInfra},
 		{Key: "vcnCidr", Label: "VCN CIDR", Type: "text",
-			Required: false, Default: "10.0.0.0/16"},
+			Required: false, Default: "10.0.0.0/16",
+			Group: gInfra, GroupLabel: lInfra},
 		{Key: "publicSubnetCidr", Label: "Public Subnet CIDR", Type: "text",
-			Required: false, Default: "10.0.1.0/24"},
+			Required: false, Default: "10.0.1.0/24",
+			Group: gInfra, GroupLabel: lInfra},
 		{Key: "privateSubnetCidr", Label: "Private Subnet CIDR", Type: "text",
-			Required: false, Default: "10.0.2.0/24"},
+			Required: false, Default: "10.0.2.0/24",
+			Group: gInfra, GroupLabel: lInfra},
 		{Key: "sshSourceCidr", Label: "SSH Source CIDR", Type: "text",
 			Required: false, Default: "0.0.0.0/0",
-			Description: "Restrict to your IP for production security"},
+			Description: "Restrict to your IP for production security",
+			Group: gInfra, GroupLabel: lInfra},
 		{Key: "shape", Label: "Instance Shape", Type: "oci-shape",
-			Required: false, Default: "VM.Standard.A1.Flex"},
+			Required: false, Default: "VM.Standard.A1.Flex",
+			Group: gInfra, GroupLabel: lInfra},
 		{Key: "imageId", Label: "OCI Image", Type: "oci-image",
-			Required: true, Description: "Oracle Linux image for your region"},
+			Required: true, Description: "Oracle Linux image for your region",
+			Group: gInfra, GroupLabel: lInfra},
+
+		// ── Compute & Storage ──────────────────────────────────────────────
 		{Key: "bootVolSizeGb", Label: "Boot Volume (GB)", Type: "number",
-			Required: false, Default: "50"},
+			Required: false, Default: "50",
+			Group: gComp, GroupLabel: lComp},
 		{Key: "glusterVolSizeGb", Label: "GlusterFS Volume (GB)", Type: "number",
-			Required: false, Default: "100"},
+			Required: false, Default: "100",
+			Group: gComp, GroupLabel: lComp},
+
+		// ── Software Versions ──────────────────────────────────────────────
 		{Key: "nomadVersion", Label: "Nomad Version", Type: "text",
-			Required: false, Default: "1.10.3"},
+			Required: false, Default: "1.10.3",
+			Group: gSW, GroupLabel: lSW},
 		{Key: "consulVersion", Label: "Consul Version", Type: "text",
-			Required: false, Default: "1.21.3"},
+			Required: false, Default: "1.21.3",
+			Group: gSW, GroupLabel: lSW},
 	}
 }
 
@@ -135,8 +177,13 @@ func (p *NomadClusterProgram) Run(cfg map[string]string) pulumi.RunFunc {
 		}
 
 		// 2. IAM (dynamic group + policy)
-		if err := createIAM(ctx, tenancyOCID, comp.ID()); err != nil {
-			return err
+		adminGroupName := cfgOr(cfg, "adminGroupName", "")
+		identityDomain := cfgOr(cfg, "identityDomain", "")
+		skipDynamicGroup := cfgOr(cfg, "skipDynamicGroup", "false") == "true"
+		if !skipDynamicGroup {
+			if err := createIAM(ctx, tenancyOCID, comp.ID(), adminGroupName, identityDomain); err != nil {
+				return err
+			}
 		}
 
 		// 3. Network
@@ -180,7 +227,38 @@ func (p *NomadClusterProgram) Run(cfg map[string]string) pulumi.RunFunc {
 // 1. IAM
 // ─────────────────────────────────────────────────────────────────────────────
 
-func createIAM(ctx *pulumi.Context, tenancyOCID string, compartmentID pulumi.IDOutput) error {
+// groupRef formats an IAM group reference for policy statements.
+// Old-domain tenancies (OracleIdentityCloudService) use bare group names.
+// New Identity Domain tenancies require 'DomainName'/GroupName syntax.
+func groupRef(groupName, identityDomain string) string {
+	if identityDomain != "" {
+		return fmt.Sprintf("'%s'/%s", identityDomain, groupName)
+	}
+	return groupName
+}
+
+func createIAM(ctx *pulumi.Context, tenancyOCID string, compartmentID pulumi.IDOutput, adminGroupName, identityDomain string) error {
+	// If an admin group is provided, create a prerequisite policy that grants it
+	// permission to manage dynamic-groups and policies at the tenancy level.
+	// This is required before a DynamicGroup can be created.
+	var prereqDeps []pulumi.Resource
+	if adminGroupName != "" {
+		ref := groupRef(adminGroupName, identityDomain)
+		prereqPolicy, err := identity.NewPolicy(ctx, "nomad-iam-prereq-policy", &identity.PolicyArgs{
+			CompartmentId: pulumi.String(tenancyOCID),
+			Name:          pulumi.String("nomad-iam-prereq"),
+			Description:   pulumi.String("Grants admin group permission to manage dynamic groups and policies for Nomad cluster"),
+			Statements: pulumi.StringArray{
+				pulumi.Sprintf("Allow group %s to manage dynamic-groups in tenancy", ref),
+				pulumi.Sprintf("Allow group %s to manage policies in tenancy", ref),
+			},
+		})
+		if err != nil {
+			return err
+		}
+		prereqDeps = []pulumi.Resource{prereqPolicy}
+	}
+
 	matchingRule := compartmentID.ApplyT(func(id string) (string, error) {
 		return fmt.Sprintf("ALL {instance.compartment.id = '%s'}", id), nil
 	}).(pulumi.StringOutput)
@@ -190,7 +268,7 @@ func createIAM(ctx *pulumi.Context, tenancyOCID string, compartmentID pulumi.IDO
 		Name:          pulumi.String("nomad-cluster-dg"),
 		Description:   pulumi.String("Dynamic group for Nomad cluster instances"),
 		MatchingRule:  matchingRule,
-	})
+	}, pulumi.DependsOn(prereqDeps))
 	if err != nil {
 		return err
 	}

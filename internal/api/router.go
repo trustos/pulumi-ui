@@ -13,15 +13,17 @@ import (
 
 // Handler holds all dependencies wired in main.go.
 type Handler struct {
-	DB          *sql.DB
-	Creds       *db.CredentialStore
-	Ops         *db.OperationStore
-	Stacks      *db.StackStore
-	Users       *db.UserStore
-	Sessions    *db.SessionStore
-	Accounts    *db.AccountStore
-	Passphrases *db.PassphraseStore
-	Engine      *engine.Engine
+	DB             *sql.DB
+	Creds          *db.CredentialStore
+	Ops            *db.OperationStore
+	Stacks         *db.StackStore
+	Users          *db.UserStore
+	Sessions       *db.SessionStore
+	Accounts       *db.AccountStore
+	Passphrases    *db.PassphraseStore
+	SSHKeys        *db.SSHKeyStore
+	CustomPrograms *db.CustomProgramStore
+	Engine         *engine.Engine
 }
 
 func NewHandler(
@@ -33,18 +35,22 @@ func NewHandler(
 	sessions *db.SessionStore,
 	accounts *db.AccountStore,
 	passphrases *db.PassphraseStore,
+	sshKeys *db.SSHKeyStore,
+	customPrograms *db.CustomProgramStore,
 	eng *engine.Engine,
 ) *Handler {
 	return &Handler{
-		DB:          sqlDB,
-		Creds:       creds,
-		Ops:         ops,
-		Stacks:      stacks,
-		Users:       users,
-		Sessions:    sessions,
-		Accounts:    accounts,
-		Passphrases: passphrases,
-		Engine:      eng,
+		DB:             sqlDB,
+		Creds:          creds,
+		Ops:            ops,
+		Stacks:         stacks,
+		Users:          users,
+		Sessions:       sessions,
+		Accounts:       accounts,
+		Passphrases:    passphrases,
+		SSHKeys:        sshKeys,
+		CustomPrograms: customPrograms,
+		Engine:         eng,
 	}
 }
 
@@ -73,10 +79,10 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Post("/accounts", h.CreateAccount)
 			r.Get("/accounts/export", h.ExportAccounts)
 			r.Post("/accounts/generate-keypair", h.GenerateKeyPair)
-			r.Post("/accounts/import/preview/path", h.ImportPreviewPath)
 			r.Post("/accounts/import/preview/upload", h.ImportPreviewUpload)
-			r.Post("/accounts/import/confirm/path", h.ImportConfirmPath)
+			r.Post("/accounts/import/preview/zip", h.ImportPreviewZip)
 			r.Post("/accounts/import/confirm/upload", h.ImportConfirmUpload)
+			r.Post("/accounts/import/confirm/zip", h.ImportConfirmZip)
 			r.Get("/accounts/{id}", h.GetAccount)
 			r.Put("/accounts/{id}", h.UpdateAccount)
 			r.Delete("/accounts/{id}", h.DeleteAccount)
@@ -84,8 +90,13 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Get("/accounts/{id}/shapes", h.ListShapes)
 			r.Get("/accounts/{id}/images", h.ListImages)
 
-			// Programs & Stacks
+			// Programs (built-in + custom YAML)
 			r.Get("/programs", h.ListPrograms)
+			r.Post("/programs", h.CreateProgram)
+			r.Post("/programs/validate", h.ValidateProgramHandler)
+			r.Get("/programs/{name}", h.GetProgram)
+			r.Put("/programs/{name}", h.UpdateProgram)
+			r.Delete("/programs/{name}", h.DeleteProgram)
 			r.Get("/stacks", h.ListStacks)
 			r.Put("/stacks/{name}", h.PutStack)
 			r.Delete("/stacks/{name}", h.DeleteStack)
@@ -94,6 +105,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Post("/stacks/{name}/up", h.StackUp)
 			r.Post("/stacks/{name}/destroy", h.StackDestroy)
 			r.Post("/stacks/{name}/refresh", h.StackRefresh)
+			r.Post("/stacks/{name}/preview", h.StackPreview)
 			r.Post("/stacks/{name}/cancel", h.StackCancel)
 			r.Post("/stacks/{name}/unlock", h.StackUnlock)
 			r.Get("/stacks/{name}/logs", h.GetStackLogs)
@@ -103,6 +115,12 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Post("/passphrases", h.CreatePassphrase)
 			r.Patch("/passphrases/{id}", h.RenamePassphrase)
 			r.Delete("/passphrases/{id}", h.DeletePassphrase)
+
+			// SSH Keys
+			r.Get("/ssh-keys", h.ListSSHKeys)
+			r.Post("/ssh-keys", h.CreateSSHKey)
+			r.Delete("/ssh-keys/{id}", h.DeleteSSHKey)
+			r.Get("/ssh-keys/{id}/private-key", h.DownloadSSHPrivateKey)
 
 			// Settings & Credentials
 			r.Get("/settings", h.GetSettings)

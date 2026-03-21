@@ -2,14 +2,15 @@
   import { Button } from '$lib/components/ui/button';
   import StackCard from '$lib/components/StackCard.svelte';
   import NewStackDialog from '$lib/components/NewStackDialog.svelte';
-  import { listStacks, listPrograms, listAccounts, listPassphrases } from '$lib/api';
+  import { listStacks, listPrograms, listAccounts, listPassphrases, listSSHKeys } from '$lib/api';
   import { navigate } from '$lib/router';
-  import type { ProgramMeta, StackSummary, OciAccount, Passphrase } from '$lib/types';
+  import type { ProgramMeta, StackSummary, OciAccount, Passphrase, SshKey } from '$lib/types';
 
   let stacks = $state<StackSummary[]>([]);
   let programs = $state<ProgramMeta[]>([]);
   let accounts = $state<OciAccount[]>([]);
   let passphrases = $state<Passphrase[]>([]);
+  let sshKeys = $state<SshKey[]>([]);
   let dialogOpen = $state(false);
   let loading = $state(true);
   let loadingAccounts = $state(true);
@@ -28,6 +29,9 @@
     listPassphrases()
       .then(p => { passphrases = p; })
       .catch(() => { passphrases = []; });
+    listSSHKeys()
+      .then(k => { sshKeys = k; })
+      .catch(() => { sshKeys = []; });
   });
 
   async function openNewStack() {
@@ -87,4 +91,4 @@
   {/if}
 </div>
 
-<NewStackDialog bind:open={dialogOpen} {programs} {accounts} bind:passphrases />
+<NewStackDialog bind:open={dialogOpen} {programs} {accounts} bind:passphrases {sshKeys} />

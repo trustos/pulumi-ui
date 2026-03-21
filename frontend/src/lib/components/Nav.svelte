@@ -34,6 +34,18 @@
           Accounts
         </button>
         <button
+          onclick={() => navigate('/ssh-keys')}
+          class={path === '/ssh-keys' ? 'text-foreground font-medium' : 'text-muted-foreground hover:text-foreground'}
+        >
+          SSH Keys
+        </button>
+        <button
+          onclick={() => navigate('/programs')}
+          class={path === '/programs' ? 'text-foreground font-medium' : 'text-muted-foreground hover:text-foreground'}
+        >
+          Programs
+        </button>
+        <button
           onclick={() => navigate('/settings')}
           class={path === '/settings' ? 'text-foreground font-medium' : 'text-muted-foreground hover:text-foreground'}
         >

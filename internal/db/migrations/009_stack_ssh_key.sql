@@ -1,0 +1,1 @@
+ALTER TABLE stacks ADD COLUMN ssh_key_id TEXT REFERENCES ssh_keys(id) ON DELETE SET NULL;

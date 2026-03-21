@@ -1,0 +1,841 @@
+# YAML Program Reference
+
+A YAML program lets you define infrastructure as a Go-templated Pulumi YAML file stored in the database. Once created, it appears in the **New Stack** dialog alongside built-in programs and can be edited or deleted at any time — no server restart required.
+
+---
+
+## How It Works
+
+```
+Your template (stored in DB)
+        │
+        ▼  text/template.Execute()
+        │  with stack config values + Sprig + OCI helpers
+        ▼
+Plain Pulumi YAML (written to temp dir)
+        │
+        ▼  pulumi up / preview / destroy / refresh
+        │
+        ▼
+OCI resources
+```
+
+There are two layers of resolution — keep them straight:
+
+| Syntax | Resolved by | When | Example |
+|---|---|---|---|
+| `{{ ... }}` | Go template | Before Pulumi runs | `{{ .Config.nodeCount }}` |
+| `${ ... }` | Pulumi | At apply time | `${my-compartment.id}` |
+
+Go template decides **structure** (loops, conditionals, how many resources). Pulumi resolves **runtime values** (actual OCIDs, outputs from other resources).
+
+> **Important:** Go template processes the entire file — including YAML comments. Do **not** write `{{ }}` inside comments. Use plain text instead:
+>
+> ```yaml
+> # Good — plain text
+> # Template directives (double-brace) are resolved before Pulumi runs.
+>
+> # Bad — Go template will try to parse this and fail
+> # {{ ... }} expressions are resolved before Pulumi runs.
+> ```
+
+---
+
+## Minimal Program
+
+```yaml
+name: my-vcn
+runtime: yaml
+description: "Creates a compartment and VCN"
+
+config:
+  compartmentName:
+    type: String
+    default: my-compartment
+  vcnCidr:
+    type: String
+    default: "10.0.0.0/16"
+
+resources:
+  my-compartment:
+    type: oci:identity:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: {{ .Config.compartmentName }}
+      description: "Created by Pulumi"
+      enableDelete: true
+
+  my-vcn:
+    type: oci:core:Vcn
+    properties:
+      compartmentId: ${my-compartment.id}
+      cidrBlock: {{ .Config.vcnCidr | quote }}
+      displayName: my-vcn
+      dnsLabel: myvcn
+
+outputs:
+  compartmentId: ${my-compartment.id}
+  vcnId: ${my-vcn.id}
+```
+
+**Required top-level keys:** `name`, `runtime: yaml`, `resources`.
+
+---
+
+## Config Section
+
+The `config:` block defines the fields shown in the UI form when creating a stack.
+
+```yaml
+config:
+  myField:
+    type: String        # String | Integer | Number | Boolean
+    default: "hello"    # optional
+```
+
+### Field Types → Form Controls
+
+| YAML type | Form field | Notes |
+|---|---|---|
+| `String` | Text input | Default for most values |
+| `Integer` | Number input | Use for counts, sizes |
+| `Number` | Number input | Use for floats |
+| `Boolean` | Select (true/false) | |
+| key = `imageId` | OCI image picker | Convention — type must be `String` |
+| key = `shape` | OCI shape picker | Convention — type must be `String` |
+
+### Accessing Config Values
+
+```yaml
+# Simple value
+name: {{ .Config.compartmentName }}
+
+# Quoted (required for YAML string values containing special chars)
+cidrBlock: {{ .Config.vcnCidr | quote }}
+
+# As integer for arithmetic
+{{ until (atoi .Config.nodeCount) }}
+```
+
+> **Defaults are applied automatically.** When a stack runs, declared `default:` values are merged into the config before the template renders. A field with a `default:` is always safe to reference as `{{ .Config.key }}` even if the user never edited it. You only need `| default "..."` for additional fallbacks or for fields that intentionally have no declared default.
+
+### Meta Section (UI Groups)
+
+Add a `meta:` block at the top of your file to group config fields in the UI form and override field types. It is stripped before Pulumi executes the program.
+
+```yaml
+meta:
+  groups:
+    - key: network
+      label: "Network"
+      fields: [compartmentName, vcnCidr, subnetCidr]
+    - key: compute
+      label: "Compute"
+      fields: [shape, imageId, nodeCount, bootVolSizeGb]
+  fields:
+    imageId:
+      ui_type: oci-image
+    shape:
+      ui_type: oci-shape
+
+config:
+  compartmentName:
+    type: String
+    default: my-compartment
+  vcnCidr:
+    type: String
+    default: "10.0.0.0/16"
+  # ... rest of config
+```
+
+Fields not listed in any group appear at the bottom ungrouped.
+
+---
+
+## Loops
+
+Use Sprig's `until` to iterate over a range of integers.
+
+```yaml
+config:
+  nodeCount:
+    type: Integer
+    default: 3
+
+resources:
+  {{- range $i := until (atoi $.Config.nodeCount) }}
+  instance-{{ $i }}:
+    type: oci:core:Instance
+    properties:
+      compartmentId: ${my-compartment.id}
+      displayName: {{ printf "node-%d" $i }}
+      availabilityDomain: {{ $.Config.availabilityDomain }}
+      shape: {{ $.Config.shape }}
+      shapeConfig:
+        ocpus: {{ instanceOcpus $i (atoi $.Config.nodeCount) }}
+        memoryInGbs: {{ instanceMemoryGb $i (atoi $.Config.nodeCount) }}
+  {{- end }}
+```
+
+> **Note:** Use `$.Config` (global `$` prefix) inside `range` blocks to access config. The loop variable `$i` shadows `.` inside the loop body.
+
+### Iterating a Fixed List of Values
+
+```yaml
+{{- range $port := list 4646 4647 4648 }}
+  nsg-rule-{{ $port }}:
+    type: oci:core:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${my-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      tcpOptions:
+        destinationPortRange:
+          min: {{ $port }}
+          max: {{ $port }}
+{{- end }}
+```
+
+### Nested Loops
+
+```yaml
+{{- range $port := list 80 443 }}
+  {{- range $i := until (atoi $.Config.nodeCount) }}
+  nlb-backend-{{ $port }}-{{ $i }}:
+    type: oci:networkloadbalancer:Backend
+    properties:
+      backendSetName: backend-set-{{ $port }}
+      networkLoadBalancerId: ${my-nlb.id}
+      ipAddress: ${instance-{{ $i }}.privateIp}
+      port: {{ $port }}
+  {{- end }}
+{{- end }}
+```
+
+---
+
+## Conditionals
+
+```yaml
+{{- if ne .Config.skipOptionalResource "true" }}
+  optional-resource:
+    type: oci:identity:DynamicGroup
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: my-dg
+      matchingRule: "ALL {instance.compartment.id = '${my-compartment.id}'}"
+{{- end }}
+```
+
+```yaml
+{{- if .Config.adminGroupName }}
+  prereq-policy:
+    type: oci:identity:Policy
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: prereq-policy
+      statements:
+        - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}
+{{- end }}
+```
+
+### Common Conditions
+
+| Template | Meaning |
+|---|---|
+| `{{- if eq .Config.x "value" }}` | string equals |
+| `{{- if ne .Config.x "true" }}` | string not equals |
+| `{{- if .Config.x }}` | non-empty string |
+| `{{- if not .Config.x }}` | empty string |
+| `{{- if gt (atoi .Config.n) 2 }}` | integer greater than |
+
+---
+
+## Sprig Functions
+
+All [Sprig](https://masterminds.github.io/sprig/) functions are available. The most useful ones:
+
+### Strings
+
+| Function | Example | Result |
+|---|---|---|
+| `quote` | `{{ "hello" \| quote }}` | `"hello"` |
+| `upper` / `lower` | `{{ .Config.name \| lower }}` | `my-name` |
+| `trim` | `{{ .Config.name \| trim }}` | removes whitespace |
+| `replace` | `{{ .Config.name \| replace "_" "-" }}` | replaces chars |
+| `printf` | `{{ printf "node-%d" $i }}` | `node-0` |
+| `b64enc` | `{{ .Config.script \| b64enc }}` | base64 encoded |
+
+### Numbers
+
+| Function | Example | Result |
+|---|---|---|
+| `atoi` | `{{ atoi .Config.nodeCount }}` | string → int |
+| `add` | `{{ add $i 1 }}` | `$i + 1` |
+| `sub` | `{{ sub 10 $i }}` | `10 - $i` |
+| `mul` | `{{ mul $i 50 }}` | `$i * 50` |
+| `div` | `{{ div 100 4 }}` | `25` |
+
+### Lists
+
+| Function | Example | Result |
+|---|---|---|
+| `list` | `{{ list 80 443 8080 }}` | `[80, 443, 8080]` |
+| `until` | `{{ until 3 }}` | `[0, 1, 2]` |
+| `len` | `{{ len (until 4) }}` | `4` |
+
+### Logic
+
+| Function | Example |
+|---|---|
+| `default` | `{{ .Config.shape \| default "VM.Standard.A1.Flex" }}` |
+| `ternary` | `{{ ternary "yes" "no" (eq .Config.x "1") }}` |
+| `coalesce` | `{{ coalesce .Config.a .Config.b "fallback" }}` |
+| `empty` | `{{ if empty .Config.name }}` |
+
+---
+
+## Custom OCI Functions
+
+Four helper functions are built into the template engine specifically for OCI.
+
+### `instanceOcpus`
+
+```
+instanceOcpus(nodeIndex int, nodeCount int) int
+```
+
+Returns the OCPU count for a node, distributing OCI Always Free quota (4 total OCPUs) across nodes:
+
+| nodeCount | node 0 | node 1 | node 2 | node 3 |
+|---|---|---|---|---|
+| 1 | 4 | — | — | — |
+| 2 | 2 | 2 | — | — |
+| 3 | 1 | 1 | 2 | — |
+| 4 | 1 | 1 | 1 | 1 |
+
+```yaml
+ocpus: {{ instanceOcpus $i (atoi $.Config.nodeCount) }}
+```
+
+### `instanceMemoryGb`
+
+```
+instanceMemoryGb(nodeIndex int, nodeCount int) int
+```
+
+Returns memory in GiB for a node (`ocpus × 6`). Total stays within Always Free 24 GB limit.
+
+```yaml
+memoryInGbs: {{ instanceMemoryGb $i (atoi $.Config.nodeCount) }}
+```
+
+### `cloudInit`
+
+```
+cloudInit(nodeIndex int, config map[string]string) string
+```
+
+Renders the Nomad/Consul cluster cloud-init script and returns it base64-encoded. Uses config values such as `shape`, `nodeCount`, `nomadVersion`, `consulVersion`.
+
+```yaml
+metadata:
+  userDataScript: {{ cloudInit $i $.Config }}
+```
+
+> **Limitation:** `COMPARTMENT_OCID` and `SUBNET_OCID` placeholders in the cloud-init script are left empty because those values are only available at Pulumi apply time (as `${resource.id}` outputs), not at template render time.
+
+### `groupRef`
+
+```
+groupRef(groupName string, domain string, statement string) string
+```
+
+Generates an IAM policy statement, handling both old IDCS tenancies (no domain) and new Identity Domain tenancies:
+
+```yaml
+# Old IDCS tenancy (domain = "")
+{{ groupRef "AdminGroup" "" "manage policies in tenancy" }}
+# → Allow group AdminGroup to manage policies in tenancy
+
+# New Identity Domain tenancy
+{{ groupRef "AdminGroup" "Default" "manage policies in tenancy" }}
+# → Allow group 'Default'/AdminGroup to manage policies in tenancy
+```
+
+```yaml
+statements:
+  - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}
+  - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage policies in tenancy" | quote }}
+```
+
+---
+
+## OCI Resource Types
+
+Resource type tokens follow the pattern `oci:[Module]:[Resource]`.
+
+### Identity
+
+```yaml
+# Compartment
+my-compartment:
+  type: oci:identity:Compartment
+  properties:
+    compartmentId: ${oci:tenancyOcid}   # parent compartment; use tenancyOcid for top-level
+    name: {{ .Config.compartmentName }}
+    description: "My compartment"
+    enableDelete: true
+
+# Dynamic Group
+my-dg:
+  type: oci:identity:DynamicGroup
+  properties:
+    compartmentId: ${oci:tenancyOcid}
+    name: my-dg
+    matchingRule: "ALL {instance.compartment.id = '${my-compartment.id}'}"
+    description: "All instances in compartment"
+
+# Policy
+my-policy:
+  type: oci:identity:Policy
+  properties:
+    compartmentId: ${oci:tenancyOcid}
+    name: my-policy
+    description: "My policy"
+    statements:
+      - "Allow dynamic-group my-dg to use instances in compartment my-compartment"
+      - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage all-resources in compartment my-compartment" | quote }}
+```
+
+### Networking
+
+```yaml
+# VCN
+my-vcn:
+  type: oci:core:Vcn
+  properties:
+    compartmentId: ${my-compartment.id}
+    cidrBlock: {{ .Config.vcnCidr | quote }}
+    displayName: my-vcn
+    dnsLabel: myvcn
+
+# Internet Gateway
+my-igw:
+  type: oci:core:InternetGateway
+  properties:
+    compartmentId: ${my-compartment.id}
+    vcnId: ${my-vcn.id}
+    displayName: my-igw
+    enabled: true
+
+# NAT Gateway
+my-nat:
+  type: oci:core:NatGateway
+  properties:
+    compartmentId: ${my-compartment.id}
+    vcnId: ${my-vcn.id}
+    displayName: my-nat
+
+# Route Table (public — routes to internet gateway)
+public-rt:
+  type: oci:core:RouteTable
+  properties:
+    compartmentId: ${my-compartment.id}
+    vcnId: ${my-vcn.id}
+    displayName: public-rt
+    routeRules:
+      - networkEntityId: ${my-igw.id}
+        destination: "0.0.0.0/0"
+        destinationType: CIDR_BLOCK
+
+# Security List
+my-sl:
+  type: oci:core:SecurityList
+  properties:
+    compartmentId: ${my-compartment.id}
+    vcnId: ${my-vcn.id}
+    displayName: my-sl
+    ingressSecurityRules:
+      - protocol: "6"        # TCP
+        source: "0.0.0.0/0"
+        tcpOptions:
+          max: 22
+          min: 22
+      - protocol: "all"
+        source: {{ .Config.vcnCidr | quote }}
+    egressSecurityRules:
+      - protocol: "all"
+        destination: "0.0.0.0/0"
+
+# Subnet
+my-subnet:
+  type: oci:core:Subnet
+  properties:
+    compartmentId: ${my-compartment.id}
+    vcnId: ${my-vcn.id}
+    cidrBlock: {{ .Config.subnetCidr | quote }}
+    displayName: my-subnet
+    dnsLabel: mysubnet
+    routeTableId: ${public-rt.id}
+    securityListIds:
+      - ${my-sl.id}
+
+# Network Security Group
+my-nsg:
+  type: oci:core:NetworkSecurityGroup
+  properties:
+    compartmentId: ${my-compartment.id}
+    vcnId: ${my-vcn.id}
+    displayName: my-nsg
+
+# NSG Rule
+my-nsg-rule-ssh:
+  type: oci:core:NetworkSecurityGroupSecurityRule
+  properties:
+    networkSecurityGroupId: ${my-nsg.id}
+    direction: INGRESS
+    protocol: "6"
+    source: "0.0.0.0/0"
+    sourceType: CIDR_BLOCK
+    tcpOptions:
+      destinationPortRange:
+        min: 22
+        max: 22
+```
+
+### Compute
+
+```yaml
+# Instance (Ampere A1 shape)
+my-instance:
+  type: oci:core:Instance
+  properties:
+    compartmentId: ${my-compartment.id}
+    availabilityDomain: {{ .Config.availabilityDomain }}
+    displayName: my-instance
+    shape: {{ .Config.shape | default "VM.Standard.A1.Flex" }}
+    shapeConfig:
+      ocpus: {{ instanceOcpus 0 1 }}       # 4 OCPUs for single node
+      memoryInGbs: {{ instanceMemoryGb 0 1 }} # 24 GB for single node
+    createVnicDetails:
+      subnetId: ${my-subnet.id}
+      assignPublicIp: true
+      nsgIds:
+        - ${my-nsg.id}
+    sourceDetails:
+      sourceType: image
+      imageId: {{ .Config.imageId }}
+      bootVolumeSizeInGbs: {{ .Config.bootVolSizeGb | default "50" }}
+    metadata:
+      ssh_authorized_keys: {{ .Config.sshPublicKey }}
+      user_data: {{ cloudInit 0 $.Config }}
+
+# Block Volume
+my-volume:
+  type: oci:core:Volume
+  properties:
+    compartmentId: ${my-compartment.id}
+    availabilityDomain: {{ .Config.availabilityDomain }}
+    displayName: my-volume
+    sizeInGbs: {{ .Config.volumeSizeGb | default "50" }}
+
+# Volume Attachment (paravirtualized)
+my-vol-attach:
+  type: oci:core:VolumeAttachment
+  properties:
+    attachmentType: paravirtualized
+    instanceId: ${my-instance.id}
+    volumeId: ${my-volume.id}
+    isReadOnly: false
+    isPvEncryptionInTransitEnabled: false
+```
+
+### Load Balancer
+
+```yaml
+# Network Load Balancer
+my-nlb:
+  type: oci:networkloadbalancer:NetworkLoadBalancer
+  properties:
+    compartmentId: ${my-compartment.id}
+    displayName: my-nlb
+    isPrivate: false
+    subnetId: ${my-subnet.id}
+
+# Backend Set
+my-backend-set:
+  type: oci:networkloadbalancer:BackendSet
+  properties:
+    networkLoadBalancerId: ${my-nlb.id}
+    name: backend-set-80
+    policy: FIVE_TUPLE
+    healthChecker:
+      protocol: TCP
+      port: 80
+
+# Backend
+my-backend-0:
+  type: oci:networkloadbalancer:Backend
+  properties:
+    networkLoadBalancerId: ${my-nlb.id}
+    backendSetName: backend-set-80
+    name: backend-0
+    ipAddress: ${my-instance.privateIp}
+    port: 80
+
+# Listener
+my-listener:
+  type: oci:networkloadbalancer:Listener
+  properties:
+    networkLoadBalancerId: ${my-nlb.id}
+    name: listener-80
+    defaultBackendSetName: backend-set-80
+    port: 80
+    protocol: TCP
+```
+
+### Storage
+
+```yaml
+# Object Storage Bucket
+my-bucket:
+  type: oci:objectstorage:Bucket
+  properties:
+    compartmentId: ${my-compartment.id}
+    namespace: {{ .Config.objectStorageNamespace }}
+    name: {{ .Config.bucketName }}
+    accessType: NoPublicAccess
+    versioning: Enabled
+```
+
+---
+
+## Special Variables
+
+```yaml
+# Tenancy OCID — always available, no config needed
+compartmentId: ${oci:tenancyOcid}
+
+# Config values injected by the engine (always available)
+# oci:tenancyOcid, oci:userOcid, oci:fingerprint, oci:privateKeyPath, oci:region
+```
+
+---
+
+## Outputs
+
+Declare stack outputs to expose values after a successful `pulumi up`:
+
+```yaml
+outputs:
+  compartmentId: ${my-compartment.id}
+  vcnId: ${my-vcn.id}
+  instancePublicIp: ${my-instance-0.publicIp}
+  nlbIp: ${my-nlb.ipAddresses[0].ipAddress}
+```
+
+---
+
+## Security
+
+- `fn::readFile` — any line containing this is stripped before writing to disk. Programs cannot read server files.
+- Programs can only call OCI APIs through the Pulumi OCI provider using the credentials you have configured for the account.
+- OCI credentials are injected via Pulumi config, not environment variables (the OCI provider reads from the Pulumi config system).
+
+---
+
+## Limitations vs Built-in Programs
+
+| Capability | Built-in Go | YAML program |
+|---|---|---|
+| Loops | Yes (Go `for`) | Yes (Go template `range`) |
+| Conditionals | Yes | Yes (Go template `if`) |
+| Cross-resource values in cloud-init | Yes (`pulumi.All(...).ApplyT(...)`) | No — only static config values |
+| Arbitrary Go logic | Yes | No |
+| No server restart needed | No | Yes |
+| Editable via UI | No | Yes |
+| Stored in database | No | Yes |
+
+If your program needs to pass a runtime-resolved OCID (e.g. a subnet ID) into a cloud-init script, you must implement it as a built-in Go program.
+
+---
+
+## Full Example — Three-Node Compute Cluster
+
+```yaml
+meta:
+  groups:
+    - key: network
+      label: "Network"
+      fields: [compartmentName, vcnCidr, subnetCidr]
+    - key: compute
+      label: "Compute"
+      fields: [nodeCount, shape, imageId, bootVolSizeGb, availabilityDomain, sshPublicKey]
+
+name: compute-cluster
+runtime: yaml
+description: "N-node compute cluster with shared VCN"
+
+config:
+  compartmentName:
+    type: String
+    default: compute-cluster
+  vcnCidr:
+    type: String
+    default: "10.0.0.0/16"
+  subnetCidr:
+    type: String
+    default: "10.0.1.0/24"
+  nodeCount:
+    type: Integer
+    default: 2
+  shape:
+    type: String
+    default: "VM.Standard.A1.Flex"
+  imageId:
+    type: String
+    default: ""
+  bootVolSizeGb:
+    type: Integer
+    default: 50
+  availabilityDomain:
+    type: String
+    default: ""
+  sshPublicKey:
+    type: String
+    default: ""
+
+resources:
+  cluster-compartment:
+    type: oci:identity:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: {{ .Config.compartmentName }}
+      description: "Compute cluster compartment"
+      enableDelete: true
+
+  cluster-vcn:
+    type: oci:core:Vcn
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      cidrBlock: {{ .Config.vcnCidr | quote }}
+      displayName: cluster-vcn
+      dnsLabel: clustervcn
+
+  cluster-igw:
+    type: oci:core:InternetGateway
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      displayName: cluster-igw
+      enabled: true
+
+  cluster-rt:
+    type: oci:core:RouteTable
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      displayName: cluster-rt
+      routeRules:
+        - networkEntityId: ${cluster-igw.id}
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  cluster-sl:
+    type: oci:core:SecurityList
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      displayName: cluster-sl
+      ingressSecurityRules:
+        - protocol: "6"
+          source: "0.0.0.0/0"
+          tcpOptions:
+            min: 22
+            max: 22
+        - protocol: "all"
+          source: {{ .Config.vcnCidr | quote }}
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+
+  cluster-subnet:
+    type: oci:core:Subnet
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      cidrBlock: {{ .Config.subnetCidr | quote }}
+      displayName: cluster-subnet
+      dnsLabel: clustersubnet
+      routeTableId: ${cluster-rt.id}
+      securityListIds:
+        - ${cluster-sl.id}
+
+  {{- range $i := until (atoi $.Config.nodeCount) }}
+  node-{{ $i }}:
+    type: oci:core:Instance
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      availabilityDomain: {{ $.Config.availabilityDomain }}
+      displayName: {{ printf "node-%d" $i }}
+      shape: {{ $.Config.shape }}
+      shapeConfig:
+        ocpus: {{ instanceOcpus $i (atoi $.Config.nodeCount) }}
+        memoryInGbs: {{ instanceMemoryGb $i (atoi $.Config.nodeCount) }}
+      createVnicDetails:
+        subnetId: ${cluster-subnet.id}
+        assignPublicIp: true
+      sourceDetails:
+        sourceType: image
+        imageId: {{ $.Config.imageId }}
+        bootVolumeSizeInGbs: {{ $.Config.bootVolSizeGb }}
+      metadata:
+        ssh_authorized_keys: {{ $.Config.sshPublicKey }}
+  {{- end }}
+
+outputs:
+  compartmentId: ${cluster-compartment.id}
+  vcnId: ${cluster-vcn.id}
+  {{- range $i := until (atoi $.Config.nodeCount) }}
+  node{{ $i }}PublicIp: ${node-{{ $i }}.publicIp}
+  {{- end }}
+```
+
+---
+
+## Validation
+
+Programs are validated on every save (and checked live as you type in the editor). Validation runs five levels sequentially:
+
+| Level | Name | What it checks |
+|---|---|---|
+| 1 | Template syntax | Can the Go template be parsed? |
+| 2 | Template render | Can it render with all defaults applied? |
+| 3 | YAML structure | Does the rendered output have `name`, `runtime: yaml`, and `resources`? |
+| 4 | Config section | Are field types valid? Do `meta:` group references exist in `config:`? |
+| 5 | Resource types | Does each resource have a valid `provider:module:Resource` type? |
+
+A program that fails validation cannot be saved. Fix all errors shown in the editor panel before saving.
+
+---
+
+## Troubleshooting
+
+**`template: ... map has no entry for key "X"`**
+: `{{ .Config.X }}` is referenced but the key has no `default:` and was never set by the user. Add a `default:` to the config field, or the validator will catch this before the program can be saved.
+
+**`{{ }}` syntax in comments causes a template parse error**
+: Go template processes the entire file including YAML comments. Replace `{{ ... }}` in comments with plain text (e.g., `double-brace directives`).
+
+**`yaml: unmarshal errors` after rendering**
+: The rendered YAML is invalid. Common causes: unquoted string values with colons (use `| quote`), mismatched indentation inside `range` blocks.
+
+**`fn::readFile` lines disappear**
+: This is intentional security sanitization. Use config fields to pass in file content instead.
+
+**Pulumi `${resource.property}` not resolving**
+: The resource name in `${ }` must exactly match the resource key after Go template rendering (after `{{ range }}` expands).
+
+**`atoi: parsing "": invalid syntax`**
+: A config field used with `atoi` has no `default:`. Add `default: "1"` (or any integer string) to the config block.

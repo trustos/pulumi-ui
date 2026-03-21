@@ -73,13 +73,14 @@ func (s *OperationStore) GetLatestLog(stackName string) (*Operation, error) {
 }
 
 // ListLogsForStack returns up to limit operations for a stack with full log content,
-// ordered oldest-first so callers can render them in chronological sequence.
-func (s *OperationStore) ListLogsForStack(stackName string, limit int) ([]Operation, error) {
+// ordered oldest-first. since filters to operations that started on or after the
+// stack's creation time, so a recreated stack with the same name starts with a clean log.
+func (s *OperationStore) ListLogsForStack(stackName string, limit int, since int64) ([]Operation, error) {
 	rows, err := s.db.Query(`
 		SELECT id, stack_name, operation, status, log, started_at, finished_at
-		FROM operations WHERE stack_name = ?
+		FROM operations WHERE stack_name = ? AND started_at >= ?
 		ORDER BY started_at DESC LIMIT ?
-	`, stackName, limit)
+	`, stackName, since, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -97,12 +98,19 @@ func (s *OperationStore) ListLogsForStack(stackName string, limit int) ([]Operat
 	return ops, nil
 }
 
-func (s *OperationStore) ListForStack(stackName string, limit int) ([]Operation, error) {
+// DeleteForStack removes all operations (and their logs) for a given stack name.
+// Called when a stack is deleted so a new stack with the same name starts clean.
+func (s *OperationStore) DeleteForStack(stackName string) error {
+	_, err := s.db.Exec(`DELETE FROM operations WHERE stack_name = ?`, stackName)
+	return err
+}
+
+func (s *OperationStore) ListForStack(stackName string, limit int, since int64) ([]Operation, error) {
 	rows, err := s.db.Query(`
 		SELECT id, stack_name, operation, status, started_at, finished_at
-		FROM operations WHERE stack_name = ?
+		FROM operations WHERE stack_name = ? AND started_at >= ?
 		ORDER BY started_at DESC LIMIT ?
-	`, stackName, limit)
+	`, stackName, since, limit)
 	if err != nil {
 		return nil, err
 	}

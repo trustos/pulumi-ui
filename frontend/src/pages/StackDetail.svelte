@@ -4,8 +4,9 @@
   import { Badge } from '$lib/components/ui/badge';
   import { Separator } from '$lib/components/ui/separator';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts } from '$lib/api';
-  import type { StackInfo, OciAccount } from '$lib/types';
+  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, listSSHKeys } from '$lib/api';
+  import type { StackInfo, OciAccount, ProgramMeta, SshKey } from '$lib/types';
+  import EditStackDialog from '$lib/components/EditStackDialog.svelte';
 
   let { name }: { name: string } = $props();
 
@@ -18,10 +19,16 @@
   let unlockError = $state('');
   let unlockState = $state<'idle' | 'loading' | 'done'>('idle');
   let accounts = $state<OciAccount[]>([]);
+  let programs = $state<ProgramMeta[]>([]);
+  let sshKeys = $state<SshKey[]>([]);
+  let editOpen = $state(false);
+  let copyState = $state<'idle' | 'copied'>('idle');
 
   const linkedAccount = $derived(
     info?.ociAccountId ? accounts.find((a) => a.id === info!.ociAccountId) ?? null : null
   );
+
+  const currentProgram = $derived(info ? programs.find(p => p.name === info!.program) ?? null : null);
 
   // Derived from stack info once loaded — no passphrase assigned means operations will fail.
   let passphraseOk = $derived(info === null ? null : info.passphraseId != null);
@@ -86,6 +93,8 @@
     loadInfo();
     loadPersistedLogs();
     listAccounts().then((a) => { accounts = a; }).catch(() => {});
+    listPrograms().then((p) => { programs = p; }).catch(() => {});
+    listSSHKeys().then((k) => { sshKeys = k; }).catch(() => {});
   });
 
   $effect(() => {
@@ -96,7 +105,7 @@
     }
   });
 
-  function startOperation(op: 'up' | 'refresh' | 'destroy') {
+  function startOperation(op: 'up' | 'refresh' | 'destroy' | 'preview') {
     if (isRunning) return;
     isRunning = true;
 
@@ -187,6 +196,24 @@
     }
     return out;
   });
+
+  function copyLastOperation() {
+    const lines = displayLines();
+    // Walk backwards to find the start of the last operation (last separator line)
+    let lastSep = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].type === 'separator' && !lines[i].data.startsWith('─── ─')) {
+        lastSep = i;
+        break;
+      }
+    }
+    const slice = lastSep >= 0 ? lines.slice(lastSep) : lines;
+    const text = slice.map(l => l.data).join('\n');
+    navigator.clipboard.writeText(text).then(() => {
+      copyState = 'copied';
+      setTimeout(() => { copyState = 'idle'; }, 2000);
+    }).catch(() => {});
+  }
 
   function formatTimestamp(ts: string): string {
     if (!ts) return '';
@@ -300,6 +327,9 @@
           <Card.Title class="text-base">Actions</Card.Title>
         </Card.Header>
         <Card.Content class="space-y-2">
+          <Button variant="outline" class="w-full" onclick={() => startOperation('preview')} disabled={isRunning || passphraseOk === false}>
+            Plan (Preview)
+          </Button>
           <Button class="w-full" onclick={() => startOperation('up')} disabled={isRunning || passphraseOk === false}>
             Deploy (Up)
           </Button>
@@ -312,6 +342,10 @@
           {#if notDeployed}
             <p class="text-xs text-muted-foreground text-center">Run Deploy first before refreshing or destroying.</p>
           {/if}
+          <Separator />
+          <Button variant="outline" class="w-full" onclick={() => { editOpen = true; }} disabled={isRunning}>
+            Edit Configuration
+          </Button>
           <Separator />
           {#if isRunning}
             <Button variant="outline" class="w-full" onclick={handleCancel}>
@@ -336,12 +370,20 @@
     <div class="flex flex-col" style="height: calc(100vh - 200px);">
       <div class="flex items-center justify-between mb-2">
         <span class="text-sm font-medium">Operation Logs</span>
-        <button
-          onclick={() => { logLines = []; }}
-          class="text-xs text-muted-foreground hover:text-foreground"
-        >
-          Clear
-        </button>
+        <div class="flex items-center gap-3">
+          <button
+            onclick={copyLastOperation}
+            class="text-xs text-muted-foreground hover:text-foreground"
+          >
+            {copyState === 'copied' ? 'Copied!' : 'Copy last'}
+          </button>
+          <button
+            onclick={() => { logLines = []; }}
+            class="text-xs text-muted-foreground hover:text-foreground"
+          >
+            Clear
+          </button>
+        </div>
       </div>
       <div
         bind:this={logContainer}
@@ -362,3 +404,14 @@
     </div>
   </div>
 </div>
+
+{#if info}
+  <EditStackDialog
+    bind:open={editOpen}
+    {info}
+    program={currentProgram}
+    {accounts}
+    {sshKeys}
+    onSaved={loadInfo}
+  />
+{/if}

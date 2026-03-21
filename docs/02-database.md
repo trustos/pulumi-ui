@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS stacks (
 CREATE TABLE IF NOT EXISTS operations (
     id          TEXT    NOT NULL PRIMARY KEY,   -- UUID
     stack_name  TEXT    NOT NULL,
-    operation   TEXT    NOT NULL,  -- 'up' | 'destroy' | 'refresh'
+    operation   TEXT    NOT NULL,  -- 'up' | 'destroy' | 'refresh' | 'preview'
     status      TEXT    NOT NULL,  -- 'running' | 'succeeded' | 'failed' | 'cancelled'
     log         TEXT    NOT NULL DEFAULT '',
     started_at  INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -121,11 +121,61 @@ ALTER TABLE stacks ADD COLUMN passphrase_id TEXT REFERENCES passphrases(id);
 
 Each stack **must** be assigned a passphrase at creation time. The passphrase encrypts the Pulumi stack state via `PULUMI_CONFIG_PASSPHRASE`. Once a passphrase is assigned to a stack its value is permanent — changing it would break state decryption for all associated stacks. A passphrase cannot be deleted while any stacks reference it.
 
+### `007_tenancy_name.sql` — Tenancy display name
+
+```sql
+ALTER TABLE oci_accounts ADD COLUMN tenancy_name TEXT NOT NULL DEFAULT '';
+```
+
+Adds an optional human-readable tenancy name to OCI accounts for display in the UI. Separate from `tenancy_ocid`.
+
+### `008_ssh_keys.sql` — Named SSH key pairs
+
+```sql
+CREATE TABLE IF NOT EXISTS ssh_keys (
+    id          TEXT    PRIMARY KEY,
+    user_id     TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT    NOT NULL,
+    public_key  TEXT    NOT NULL,
+    private_key BLOB,   -- nullable: AES-encrypted private key PEM
+    created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+);
+```
+
+Stores named SSH key pairs. `private_key` is nullable — keys can be registered as public-key-only entries (the private key never enters the system), or the private key can be stored encrypted for browser download. Keys can also be server-generated (Ed25519) with the private key encrypted at rest.
+
+### `009_stack_ssh_key.sql` — SSH key linked to a stack
+
+```sql
+ALTER TABLE stacks ADD COLUMN ssh_key_id TEXT REFERENCES ssh_keys(id) ON DELETE SET NULL;
+```
+
+Optionally links a dedicated SSH key to a stack. When set, the engine uses this key's `public_key` as `OCI_USER_SSH_PUBLIC_KEY` instead of the SSH key embedded in the OCI account credentials. If the referenced key is deleted, the column is set to `NULL` (the account's SSH key takes over again).
+
+### `010_custom_programs.sql` — User-defined YAML programs
+
+```sql
+CREATE TABLE IF NOT EXISTS custom_programs (
+    name         TEXT    NOT NULL PRIMARY KEY,
+    display_name TEXT    NOT NULL,
+    description  TEXT    NOT NULL DEFAULT '',
+    program_yaml TEXT    NOT NULL,   -- full Go-templated Pulumi YAML body
+    created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
+);
+```
+
+Stores user-defined programs as Go-templated Pulumi YAML text. The `program_yaml` column is the source of truth for both execution (rendered at runtime by `internal/programs/template.go`) and config schema generation (parsed at load time by `internal/programs/yaml_config.go`). No `runtime` or `config_schema` column is needed — both are derived from the YAML body.
+
+Custom programs are loaded from this table at server startup and registered alongside built-in Go programs in the in-memory program registry.
+
 ---
 
 ## Migrations
 
 Migrations are embedded in the binary via `//go:embed migrations/*.sql` and applied automatically at startup in lexicographic (version) order. Each migration is tracked in `schema_migrations` to prevent re-runs.
+
+On startup, `OperationStore.MarkStaleRunning()` is also called to mark any operations that were left in `running` state by a previous crash or ungraceful shutdown as `failed`.
 
 ---
 
@@ -134,12 +184,14 @@ Migrations are embedded in the binary via `//go:embed migrations/*.sql` and appl
 | Store | File | Key methods |
 |---|---|---|
 | `CredentialStore` | `credentials.go` | `Set`, `Get`, `GetRequired`, `GetOCICredentials`, `Status` |
-| `OperationStore` | `operations.go` | `Create`, `AppendLog`, `Finish`, `ListForStack` |
-| `StackStore` | `stacks.go` | `Upsert(name, program, yaml, ociAccountID*, passphraseID*)`, `Get`, `List`, `Delete` |
+| `OperationStore` | `operations.go` | `Create`, `AppendLog`, `Finish`, `MarkStaleRunning`, `ListForStack`, `ListLogsForStack`, `DeleteForStack` |
+| `StackStore` | `stacks.go` | `Upsert(name, program, yaml, ociAccountID*, passphraseID*, sshKeyID*)`, `Get`, `List`, `Delete` |
 | `UserStore` | `users.go` | `Create`, `GetByUsername`, `GetByID`, `Count` |
 | `SessionStore` | `sessions.go` | `Create`, `GetValid`, `Delete`, `DeleteExpired` |
 | `AccountStore` | `accounts.go` | `Create`, `Get`, `ListForUser`, `Update`, `SetStatus`, `Delete` |
 | `PassphraseStore` | `passphrases.go` | `Create`, `List`, `GetValue`, `Rename`, `Delete` (protected), `HasAny` |
+| `SSHKeyStore` | `ssh_keys.go` | `Create`, `List`, `GetByID`, `GetPublicKey`, `GetPrivateKey`, `Delete` (protected) |
+| `CustomProgramStore` | `custom_programs.go` | `Create`, `Get`, `List`, `Update`, `Delete` |
 
 ---
 
@@ -182,12 +234,17 @@ return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 
 ## Multi-OCI Account Design
 
-Each user can have multiple OCI accounts. When creating a stack, the user **must** select an account — `oci_account_id` is required in the UI. At operation time (`up`/`destroy`/`refresh`), the API resolves credentials:
+Each user can have multiple OCI accounts. When creating a stack, the user **must** select an account — `oci_account_id` is required in the UI. At operation time (`up`/`destroy`/`refresh`/`preview`), the API resolves credentials:
 
 1. If `oci_account_id` is set → decrypt from `oci_accounts` table
 2. If nil → fall back to global `credentials` table (backward compat for stacks created before multi-account support)
+3. If `ssh_key_id` is also set on the stack → override `OCI_USER_SSH_PUBLIC_KEY` with the linked SSH key's public key
 
 The passphrase for Pulumi state encryption is resolved separately:
 
 1. `passphrase_id` on the stack → decrypt value from the `passphrases` table (required)
 2. If nil → operation fails with "no passphrase assigned to this stack"
+
+## Operation Log Isolation
+
+`ListForStack` and `ListLogsForStack` both accept a `since int64` parameter set to `stack.CreatedAt`. This means operations from before the stack's current creation time are filtered out. The practical effect: if a stack is deleted and recreated with the same name, the new stack starts with a clean log history rather than surfacing operations from the previous incarnation.

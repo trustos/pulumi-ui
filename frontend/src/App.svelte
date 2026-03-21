@@ -6,6 +6,9 @@
   import StackDetail from './pages/StackDetail.svelte';
   import Settings from './pages/Settings.svelte';
   import Accounts from '$lib/pages/Accounts.svelte';
+  import SSHKeys from '$lib/pages/SSHKeys.svelte';
+  import Programs from './pages/Programs.svelte';
+  import ProgramDocs from './pages/ProgramDocs.svelte';
   import Login from '$lib/pages/Login.svelte';
   import Register from '$lib/pages/Register.svelte';
 
@@ -59,6 +62,12 @@
         <StackDetail name={stackName} />
       {:else if path === '/accounts'}
         <Accounts />
+      {:else if path === '/ssh-keys'}
+        <SSHKeys />
+      {:else if path === '/programs'}
+        <Programs />
+      {:else if path === '/programs/docs'}
+        <ProgramDocs />
       {:else if path === '/settings'}
         <Settings />
       {:else}

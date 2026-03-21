@@ -1,4 +1,4 @@
-import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair } from './types';
+import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult } from './types';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -18,7 +18,8 @@ export async function putStack(
   config: Record<string, string>,
   description = '',
   ociAccountId?: string,
-  passphraseId?: string
+  passphraseId?: string,
+  sshKeyId?: string
 ): Promise<void> {
   const res = await fetch(`/api/stacks/${encodeURIComponent(name)}`, {
     method: 'PUT',
@@ -29,6 +30,7 @@ export async function putStack(
       description,
       ociAccountId: ociAccountId ?? null,
       passphraseId: passphraseId ?? null,
+      sshKeyId: sshKeyId ?? null,
     }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -47,9 +49,76 @@ export async function listPrograms(): Promise<ProgramMeta[]> {
   return res.json();
 }
 
+export async function getProgram(name: string): Promise<ProgramMeta & { programYaml?: string }> {
+  const res = await fetch(`/api/programs/${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function validateProgram(programYaml: string): Promise<ValidateProgramResult> {
+  const res = await fetch('/api/programs/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ programYaml }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function throwValidationErrors(errs: ValidationError[]): never {
+  const msg = errs.map(e =>
+    `[L${e.level}${e.field ? ' ' + e.field : ''}${e.line ? ':' + e.line : ''}] ${e.message}`
+  ).join('\n');
+  throw new Error(msg);
+}
+
+export async function createProgram(data: {
+  name: string;
+  displayName: string;
+  description: string;
+  programYaml: string;
+}): Promise<void> {
+  const res = await fetch('/api/programs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    if (res.status === 422) throwValidationErrors(await res.json() as ValidationError[]);
+    const text = await res.text();
+    throw new Error(text.trim() || `HTTP ${res.status}`);
+  }
+}
+
+export async function updateProgram(
+  name: string,
+  data: { displayName: string; description: string; programYaml: string }
+): Promise<void> {
+  const res = await fetch(`/api/programs/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    if (res.status === 422) throwValidationErrors(await res.json() as ValidationError[]);
+    const text = await res.text();
+    throw new Error(text.trim() || `HTTP ${res.status}`);
+  }
+}
+
+export async function deleteProgram(name: string): Promise<void> {
+  const res = await fetch(`/api/programs/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text.trim() || `HTTP ${res.status}`);
+  }
+}
+
 export function streamOperation(
   name: string,
-  op: 'up' | 'destroy' | 'refresh',
+  op: 'up' | 'destroy' | 'refresh' | 'preview',
   onEvent: (event: { type: string; data: string; timestamp: string }) => void,
   onDone: (status: string) => void
 ): () => void {
@@ -256,19 +325,6 @@ export async function listImages(accountId: string): Promise<OciImage[]> {
   return res.json();
 }
 
-export async function importPreviewPath(path: string): Promise<OciImportPreview[]> {
-  const res = await fetch('/api/accounts/import/preview/path', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text.trim() || `HTTP ${res.status}`);
-  }
-  return res.json();
-}
-
 export async function importPreviewUpload(
   content: string,
   keys: Record<string, string>
@@ -285,14 +341,11 @@ export async function importPreviewUpload(
   return res.json();
 }
 
-export async function importConfirmPath(
-  path: string,
-  entries: Array<{ profileName: string; accountName: string; sshPublicKey: string }>
-): Promise<OciImportResult[]> {
-  const res = await fetch('/api/accounts/import/confirm/path', {
+export async function importPreviewZip(zip: string): Promise<OciImportPreview[]> {
+  const res = await fetch('/api/accounts/import/preview/zip', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, entries }),
+    body: JSON.stringify({ zip }),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -325,6 +378,22 @@ export async function importConfirmUpload(
   return res.json();
 }
 
+export async function importConfirmZip(
+  zip: string,
+  entries: Array<{ profileName: string; accountName: string; sshPublicKey: string }>
+): Promise<OciImportResult[]> {
+  const res = await fetch('/api/accounts/import/confirm/zip', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ zip, entries }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text.trim() || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function generateKeyPair(): Promise<GeneratedKeyPair> {
   const res = await fetch('/api/accounts/generate-keypair', { method: 'POST' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -333,4 +402,41 @@ export async function generateKeyPair(): Promise<GeneratedKeyPair> {
 
 export function exportAccountsUrl(): string {
   return '/api/accounts/export';
+}
+
+// SSH Keys
+export async function listSSHKeys(): Promise<SshKey[]> {
+  const res = await fetch('/api/ssh-keys');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function createSSHKey(data: {
+  name: string;
+  publicKey?: string;
+  privateKey?: string;
+  generate?: boolean;
+}): Promise<SshKey & { generatedPrivateKey?: string }> {
+  const res = await fetch('/api/ssh-keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text.trim() || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deleteSSHKey(id: string): Promise<void> {
+  const res = await fetch(`/api/ssh-keys/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text.trim() || `HTTP ${res.status}`);
+  }
+}
+
+export function downloadSSHPrivateKeyUrl(id: string): string {
+  return `/api/ssh-keys/${id}/private-key`;
 }

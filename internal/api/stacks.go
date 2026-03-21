@@ -20,7 +20,8 @@ import (
 // resolveCredentials builds engine credentials for a stack.
 // OCI credentials come from the account (or global fallback).
 // The passphrase is looked up from the named passphrases table.
-func (h *Handler) resolveCredentials(ociAccountID, passphraseID *string) (engine.Credentials, error) {
+// If sshKeyID is set, the SSH public key from that key overrides the account's SSH key.
+func (h *Handler) resolveCredentials(ociAccountID, passphraseID, sshKeyID *string) (engine.Credentials, error) {
 	var oci db.OCICredentials
 	var err error
 
@@ -38,6 +39,15 @@ func (h *Handler) resolveCredentials(ociAccountID, passphraseID *string) (engine
 		if err != nil {
 			return engine.Credentials{}, fmt.Errorf("load global OCI credentials: %w", err)
 		}
+	}
+
+	// If a dedicated SSH key is linked, override the account's SSH public key.
+	if sshKeyID != nil && *sshKeyID != "" {
+		sshPub, err := h.SSHKeys.GetPublicKey(*sshKeyID)
+		if err != nil {
+			return engine.Credentials{}, fmt.Errorf("load SSH key: %w", err)
+		}
+		oci.SSHPublicKey = sshPub
 	}
 
 	if passphraseID == nil || *passphraseID == "" {
@@ -64,6 +74,7 @@ func (h *Handler) ListStacks(w http.ResponseWriter, r *http.Request) {
 		Program       string  `json:"program"`
 		OciAccountID  *string `json:"ociAccountId"`
 		PassphraseID  *string `json:"passphraseId"`
+		SshKeyID      *string `json:"sshKeyId"`
 		LastOperation *string `json:"lastOperation"`
 		Status        string  `json:"status"`
 		ResourceCount int     `json:"resourceCount"`
@@ -71,12 +82,13 @@ func (h *Handler) ListStacks(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]StackSummary, 0, len(rows))
 	for _, row := range rows {
-		ops, _ := h.Ops.ListForStack(row.Name, 1)
+		ops, _ := h.Ops.ListForStack(row.Name, 1, row.CreatedAt)
 		summary := StackSummary{
 			Name:          row.Name,
 			Program:       row.Program,
 			OciAccountID:  row.OciAccountID,
 			PassphraseID:  row.PassphraseID,
+			SshKeyID:      row.SshKeyID,
 			ResourceCount: 0,
 			Status:        "not deployed",
 		}
@@ -102,6 +114,7 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		Config       map[string]string `json:"config"`
 		OciAccountID *string           `json:"ociAccountId"`
 		PassphraseID *string           `json:"passphraseId"`
+		SshKeyID     *string           `json:"sshKeyId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -136,7 +149,7 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := h.Stacks.Upsert(stackName, body.Program, yamlStr, body.OciAccountID, body.PassphraseID); err != nil {
+	if err := h.Stacks.Upsert(stackName, body.Program, yamlStr, body.OciAccountID, body.PassphraseID, body.SshKeyID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -164,6 +177,7 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		Program      string                 `json:"program"`
 		OciAccountID *string                `json:"ociAccountId"`
 		PassphraseID *string                `json:"passphraseId"`
+		SshKeyID     *string                `json:"sshKeyId"`
 		Config       map[string]string      `json:"config"`
 		Outputs      map[string]interface{} `json:"outputs"`
 		Resources    int                    `json:"resources"`
@@ -177,13 +191,14 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		Program:      row.Program,
 		OciAccountID: row.OciAccountID,
 		PassphraseID: row.PassphraseID,
+		SshKeyID:     row.SshKeyID,
 		Config:       cfg.Config,
 		Outputs:      map[string]interface{}{},
 		Status:       "not deployed",
 		Running:      h.Engine.IsRunning(stackName),
 	}
 
-	ops, _ := h.Ops.ListForStack(stackName, 1)
+	ops, _ := h.Ops.ListForStack(stackName, 1, row.CreatedAt)
 	if len(ops) > 0 {
 		ts := time.Unix(ops[0].StartedAt, 0).Format(time.RFC3339)
 		info.LastUpdated = &ts
@@ -191,7 +206,7 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if info.Status == "succeeded" || info.Status == "failed" {
-		creds, err := h.resolveCredentials(row.OciAccountID, row.PassphraseID)
+		creds, err := h.resolveCredentials(row.OciAccountID, row.PassphraseID, row.SshKeyID)
 		if err == nil {
 			outputs, err := h.Engine.GetStackOutputs(r.Context(), stackName, row.Program, cfg.Config, creds)
 			if err == nil {
@@ -206,13 +221,15 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(info)
 }
 
-// DeleteStack removes the stack config from SQLite.
+// DeleteStack removes the stack config and all its operation history from SQLite.
 func (h *Handler) DeleteStack(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 	if err := h.Stacks.Delete(stackName); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Remove operation logs so a new stack with the same name starts clean.
+	h.Ops.DeleteForStack(stackName)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -273,13 +290,14 @@ func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation
 		return
 	}
 
-	var ociAccountID, passphraseID *string
+	var ociAccountID, passphraseID, sshKeyID *string
 	if row != nil {
 		ociAccountID = row.OciAccountID
 		passphraseID = row.PassphraseID
+		sshKeyID = row.SshKeyID
 	}
 
-	creds, err := h.resolveCredentials(ociAccountID, passphraseID)
+	creds, err := h.resolveCredentials(ociAccountID, passphraseID, sshKeyID)
 	if err != nil {
 		http.Error(w, "credentials not configured: "+err.Error(), http.StatusBadRequest)
 		return
@@ -312,6 +330,8 @@ func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation
 		status = h.Engine.Destroy(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
 	case "refresh":
 		status = h.Engine.Refresh(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
+	case "preview":
+		status = h.Engine.Preview(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
 	}
 
 	h.Ops.Finish(opID, status)
@@ -328,6 +348,10 @@ func (h *Handler) StackDestroy(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) StackRefresh(w http.ResponseWriter, r *http.Request) {
 	h.runOperation(w, r, "refresh")
+}
+
+func (h *Handler) StackPreview(w http.ResponseWriter, r *http.Request) {
+	h.runOperation(w, r, "preview")
 }
 
 func (h *Handler) StackCancel(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +373,13 @@ func (h *Handler) StackUnlock(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetStackLogs(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
-	ops, err := h.Ops.ListLogsForStack(stackName, 20)
+	row, err := h.Stacks.Get(stackName)
+	if err != nil || row == nil {
+		http.Error(w, "stack not found", http.StatusNotFound)
+		return
+	}
+
+	ops, err := h.Ops.ListLogsForStack(stackName, 20, row.CreatedAt)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
