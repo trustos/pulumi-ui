@@ -257,7 +257,8 @@ outputs:
       <Button variant="ghost" size="sm" onclick={() => navigate('/programs/docs')} class="text-muted-foreground">
         Reference docs
       </Button>
-      <Button onclick={openNew}>New Program</Button>
+      <Button variant="outline" onclick={openNew}>New Program (YAML)</Button>
+      <Button onclick={() => navigate('/programs/__new__/edit')}>New Program (Visual)</Button>
     </div>
   </div>
 
@@ -315,10 +316,14 @@ outputs:
           </Card.Content>
           {#if prog.isCustom}
             <Card.Footer class="pt-0 gap-2">
-              <Button variant="outline" size="sm" onclick={() => openEdit(prog.name)}>Edit</Button>
+              <Button variant="outline" size="sm" onclick={() => navigate(`/programs/${prog.name}/edit`)}>Edit</Button>
               <Button variant="outline" size="sm" class="text-destructive hover:text-destructive" onclick={() => confirmDelete(prog.name)}>
                 Delete
               </Button>
+            </Card.Footer>
+          {:else}
+            <Card.Footer class="pt-0 gap-2">
+              <Button variant="outline" size="sm" onclick={() => navigate(`/programs/${prog.name}/fork`)}>Fork</Button>
             </Card.Footer>
           {/if}
         </Card.Root>

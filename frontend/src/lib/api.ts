@@ -106,6 +106,12 @@ export async function updateProgram(
   }
 }
 
+export async function forkProgram(name: string): Promise<{ programYaml: string }> {
+  const res = await fetch(`/api/programs/${encodeURIComponent(name)}/fork`, { method: 'POST' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 export async function deleteProgram(name: string): Promise<void> {
   const res = await fetch(`/api/programs/${encodeURIComponent(name)}`, {
     method: 'DELETE',

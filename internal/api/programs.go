@@ -178,6 +178,46 @@ func (h *Handler) UpdateProgram(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(updated)
 }
 
+// ForkProgram generates a starter YAML from a built-in program's config fields.
+func (h *Handler) ForkProgram(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	prog, ok := programs.Get(name)
+	if !ok {
+		http.Error(w, "program not found", http.StatusNotFound)
+		return
+	}
+	// Only built-in programs can be forked.
+	if _, isYAML := prog.(programs.YAMLProgramProvider); isYAML {
+		http.Error(w, "custom programs cannot be forked (edit them directly)", http.StatusBadRequest)
+		return
+	}
+
+	yaml := buildForkYAML(prog)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"programYaml": yaml})
+}
+
+func buildForkYAML(prog programs.Program) string {
+	var sb strings.Builder
+	sb.WriteString("name: ")
+	sb.WriteString(prog.Name())
+	sb.WriteString("-custom\nruntime: yaml\ndescription: \"Forked from ")
+	sb.WriteString(prog.DisplayName())
+	sb.WriteString("\"\n\nconfig:\n")
+	for _, f := range prog.ConfigFields() {
+		sb.WriteString("  ")
+		sb.WriteString(f.Key)
+		sb.WriteString(":\n    type: string\n")
+		if f.Default != "" {
+			sb.WriteString("    default: \"")
+			sb.WriteString(f.Default)
+			sb.WriteString("\"\n")
+		}
+	}
+	sb.WriteString("\nresources:\n  # TODO: add your resources here\n  # Example:\n  # my-compartment:\n  #   type: oci:Identity/compartment:Compartment\n  #   properties:\n  #     compartmentId: ${oci:tenancyOcid}\n  #     name: {{ .Config.compartmentName }}\n  #     description: Created by Pulumi\n  #     enableDelete: true\n\noutputs:\n  # TODO: export resource IDs here\n")
+	return sb.String()
+}
+
 // DeleteProgram removes a custom program from the DB and registry.
 // Blocked if any stacks reference the program.
 func (h *Handler) DeleteProgram(w http.ResponseWriter, r *http.Request) {

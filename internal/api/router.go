@@ -9,6 +9,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/auth"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
+	"github.com/trustos/pulumi-ui/internal/oci"
 )
 
 // Handler holds all dependencies wired in main.go.
@@ -62,6 +63,9 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 	r.Use(middleware.RequestID)
 
 	r.Route("/api", func(r chi.Router) {
+		// OCI schema — no authentication required
+		r.Get("/oci-schema", oci.SchemaHandler)
+
 		// Auth — no authentication required
 		r.Get("/auth/status", h.AuthStatus)
 		r.Post("/auth/register", h.Register)
@@ -97,6 +101,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Get("/programs/{name}", h.GetProgram)
 			r.Put("/programs/{name}", h.UpdateProgram)
 			r.Delete("/programs/{name}", h.DeleteProgram)
+			r.Post("/programs/{name}/fork", h.ForkProgram)
 			r.Get("/stacks", h.ListStacks)
 			r.Put("/stacks/{name}", h.PutStack)
 			r.Delete("/stacks/{name}", h.DeleteStack)

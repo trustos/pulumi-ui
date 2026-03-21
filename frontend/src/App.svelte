@@ -9,6 +9,7 @@
   import SSHKeys from '$lib/pages/SSHKeys.svelte';
   import Programs from './pages/Programs.svelte';
   import ProgramDocs from './pages/ProgramDocs.svelte';
+  import ProgramEditor from './pages/ProgramEditor.svelte';
   import Login from '$lib/pages/Login.svelte';
   import Register from '$lib/pages/Register.svelte';
 
@@ -66,6 +67,12 @@
         <SSHKeys />
       {:else if path === '/programs'}
         <Programs />
+      {:else if path.startsWith('/programs/') && path.endsWith('/edit') && path !== '/programs/docs'}
+        {@const editName = path.slice('/programs/'.length, -'/edit'.length)}
+        <ProgramEditor name={editName} />
+      {:else if path.startsWith('/programs/') && path.endsWith('/fork') && path !== '/programs/docs'}
+        {@const forkName = path.slice('/programs/'.length, -'/fork'.length)}
+        <ProgramEditor name={forkName} fork={true} />
       {:else if path === '/programs/docs'}
         <ProgramDocs />
       {:else if path === '/settings'}
