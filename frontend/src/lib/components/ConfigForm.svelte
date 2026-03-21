@@ -111,7 +111,12 @@
 
   function handleSubmit(e: Event) {
     e.preventDefault();
-    onSubmit({ ...values });
+    // Ensure all values are strings — number inputs return JS numbers via
+    // bind:value, which would cause json.Unmarshal to fail on map[string]string.
+    const stringValues = Object.fromEntries(
+      Object.entries(values).map(([k, v]) => [k, String(v ?? '')])
+    );
+    onSubmit(stringValues);
   }
 </script>
 

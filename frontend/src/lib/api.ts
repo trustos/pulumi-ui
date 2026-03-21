@@ -134,7 +134,13 @@ export function streamOperation(
         signal: controller.signal,
       });
 
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
+        const text = await res.text().catch(() => 'unknown error');
+        onEvent({ type: 'error', data: text.trim(), timestamp: new Date().toISOString() });
+        onDone('failed');
+        return;
+      }
+      if (!res.body) {
         onDone('failed');
         return;
       }
