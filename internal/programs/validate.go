@@ -164,7 +164,13 @@ func validateRenderedYAML(rendered string) []ValidationError {
 // --- Level 4: config section structure (raw YAML, template-stripped) --------
 
 var validFieldKeyRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]*$`)
-var validTypes = map[string]bool{"String": true, "Integer": true, "Number": true, "Boolean": true}
+
+// Pulumi YAML accepts lowercase type names (current spec) and the older
+// capitalized forms for backward compatibility.
+var validTypes = map[string]bool{
+	"string": true, "integer": true, "number": true, "boolean": true,
+	"String": true, "Integer": true, "Number": true, "Boolean": true,
+}
 
 func validateConfigSection(yamlBody string) []ValidationError {
 	stripped := truncateAtResources(yamlBody)

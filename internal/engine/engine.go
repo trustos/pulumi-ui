@@ -126,6 +126,13 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yam
 	// Strip potentially dangerous fn::readFile directives.
 	sanitized := programs.SanitizeYAML(rendered)
 
+	// Ensure the OCI provider plugin is declared so Pulumi can resolve OCI
+	// resource types. The plugin is already installed at ~/.pulumi/plugins/;
+	// the plugins: section just tells the YAML runtime which version to use.
+	if !strings.Contains(sanitized, "plugins:") {
+		sanitized += "\nplugins:\n  providers:\n    - name: oci\n      version: 2.33.0\n"
+	}
+
 	// Write to a unique temp directory.
 	tempDir, err := os.MkdirTemp("", "pulumi-yaml-")
 	if err != nil {
@@ -138,12 +145,12 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yam
 		return auto.Stack{}, nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
 	}
 
+	// Pass the backend URL via env var — the Pulumi.yaml already contains the
+	// correct name and runtime, so we must not override it with auto.Project().
+	envVars["PULUMI_BACKEND_URL"] = e.backendURL()
+
 	stack, err := auto.UpsertStackLocalSource(ctx, stackName, tempDir,
 		auto.EnvVars(envVars),
-		auto.Project(workspace.Project{
-			Name:    tokens.PackageName("pulumi-ui"),
-			Backend: &workspace.ProjectBackend{URL: e.backendURL()},
-		}),
 	)
 	if err != nil {
 		cleanup()
@@ -154,17 +161,28 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yam
 	// The Pulumi OCI provider (Terraform bridge) reads these from stack config.
 	keyPath := envVars["OCI_PRIVATE_KEY_PATH"]
 	oci := creds.OCI
-	configs := map[string]auto.ConfigValue{
-		"oci:tenancyOcid":   {Value: oci.TenancyOCID},
-		"oci:userOcid":      {Value: oci.UserOCID},
-		"oci:fingerprint":   {Value: oci.Fingerprint},
+	ociConfigs := map[string]auto.ConfigValue{
+		"oci:tenancyOcid":    {Value: oci.TenancyOCID},
+		"oci:userOcid":       {Value: oci.UserOCID},
+		"oci:fingerprint":    {Value: oci.Fingerprint},
 		"oci:privateKeyPath": {Value: keyPath},
-		"oci:region":        {Value: oci.Region},
+		"oci:region":         {Value: oci.Region},
 	}
-	for k, v := range configs {
+	for k, v := range ociConfigs {
 		if err := stack.SetConfig(ctx, k, v); err != nil {
 			cleanup()
 			return auto.Stack{}, nil, fmt.Errorf("set OCI config %s: %w", k, err)
+		}
+	}
+
+	// Set all program config values so Pulumi's config validation passes.
+	// The config: section in the YAML declares required keys; Pulumi checks that
+	// each key has a value in the stack config even though we already inlined the
+	// values via Go template rendering.
+	for k, v := range cfg {
+		if err := stack.SetConfig(ctx, k, auto.ConfigValue{Value: v}); err != nil {
+			cleanup()
+			return auto.Stack{}, nil, fmt.Errorf("set program config %s: %w", k, err)
 		}
 	}
 

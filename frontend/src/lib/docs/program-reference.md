@@ -50,10 +50,10 @@ description: "Creates a compartment and VCN"
 
 config:
   compartmentName:
-    type: String
+    type: string
     default: my-compartment
   vcnCidr:
-    type: String
+    type: string
     default: "10.0.0.0/16"
 
 resources:
@@ -89,7 +89,7 @@ The `config:` block defines the fields shown in the UI form when creating a stac
 ```yaml
 config:
   myField:
-    type: String        # String | Integer | Number | Boolean
+    type: string        # string | integer | number | boolean
     default: "hello"    # optional
 ```
 
@@ -97,12 +97,12 @@ config:
 
 | YAML type | Form field | Notes |
 |---|---|---|
-| `String` | Text input | Default for most values |
-| `Integer` | Number input | Use for counts, sizes |
-| `Number` | Number input | Use for floats |
-| `Boolean` | Select (true/false) | |
-| key = `imageId` | OCI image picker | Convention — type must be `String` |
-| key = `shape` | OCI shape picker | Convention — type must be `String` |
+| `string` | Text input | Default for most values |
+| `integer` | Number input | Use for counts, sizes |
+| `number` | Number input | Use for floats |
+| `boolean` | Select (true/false) | |
+| key = `imageId` | OCI image picker | Convention — type must be `string` |
+| key = `shape` | OCI shape picker | Convention — type must be `string` |
 
 ### Accessing Config Values
 
@@ -140,10 +140,10 @@ meta:
 
 config:
   compartmentName:
-    type: String
+    type: string
     default: my-compartment
   vcnCidr:
-    type: String
+    type: string
     default: "10.0.0.0/16"
   # ... rest of config
 ```
@@ -159,7 +159,7 @@ Use Sprig's `until` to iterate over a range of integers.
 ```yaml
 config:
   nodeCount:
-    type: Integer
+    type: integer
     default: 3
 
 resources:
@@ -679,31 +679,31 @@ description: "N-node compute cluster with shared VCN"
 
 config:
   compartmentName:
-    type: String
+    type: string
     default: compute-cluster
   vcnCidr:
-    type: String
+    type: string
     default: "10.0.0.0/16"
   subnetCidr:
-    type: String
+    type: string
     default: "10.0.1.0/24"
   nodeCount:
-    type: Integer
+    type: integer
     default: 2
   shape:
-    type: String
+    type: string
     default: "VM.Standard.A1.Flex"
   imageId:
-    type: String
+    type: string
     default: ""
   bootVolSizeGb:
-    type: Integer
+    type: integer
     default: 50
   availabilityDomain:
-    type: String
+    type: string
     default: ""
   sshPublicKey:
-    type: String
+    type: string
     default: ""
 
 resources:

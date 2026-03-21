@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { ConfigField, OciShape, OciImage } from '$lib/types';
-  import { listShapes, listImages } from '$lib/api';
+  import type { ConfigField, OciShape, OciImage, SshKey } from '$lib/types';
+  import { listShapes, listImages, listSSHKeys } from '$lib/api';
   import { Input } from '$lib/components/ui/input';
   import { Textarea } from '$lib/components/ui/textarea';
   import * as Select from '$lib/components/ui/select';
@@ -44,16 +44,28 @@
 
   let shapes = $state<OciShape[]>([]);
   let images = $state<OciImage[]>([]);
+  let sshKeys = $state<SshKey[]>([]);
   let shapesLoading = $state(false);
   let imagesLoading = $state(false);
+  let sshKeysLoading = $state(false);
   let shapesError = $state('');
   let imagesError = $state('');
+  let sshKeysError = $state('');
 
   // Shapes that qualify for OCI Always Free tier.
   const ALWAYS_FREE_SHAPES = new Set(['VM.Standard.A1.Flex', 'VM.Standard.E2.1.Micro']);
 
   const needsShapes = $derived(fields.some(f => f.type === 'oci-shape'));
   const needsImages = $derived(fields.some(f => f.type === 'oci-image'));
+  const needsSshKeys = $derived(fields.some(f => f.type === 'ssh-public-key'));
+
+  const sshKeyItems = $derived(
+    sshKeys.map(k => ({
+      value: k.publicKey,
+      label: k.name,
+      sublabel: k.publicKey.slice(0, 48) + '…',
+    }))
+  );
 
   const shapeItems = $derived(
     shapes
@@ -73,6 +85,17 @@
       sublabel: `${img.operatingSystem} ${img.operatingSystemVersion}`,
     }))
   );
+
+  $effect(() => {
+    if (needsSshKeys) {
+      sshKeysLoading = true;
+      sshKeysError = '';
+      listSSHKeys()
+        .then(data => { sshKeys = data; })
+        .catch(err => { sshKeysError = err instanceof Error ? err.message : String(err); })
+        .finally(() => { sshKeysLoading = false; });
+    }
+  });
 
   $effect(() => {
     if (accountId && needsShapes) {
@@ -176,6 +199,26 @@
                 />
               {:else}
                 <Input id={field.key} bind:value={values[field.key]} placeholder="ocid1.image.oc1.." />
+              {/if}
+
+            {:else if field.type === 'ssh-public-key'}
+              {#if sshKeysError}
+                <p class="text-xs text-destructive">{sshKeysError}</p>
+                <Input id={field.key} bind:value={values[field.key]} placeholder="ssh-rsa AAAA..." required={field.required} />
+              {:else if sshKeysLoading}
+                <div class="h-9 rounded-md border bg-muted animate-pulse"></div>
+              {:else if sshKeys.length > 0}
+                <Combobox
+                  items={sshKeyItems}
+                  bind:value={values[field.key]}
+                  placeholder="Select an SSH key..."
+                  emptyText="No SSH keys match."
+                />
+              {:else}
+                <div class="space-y-1">
+                  <Input id={field.key} bind:value={values[field.key]} placeholder="ssh-rsa AAAA..." required={field.required} />
+                  <p class="text-xs text-muted-foreground">No SSH keys configured. <a href="/settings" class="underline text-foreground">Add one in Settings.</a></p>
+                </div>
               {/if}
 
             {:else if field.type === 'select' && field.options}

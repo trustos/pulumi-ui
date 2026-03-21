@@ -117,6 +117,7 @@ func ParseConfigFields(yamlBody string) ([]ConfigField, string, error) {
 			Key:        key,
 			Label:      keyToLabel(key),
 			Type:       fieldType,
+			Required:   fieldType == "ssh-public-key" && cf.Default == "",
 			Default:    cf.Default,
 			Group:      gKey,
 			GroupLabel: gLabel,
@@ -142,6 +143,8 @@ func yamlTypeToFieldType(key, pulumiType string, uiTypeByField map[string]string
 		return "oci-image"
 	case "shape":
 		return "oci-shape"
+	case "sshPublicKey":
+		return "ssh-public-key"
 	}
 	// Pulumi type → form field type.
 	switch strings.ToLower(pulumiType) {

@@ -227,7 +227,7 @@ description: "My custom OCI program"
 
 config:
   compartmentName:
-    type: String
+    type: string
     default: my-compartment
 
 resources:
@@ -407,26 +407,27 @@ outputs:
         </p>
       </div>
 
-      {#if validationErrors.length > 0}
-        <div id="prog-validation-panel" class="rounded-md border border-destructive/40 bg-destructive/5 p-3 space-y-1.5">
-          <p class="text-xs font-medium text-destructive">Validation errors</p>
-          {#each validationErrors as err}
-            <div class="flex gap-2 text-xs text-destructive">
-              <span class="shrink-0 font-mono font-medium">
-                {levelLabels[err.level] ?? 'L' + err.level}{err.line ? ':' + err.line : ''}
-              </span>
-              <span>
-                {#if err.field}<code class="font-mono bg-destructive/10 px-0.5 rounded">{err.field}</code>{' '}{/if}{err.message}
-              </span>
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-      {#if editorError}
-        <p class="text-sm text-destructive">{editorError}</p>
-      {/if}
     </div>
+
+    {#if validationErrors.length > 0}
+      <div id="prog-validation-panel" class="rounded-md border border-destructive/40 bg-destructive/5 p-3 space-y-1.5 shrink-0">
+        <p class="text-xs font-medium text-destructive">Validation errors</p>
+        {#each validationErrors as err}
+          <div class="flex gap-2 text-xs text-destructive">
+            <span class="shrink-0 font-mono font-medium">
+              {levelLabels[err.level] ?? 'L' + err.level}{err.line ? ':' + err.line : ''}
+            </span>
+            <span>
+              {#if err.field}<code class="font-mono bg-destructive/10 px-0.5 rounded">{err.field}</code>{' '}{/if}{err.message}
+            </span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    {#if editorError}
+      <p class="text-sm text-destructive shrink-0">{editorError}</p>
+    {/if}
 
     <Dialog.Footer class="flex items-center justify-between gap-4">
       <div class="flex-1 min-w-0">
@@ -441,7 +442,7 @@ outputs:
           </span>
         {:else if validationErrors.length > 0}
           <span class="text-xs text-destructive font-medium">
-            {validationErrors.length} error{validationErrors.length === 1 ? '' : 's'} — scroll up to see details
+            {validationErrors.length} validation error{validationErrors.length === 1 ? '' : 's'}
           </span>
         {/if}
       </div>

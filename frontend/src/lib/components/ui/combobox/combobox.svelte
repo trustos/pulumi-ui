@@ -25,17 +25,17 @@
   } = $props();
 
   let open = $state(false);
-  // inputValue tracks what the user is actively typing.
-  // When the dropdown closes we reset it so the input shows the selection again.
-  let inputValue = $state('');
 
   const selectedLabel = $derived(items.find(i => i.value === value)?.label ?? '');
 
-  // Keep the input in sync with the selected label whenever:
-  // - the dropdown is closed (clear search text, show the selection)
-  // - items load asynchronously after a default value is already set
+  // inputValue is passed to ComboboxPrimitive.Root (bits-ui manages the DOM input internally).
+  // Initialise with the label so the input is pre-populated on mount.
+  let inputValue = $state(items.find(i => i.value === value)?.label ?? value ?? '');
+
+  // Keep the input text in sync whenever the dropdown closes, the selected
+  // value changes, or items arrive asynchronously after a default was set.
   $effect(() => {
-    if (!open) inputValue = selectedLabel;
+    if (!open) inputValue = selectedLabel || value;
   });
 
   const filtered = $derived(
@@ -53,10 +53,10 @@
   type="single"
   bind:value
   bind:open
+  bind:inputValue
 >
   <div class={cn('relative', className)}>
     <ComboboxPrimitive.Input
-      bind:value={inputValue}
       {placeholder}
       class="flex h-9 w-full items-center rounded-md border border-input bg-transparent px-3 py-2 pr-9 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
     />

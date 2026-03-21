@@ -13,7 +13,7 @@ export interface OciImage {
 export interface ConfigField {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'textarea' | 'select' | 'oci-shape' | 'oci-image';
+  type: 'text' | 'number' | 'textarea' | 'select' | 'oci-shape' | 'oci-image' | 'ssh-public-key';
   required?: boolean;
   default?: string;
   description?: string;

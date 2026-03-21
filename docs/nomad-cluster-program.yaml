@@ -50,59 +50,59 @@ meta:
 config:
   # ── IAM & Permissions ────────────────────────────────────────────────────────
   skipDynamicGroup:
-    type: String
+    type: string
     default: "false"
   adminGroupName:
-    type: String
+    type: string
     default: ""
   identityDomain:
-    type: String
+    type: string
     default: ""
 
   # ── Infrastructure ───────────────────────────────────────────────────────────
   nodeCount:
-    type: Integer
+    type: integer
     default: 3
   compartmentName:
-    type: String
+    type: string
     default: nomad-compartment
   compartmentDescription:
-    type: String
+    type: string
     default: "Compartment for Nomad cluster"
   vcnCidr:
-    type: String
+    type: string
     default: "10.0.0.0/16"
   publicSubnetCidr:
-    type: String
+    type: string
     default: "10.0.1.0/24"
   privateSubnetCidr:
-    type: String
+    type: string
     default: "10.0.2.0/24"
   sshSourceCidr:
-    type: String
+    type: string
     default: "0.0.0.0/0"
   shape:
-    type: String
+    type: string
     default: VM.Standard.A1.Flex
   imageId:
-    type: String
+    type: string
   sshPublicKey:
-    type: String
+    type: string
 
   # ── Compute & Storage ────────────────────────────────────────────────────────
   bootVolSizeGb:
-    type: Integer
+    type: integer
     default: 50
   glusterVolSizeGb:
-    type: Integer
+    type: integer
     default: 100
 
   # ── Software Versions ────────────────────────────────────────────────────────
   nomadVersion:
-    type: String
+    type: string
     default: "1.10.3"
   consulVersion:
-    type: String
+    type: string
     default: "1.21.3"
 
 variables:
