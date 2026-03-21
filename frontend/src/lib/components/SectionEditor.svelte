@@ -1,7 +1,9 @@
 <script lang="ts">
-  import type { ProgramSection, ProgramItem, ResourceItem } from '$lib/types/program-graph';
+  import type { ProgramSection, ProgramItem, ResourceItem, LoopItem, ConditionalItem, ConfigFieldDef } from '$lib/types/program-graph';
   import ResourceCard from './ResourceCard.svelte';
   import ResourceCatalog from './ResourceCatalog.svelte';
+  import LoopBlock from './LoopBlock.svelte';
+  import ConditionalBlock from './ConditionalBlock.svelte';
 
   let {
     section = $bindable<ProgramSection>({
@@ -9,8 +11,10 @@
       label: 'Resources',
       items: [],
     }),
+    configFields = [] as ConfigFieldDef[],
   }: {
     section?: ProgramSection;
+    configFields?: ConfigFieldDef[];
   } = $props();
 
   let showCatalog = $state(false);
@@ -29,6 +33,30 @@
     showCatalog = false;
   }
 
+  function addLoop() {
+    if (!section) return;
+    const loop: LoopItem = {
+      kind: 'loop',
+      variable: '$i',
+      source: configFields.some(f => f.type === 'integer')
+        ? { type: 'until-config', configKey: configFields.find(f => f.type === 'integer')!.key }
+        : { type: 'list', values: ['a', 'b'] },
+      serialized: false,
+      items: [],
+    };
+    section = { ...section, items: [...section.items, loop] };
+  }
+
+  function addConditional() {
+    if (!section) return;
+    const cond: ConditionalItem = {
+      kind: 'conditional',
+      condition: '',
+      items: [],
+    };
+    section = { ...section, items: [...section.items, cond] };
+  }
+
   function removeItem(index: number) {
     if (!section) return;
     section = { ...section, items: section.items.filter((_, i) => i !== index) };
@@ -39,10 +67,22 @@
 <div class="space-y-3">
   <div class="flex items-center justify-between">
     <h3 class="text-sm font-semibold">{section.label || section.id}</h3>
-    <button
-      class="text-sm text-muted-foreground hover:text-foreground border rounded px-2 py-1"
-      onclick={() => showCatalog = true}
-    >+ Add Resource</button>
+    <div class="flex gap-2">
+      <button
+        class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+        onclick={addLoop}
+        title="Add a loop block (range)"
+      >+ Loop</button>
+      <button
+        class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+        onclick={addConditional}
+        title="Add a conditional block (if)"
+      >+ If</button>
+      <button
+        class="text-sm text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+        onclick={() => showCatalog = true}
+      >+ Resource</button>
+    </div>
   </div>
 
   {#if section.items.length === 0}
@@ -68,27 +108,17 @@
             <pre class="text-xs font-mono whitespace-pre-wrap text-muted-foreground">{item.yaml}</pre>
           </div>
         {:else if item.kind === 'loop'}
-          <div class="border rounded-md border-blue-200 dark:border-blue-800 bg-blue-50/30 dark:bg-blue-950/20 p-3">
-            <p class="text-xs font-medium text-blue-700 dark:text-blue-300 mb-2">Loop block</p>
-            <div class="space-y-2 pl-3 border-l-2 border-blue-200 dark:border-blue-800">
-              {#each item.items as child}
-                {#if child.kind === 'resource'}
-                  <ResourceCard resource={child as ResourceItem} />
-                {/if}
-              {/each}
-            </div>
-          </div>
+          <LoopBlock
+            bind:loop={section.items[i] as LoopItem}
+            {configFields}
+            onRemove={() => removeItem(i)}
+          />
         {:else if item.kind === 'conditional'}
-          <div class="border rounded-md border-purple-200 dark:border-purple-800 bg-purple-50/30 dark:bg-purple-950/20 p-3">
-            <p class="text-xs font-medium text-purple-700 dark:text-purple-300 mb-1">Conditional: <code class="font-mono">{item.condition}</code></p>
-            <div class="space-y-2 pl-3 border-l-2 border-purple-200 dark:border-purple-800">
-              {#each item.items as child}
-                {#if child.kind === 'resource'}
-                  <ResourceCard resource={child as ResourceItem} />
-                {/if}
-              {/each}
-            </div>
-          </div>
+          <ConditionalBlock
+            bind:conditional={section.items[i] as ConditionalItem}
+            {configFields}
+            onRemove={() => removeItem(i)}
+          />
         {/if}
       {/each}
     </div>

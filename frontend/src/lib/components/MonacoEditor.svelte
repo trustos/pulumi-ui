@@ -20,22 +20,21 @@
   let container: HTMLDivElement;
   let editor: any;
   let monaco: any;
+  let isInternalChange = false;
 
   onMount(async () => {
-    const monacoModule = await import('monaco-editor');
-    monaco = monacoModule;
+    const loaderModule = await import('@monaco-editor/loader');
+    const loader = loaderModule.default;
+    monaco = await loader.init();
 
-    // Register yaml-gotemplate language if not already registered
-    const existingLangs = monaco.languages.getLanguages();
-    const hasYamlGotemplate = existingLangs.some((l: any) => l.id === 'yaml-gotemplate');
-    if (!hasYamlGotemplate) {
+    // Register yaml-gotemplate language (YAML + Go template colouring)
+    if (!monaco.languages.getLanguages().some((l: any) => l.id === 'yaml-gotemplate')) {
       monaco.languages.register({ id: 'yaml-gotemplate' });
       monaco.languages.setMonarchTokensProvider('yaml-gotemplate', {
         tokenizer: {
           root: [
             [/\{\{.*?\}\}/, 'keyword'],
             [/^\s*#.*$/, 'comment'],
-            [/:\s*$/, 'operator'],
             [/"[^"]*"/, 'string'],
             [/'[^']*'/, 'string'],
             [/\$\{[^}]+\}/, 'variable'],
@@ -53,7 +52,8 @@
       readOnly: readonly,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
-      fontSize: 13,
+      fontSize: 12,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       lineNumbers: 'on',
       wordWrap: 'on',
       automaticLayout: true,
@@ -62,6 +62,7 @@
     });
 
     editor.onDidChangeModelContent(() => {
+      if (isInternalChange) return;
       const v = editor.getValue();
       if (v !== value) {
         value = v;
@@ -76,7 +77,7 @@
         triggerCharacters: [' '],
         provideCompletionItems(model: any, position: any) {
           const linePrefix = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
-          if (!/type:\s*\S*$/.test(linePrefix)) return { suggestions: [] };
+          if (!/type:\s*\S*/.test(linePrefix)) return { suggestions: [] };
           const word = model.getWordUntilPosition(position);
           const range = {
             startLineNumber: position.lineNumber,
@@ -102,37 +103,42 @@
     editor?.dispose();
   });
 
-  // Sync external value changes into the editor
+  // Sync external value changes into the editor (e.g. file import)
   $effect(() => {
-    if (editor && value !== editor.getValue()) {
-      const pos = editor.getPosition();
+    if (!editor) return;
+    const current = editor.getValue();
+    if (current !== value) {
+      isInternalChange = true;
       editor.setValue(value);
-      if (pos) editor.setPosition(pos);
+      isInternalChange = false;
     }
   });
 
-  // Sync markers into the editor
+  // Sync markers → Monaco squiggles
   $effect(() => {
     if (!editor || !monaco) return;
     const model = editor.getModel();
     if (!model) return;
-    const monacoMarkers = markers.map(err => ({
-      severity: err.level <= 2
-        ? monaco.MarkerSeverity.Error
-        : monaco.MarkerSeverity.Warning,
-      startLineNumber: err.line ?? 1,
-      startColumn: 1,
-      endLineNumber: err.line ?? 1,
-      endColumn: 200,
-      message: err.message,
-    }));
-    monaco.editor.setModelMarkers(model, 'validation', monacoMarkers);
+    const monacoMarkers = (markers ?? [])
+      .filter(e => e.line != null)
+      .map(e => ({
+        severity: monaco.MarkerSeverity.Error,
+        message: (e.field ? `[${e.field}] ` : '') + e.message,
+        startLineNumber: e.line!,
+        startColumn: 1,
+        endLineNumber: e.line!,
+        endColumn: model.getLineMaxColumn(e.line!),
+      }));
+    monaco.editor.setModelMarkers(model, 'validate', monacoMarkers);
   });
 
-  // Sync readonly prop
   $effect(() => {
     editor?.updateOptions({ readOnly: readonly });
   });
 </script>
 
-<div bind:this={container} style="height: {height}; width: 100%;"></div>
+<div
+  bind:this={container}
+  style="height: {height}; width: 100%;"
+  class="rounded-md border overflow-hidden"
+></div>

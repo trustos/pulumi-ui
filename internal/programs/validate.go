@@ -241,7 +241,9 @@ func validateConfigSection(yamlBody string) []ValidationError {
 
 // --- Level 5: resource structure (rendered YAML) ----------------------------
 
-var resourceTypeRe = regexp.MustCompile(`^[a-z][a-z0-9]*:[a-z][a-z0-9]*:[A-Za-z][A-Za-z0-9]*$`)
+// Pulumi OCI type format: provider:Module/submodule:Resource (e.g. oci:Core/vcn:Vcn)
+// Also accepts the simpler provider:module:Resource form (e.g. oci:core:Instance)
+var resourceTypeRe = regexp.MustCompile(`^[a-z][a-z0-9]*:[a-zA-Z][a-zA-Z0-9/]*:[A-Za-z][A-Za-z0-9]*$`)
 
 func validateResourceStructure(rendered string) []ValidationError {
 	var doc struct {
@@ -271,7 +273,7 @@ func validateResourceStructure(rendered string) []ValidationError {
 			errs = append(errs, ValidationError{
 				Level:   LevelResourceStructure,
 				Field:   name,
-				Message: "resource '" + name + "' has invalid type '" + res.Type + "' — expected pattern provider:module:Resource, e.g. oci:core:Instance",
+				Message: "resource '" + name + "' has invalid type '" + res.Type + "' — expected pattern provider:Module/submodule:Resource, e.g. oci:Core/instance:Instance",
 			})
 		}
 	}

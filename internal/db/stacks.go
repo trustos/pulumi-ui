@@ -74,3 +74,15 @@ func (s *StackStore) Delete(name string) error {
 	_, err := s.db.Exec(`DELETE FROM stacks WHERE name = ?`, name)
 	return err
 }
+
+func (s *StackStore) CountByPassphrase(id string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM stacks WHERE passphrase_id = ?`, id).Scan(&count)
+	return count, err
+}
+
+func (s *StackStore) CountBySSHKey(id string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM stacks WHERE ssh_key_id = ?`, id).Scan(&count)
+	return count, err
+}

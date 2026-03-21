@@ -237,35 +237,30 @@
 {:else}
 <div class="flex flex-col h-[calc(100vh-8rem)]">
   <!-- Header -->
-  <div class="flex items-center gap-4 pb-3 border-b mb-0">
+  <div class="flex items-center gap-3 pb-3 border-b mb-0 flex-wrap">
     <button
-      class="text-sm text-muted-foreground hover:text-foreground"
+      class="text-sm text-muted-foreground hover:text-foreground shrink-0"
       onclick={() => navigate('/programs')}
     >← Programs</button>
-    <div class="flex-1 flex items-center gap-3">
-      <Input
-        bind:value={programName}
-        placeholder="program-name"
-        class="h-8 text-sm font-mono w-48"
-        disabled={!isNew && !fork}
-      />
-      <Input
-        bind:value={displayName}
-        placeholder="Display Name"
-        class="h-8 text-sm w-48"
-      />
-      <Input
-        bind:value={description}
-        placeholder="Description (optional)"
-        class="h-8 text-sm flex-1"
-      />
-    </div>
+    <Input
+      bind:value={programName}
+      placeholder="program-name"
+      class="h-8 text-sm font-mono w-44 shrink-0"
+      disabled={!isNew && !fork}
+    />
+    <Input
+      bind:value={displayName}
+      placeholder="Display Name"
+      class="h-8 text-sm w-44 shrink-0"
+    />
+    <Input
+      bind:value={description}
+      placeholder="Description (optional)"
+      class="h-8 text-sm w-64 shrink-0"
+    />
     <div class="flex items-center gap-2 shrink-0">
-      {#if validationErrors.length > 0}
-        <span class="text-xs text-destructive">{validationErrors.length} error{validationErrors.length === 1 ? '' : 's'}</span>
-      {/if}
       {#if saveError}
-        <span class="text-xs text-destructive">{saveError}</span>
+        <span class="text-xs text-destructive max-w-xs truncate" title={saveError}>{saveError}</span>
       {/if}
       <Button variant="outline" onclick={() => navigate('/programs')}>Cancel</Button>
       <Button onclick={save} disabled={saving}>{saving ? 'Saving...' : 'Save Program'}</Button>
@@ -278,6 +273,23 @@
     syncStatus={syncStatus}
     onModeChange={handleModeChange}
   />
+
+  <!-- Validation errors panel -->
+  {#if validationErrors.length > 0}
+    <div class="border-b bg-destructive/5 px-4 py-2 space-y-0.5 max-h-32 overflow-y-auto">
+      {#each validationErrors as err}
+        <div class="flex items-start gap-2 text-xs text-destructive">
+          {#if err.line}
+            <span class="font-mono shrink-0">L{err.line}</span>
+          {/if}
+          {#if err.field}
+            <span class="font-medium shrink-0">[{err.field}]</span>
+          {/if}
+          <span>{err.message}</span>
+        </div>
+      {/each}
+    </div>
+  {/if}
 
   <!-- Degraded banner -->
   {#if degraded && mode === 'visual'}
@@ -301,7 +313,7 @@
       <!-- Center: section editor -->
       <div class="flex-1 overflow-y-auto p-4">
         {#if activeSectionIdx >= 0}
-          <SectionEditor bind:section={graph.sections[activeSectionIdx]} />
+          <SectionEditor bind:section={graph.sections[activeSectionIdx]} configFields={graph.configFields} />
         {:else}
           <p class="text-sm text-muted-foreground text-center py-12">No section selected.</p>
         {/if}

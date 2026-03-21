@@ -168,48 +168,106 @@ function sectionIdToLabel(id: string): string {
 
 function parseItems(content: string): ProgramItem[] {
   const items: ProgramItem[] = [];
-  // Detect Go template constructs
-  if (/\{\{-?\s*range/.test(content)) {
-    // Has range — parse as loop or raw
-    const loopItem = tryParseLoop(content);
-    if (loopItem) {
-      items.push(loopItem);
-    } else {
-      items.push({ kind: 'raw', yaml: content.trim() });
+
+  // Scan sequentially: split content into segments at each top-level template construct
+  // A top-level construct starts at column 0 with {{ range or {{ if
+  const templateStartRe = /\{\{-?\s*(range|if)\b/g;
+
+  let pos = 0;
+  let tm: RegExpExecArray | null;
+
+  while ((tm = templateStartRe.exec(content)) !== null) {
+    // Everything before this template construct is plain YAML resources
+    const plainChunk = content.slice(pos, tm.index);
+    if (plainChunk.trim()) {
+      parseResourceChunk(plainChunk, items);
     }
-    return items;
-  }
-  if (/\{\{-?\s*if/.test(content)) {
-    const condItem = tryParseConditional(content);
-    if (condItem) {
-      items.push(condItem);
-    } else {
-      items.push({ kind: 'raw', yaml: content.trim() });
+
+    // Find the matching {{- end }} for this construct
+    const constructStart = tm.index;
+    const endResult = findMatchingEnd(content, constructStart);
+    if (!endResult) {
+      // Malformed — consume rest as raw
+      items.push({ kind: 'raw', yaml: content.slice(constructStart).trim() });
+      pos = content.length;
+      break;
     }
-    return items;
+
+    const constructText = content.slice(constructStart, endResult.endPos);
+    if (tm[1] === 'range') {
+      const loopItem = tryParseLoop(constructText);
+      items.push(loopItem ?? { kind: 'raw', yaml: constructText.trim() });
+    } else {
+      const condItem = tryParseConditional(constructText);
+      items.push(condItem ?? { kind: 'raw', yaml: constructText.trim() });
+    }
+
+    pos = endResult.endPos;
+    templateStartRe.lastIndex = pos;
   }
 
-  // No templates — parse individual resource blocks
-  const resourceRe = /^  ([\w][\w-]*):\s*$/gm;
-  let rm: RegExpExecArray | null;
-  const resourceStarts: { name: string; index: number }[] = [];
-  while ((rm = resourceRe.exec(content)) !== null) {
-    resourceStarts.push({ name: rm[1], index: rm.index });
-  }
-
-  for (let i = 0; i < resourceStarts.length; i++) {
-    const start = resourceStarts[i];
-    const end = resourceStarts[i + 1]?.index ?? content.length;
-    const resourceBlock = content.slice(start.index, end);
-    const resource = tryParseResource(start.name, resourceBlock);
-    if (resource) {
-      items.push(resource);
-    } else {
-      items.push({ kind: 'raw', yaml: resourceBlock.trim() });
-    }
+  // Remaining plain content after last template block
+  const tail = content.slice(pos);
+  if (tail.trim()) {
+    parseResourceChunk(tail, items);
   }
 
   return items;
+}
+
+/** Parse a chunk of plain (non-template) YAML into ResourceItems, appending to items. */
+function parseResourceChunk(chunk: string, items: ProgramItem[]): void {
+  const resourceRe = /^  ([\w][\w-]*):\s*$/gm;
+  let rm: RegExpExecArray | null;
+  const resourceStarts: { name: string; index: number }[] = [];
+  while ((rm = resourceRe.exec(chunk)) !== null) {
+    resourceStarts.push({ name: rm[1], index: rm.index });
+  }
+  for (let i = 0; i < resourceStarts.length; i++) {
+    const start = resourceStarts[i];
+    const end = resourceStarts[i + 1]?.index ?? chunk.length;
+    const block = chunk.slice(start.index, end);
+    const resource = tryParseResource(start.name, block);
+    items.push(resource ?? { kind: 'raw', yaml: block.trim() });
+  }
+}
+
+interface EndResult { endPos: number }
+
+/**
+ * Given a position in content pointing at the opening {{ range/if }},
+ * find the matching {{- end }} and return the position just after it.
+ * Handles nested {{ range }}/{{ if }} constructs.
+ */
+function findMatchingEnd(content: string, startPos: number): EndResult | null {
+  const openRe = /\{\{-?\s*(range|if)\b/g;
+  const closeRe = /\{\{-?\s*end\s*-?\}\}/g;
+  openRe.lastIndex = startPos + 2; // skip the opening {{ itself
+  closeRe.lastIndex = startPos + 2;
+
+  let depth = 1;
+  let lastClose = -1;
+
+  while (depth > 0) {
+    const nextOpen = openRe.exec(content);
+    const nextClose = closeRe.exec(content);
+    if (!nextClose) return null; // malformed
+
+    if (nextOpen && nextOpen.index < nextClose.index) {
+      depth++;
+      openRe.lastIndex = nextOpen.index + nextOpen[0].length;
+      closeRe.lastIndex = openRe.lastIndex;
+    } else {
+      depth--;
+      lastClose = nextClose.index + nextClose[0].length;
+      if (depth > 0) {
+        openRe.lastIndex = lastClose;
+        closeRe.lastIndex = lastClose;
+      }
+    }
+  }
+
+  return lastClose === -1 ? null : { endPos: lastClose };
 }
 
 function tryParseResource(name: string, block: string): ResourceItem | null {
