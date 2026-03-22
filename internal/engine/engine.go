@@ -126,13 +126,6 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yam
 	// Strip potentially dangerous fn::readFile directives.
 	sanitized := programs.SanitizeYAML(rendered)
 
-	// Ensure the OCI provider plugin is declared so Pulumi can resolve OCI
-	// resource types. The plugin is already installed at ~/.pulumi/plugins/;
-	// the plugins: section just tells the YAML runtime which version to use.
-	if !strings.Contains(sanitized, "plugins:") {
-		sanitized += "\nplugins:\n  providers:\n    - name: oci\n      version: 2.33.0\n"
-	}
-
 	// Write to a unique temp directory.
 	tempDir, err := os.MkdirTemp("", "pulumi-yaml-")
 	if err != nil {

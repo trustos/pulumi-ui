@@ -90,20 +90,28 @@ func templateInstanceMemoryGb(nodeIndex, nodeCount int) int {
 }
 
 // templateCloudInit renders and base64-encodes the cloud-init script for a
-// single node.  Only static config values are available at template render
-// time; COMPARTMENT_OCID and SUBNET_OCID are left empty (they are not needed
-// for the nomad auto-join mechanism when using Consul on OCI).
+// single node. COMPARTMENT_OCID and SUBNET_OCID are resolved at boot time via
+// the OCI Instance Metadata Service (IMDS) inside cloudinit.sh — they are no
+// longer injected at template-render time.
+//
+// If config["ocpusPerNode"] and config["memoryGbPerNode"] are set (homogeneous
+// InstancePool programs), those values take precedence over the per-node
+// distribution logic used by the built-in Go program.
 func templateCloudInit(nodeIndex int, config map[string]string) string {
 	nodeCount, _ := strconv.Atoi(config["nodeCount"])
 	ocpus := templateInstanceOcpus(nodeIndex, nodeCount)
 	memGb := templateInstanceMemoryGb(nodeIndex, nodeCount)
+	if v, err := strconv.Atoi(config["ocpusPerNode"]); err == nil && v > 0 {
+		ocpus = v
+	}
+	if v, err := strconv.Atoi(config["memoryGbPerNode"]); err == nil && v > 0 {
+		memGb = v
+	}
 
 	replacements := map[string]string{
 		"NOMAD_CLIENT_CPU":       strconv.Itoa(ocpus * 3000),
 		"NOMAD_CLIENT_MEMORY":    strconv.Itoa(memGb*1024 - 512),
 		"NOMAD_BOOTSTRAP_EXPECT": config["nodeCount"],
-		"COMPARTMENT_OCID":       "",
-		"SUBNET_OCID":            "",
 		"NOMAD_VERSION":          config["nomadVersion"],
 		"CONSUL_VERSION":         config["consulVersion"],
 	}

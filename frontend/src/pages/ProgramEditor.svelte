@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { navigate } from '$lib/router';
   import { getProgram, createProgram, updateProgram, validateProgram, forkProgram } from '$lib/api';
+  import { getOciSchema } from '$lib/schema';
   import { graphToYaml } from '$lib/program-graph/serializer';
   import { yamlToGraph } from '$lib/program-graph/parser';
   import type { ProgramGraph, ProgramSection } from '$lib/types/program-graph';
@@ -10,6 +11,7 @@
   import SectionNavigator from '$lib/components/SectionNavigator.svelte';
   import SectionEditor from '$lib/components/SectionEditor.svelte';
   import ConfigFieldPanel from '$lib/components/ConfigFieldPanel.svelte';
+  import OutputsPanel from '$lib/components/OutputsPanel.svelte';
   import MonacoEditor from '$lib/components/MonacoEditor.svelte';
   import ProgramTemplateGallery from '$lib/components/ProgramTemplateGallery.svelte';
   import { Button } from '$lib/components/ui/button';
@@ -37,6 +39,7 @@
   let graph = $state<ProgramGraph>({
     metadata: { name: '', displayName: '', description: '' },
     configFields: [],
+    variables: [],
     sections: [{ id: 'main', label: 'Resources', items: [] }],
     outputs: [],
   });
@@ -57,6 +60,121 @@
   const degraded = $derived(
     graph.sections.some(s => s.items.some(i => i.kind === 'raw'))
   );
+
+  // G1-5: all resource names across the whole program (for cross-section dependsOn)
+  function collectAllNames(items: import('$lib/types/program-graph').ProgramItem[]): string[] {
+    const names: string[] = [];
+    for (const item of items) {
+      if (item.kind === 'resource') names.push(item.name);
+      else if (item.kind === 'loop') names.push(...collectAllNames(item.items));
+      else if (item.kind === 'conditional') {
+        names.push(...collectAllNames(item.items));
+        names.push(...collectAllNames(item.elseItems ?? []));
+      }
+    }
+    return names;
+  }
+  const allProgramResourceNames = $derived(
+    graph.sections.flatMap(s => collectAllNames(s.items))
+  );
+
+  // Variable names from the variables: block (for $-ref autocomplete)
+  const allVariableNames = $derived(
+    (graph.variables ?? []).map(v => v.name)
+  );
+
+  // Resource names + their output attribute names (loaded once from the schema cache)
+  let resourceOutputAttrs = $state<Record<string, string[]>>({});
+  $effect(() => {
+    getOciSchema().then(s => {
+      const map: Record<string, string[]> = {};
+      for (const [type, res] of Object.entries(s.resources)) {
+        const shortName = type.split(':').pop() ?? type;
+        if (res.outputs) map[type] = Object.keys(res.outputs).sort();
+      }
+      resourceOutputAttrs = map;
+    }).catch(() => {});
+  });
+
+  const allProgramResourceRefs = $derived(
+    allProgramResourceNames.map(name => {
+      // Find this resource's type from the graph to look up output attrs
+      function findType(items: import('$lib/types/program-graph').ProgramItem[]): string | undefined {
+        for (const item of items) {
+          if (item.kind === 'resource' && item.name === name) return item.resourceType;
+          if (item.kind === 'loop') { const t = findType(item.items); if (t) return t; }
+          if (item.kind === 'conditional') {
+            const t = findType(item.items) ?? findType(item.elseItems ?? []);
+            if (t) return t;
+          }
+        }
+      }
+      const type = graph.sections.flatMap(s => [findType(s.items)]).find(Boolean);
+      const attrs = (type && resourceOutputAttrs[type]) ? resourceOutputAttrs[type] : ['id'];
+      return { name, attrs };
+    })
+  );
+
+  // ── Property promotion helpers ─────────────────────────────────────────────
+
+  // Recursively update a named resource's property at propIndex in a ProgramGraph.
+  function updatePropertyValue(
+    g: ProgramGraph,
+    resName: string,
+    propIndex: number,
+    value: string,
+  ): ProgramGraph {
+    function updateItems(items: import('$lib/types/program-graph').ProgramItem[]): import('$lib/types/program-graph').ProgramItem[] {
+      return items.map(item => {
+        if (item.kind === 'resource' && item.name === resName) {
+          return { ...item, properties: item.properties.map((p, idx) => idx === propIndex ? { ...p, value } : p) };
+        }
+        if (item.kind === 'loop') return { ...item, items: updateItems(item.items) };
+        if (item.kind === 'conditional') return {
+          ...item,
+          items: updateItems(item.items),
+          elseItems: item.elseItems ? updateItems(item.elseItems) : undefined,
+        };
+        return item;
+      });
+    }
+    return { ...g, sections: g.sections.map(s => ({ ...s, items: updateItems(s.items) })) };
+  }
+
+  function handlePromoteToConfig(e: CustomEvent) {
+    const { key, schemaType, resourceName: resName, propIndex } = e.detail as {
+      key: string; schemaType: string; resourceName: string; propIndex: number;
+    };
+    if (!graph.configFields.some(f => f.key === key)) {
+      graph = {
+        ...graph,
+        configFields: [...graph.configFields, {
+          key,
+          type: schemaType === 'integer' ? 'integer' : 'string',
+        }],
+      };
+    }
+    graph = updatePropertyValue(graph, resName, propIndex, `{{ .Config.${key} }}`);
+  }
+
+  function handlePromoteToVariable(e: CustomEvent) {
+    const { resourceName: resName, propIndex } = e.detail as { resourceName: string; propIndex: number };
+    graph = updatePropertyValue(graph, resName, propIndex, '${availabilityDomain}');
+  }
+
+  // Attach custom event listeners to the visual editor container
+  let editorDiv = $state<HTMLElement | null>(null);
+  $effect(() => {
+    if (!editorDiv) return;
+    const onPromote = (e: Event) => handlePromoteToConfig(e as CustomEvent);
+    const onVariable = (e: Event) => handlePromoteToVariable(e as CustomEvent);
+    editorDiv.addEventListener('promote-to-config', onPromote);
+    editorDiv.addEventListener('promote-to-variable', onVariable);
+    return () => {
+      editorDiv?.removeEventListener('promote-to-config', onPromote);
+      editorDiv?.removeEventListener('promote-to-variable', onVariable);
+    };
+  });
 
   // ── Load ──────────────────────────────────────────────────────────────────
   onMount(async () => {
@@ -108,6 +226,12 @@
   }
 
   function switchToVisual() {
+    // If YAML was not edited since the last sync, the in-memory graph is already
+    // authoritative — skip re-parsing so in-progress Visual edits are preserved.
+    if (syncStatus !== 'yaml-edited') {
+      mode = 'visual';
+      return;
+    }
     const result = yamlToGraph(yamlText);
     graph = result.graph;
     programName = programName || result.graph.metadata.name;
@@ -150,6 +274,19 @@
     activeSectionId = id;
   }
 
+  function renameSection(id: string, label: string) {
+    graph = {
+      ...graph,
+      sections: graph.sections.map(s => s.id === id ? { ...s, label } : s),
+    };
+  }
+
+  function removeSection(id: string) {
+    const updated = graph.sections.filter(s => s.id !== id);
+    graph = { ...graph, sections: updated };
+    if (activeSectionId === id) activeSectionId = updated[0]?.id ?? 'main';
+  }
+
   // ── Template gallery ──────────────────────────────────────────────────────
   function selectTemplate(template: ProgramGraph) {
     graph = template;
@@ -166,6 +303,7 @@
     graph = {
       metadata: { name: '', displayName: '', description: '' },
       configFields: [],
+      variables: [],
       sections: [{ id: 'main', label: 'Resources', items: [] }],
       outputs: [],
     };
@@ -177,12 +315,77 @@
     showGallery = false;
   }
 
+  // ── Visual-mode pre-save validation ───────────────────────────────────────
+  type LocalError = { message: string };
+
+  function collectVisualErrors(
+    items: import('$lib/types/program-graph').ProgramItem[],
+    path: string,
+    requiredByType: Record<string, string[]>,
+  ): LocalError[] {
+    const errors: LocalError[] = [];
+    for (const item of items) {
+      if (item.kind === 'resource') {
+        if (!item.name.trim()) errors.push({ message: `${path}: resource has no name` });
+        if (!item.resourceType.trim()) {
+          errors.push({ message: `${path} "${item.name || '(unnamed)'}": resource has no type` });
+        } else {
+          const required = requiredByType[item.resourceType];
+          if (required) {
+            const presentKeys = new Set(item.properties.map(p => p.key));
+            for (const prop of required) {
+              if (!presentKeys.has(prop)) {
+                errors.push({ message: `"${item.name || item.resourceType}": missing required property '${prop}'` });
+              }
+            }
+          }
+        }
+      } else if (item.kind === 'loop') {
+        if (!item.variable.trim()) errors.push({ message: `${path}: loop has no variable` });
+        if (item.source.type === 'until-config' && !item.source.configKey) {
+          errors.push({ message: `${path}: loop has no config field selected` });
+        }
+        errors.push(...collectVisualErrors(item.items, `${path}[loop]`, requiredByType));
+      } else if (item.kind === 'conditional') {
+        if (!item.condition.trim()) errors.push({ message: `${path}: if-block has no condition` });
+        errors.push(...collectVisualErrors(item.items, `${path}[if]`, requiredByType));
+        errors.push(...collectVisualErrors(item.elseItems ?? [], `${path}[else]`, requiredByType));
+      }
+    }
+    return errors;
+  }
+
   // ── Save ──────────────────────────────────────────────────────────────────
   async function save() {
     saveError = '';
     if (!programName.trim() || !displayName.trim()) {
       saveError = 'Name and display name are required.';
       return;
+    }
+
+    // Visual-mode client-side checks
+    if (mode === 'visual') {
+      // Build required-props index from the schema (fails silently — backend validates authoritatively).
+      let requiredByType: Record<string, string[]> = {};
+      try {
+        const schema = await getOciSchema();
+        for (const [type, res] of Object.entries(schema.resources)) {
+          const req = Object.entries(res.inputs)
+            .filter(([, p]) => p.required)
+            .map(([k]) => k);
+          if (req.length > 0) requiredByType[type] = req;
+        }
+      } catch { /* schema unavailable — backend will catch any missing props */ }
+
+      const localErrors: LocalError[] = [];
+      for (const section of graph.sections) {
+        localErrors.push(...collectVisualErrors(section.items, section.label, requiredByType));
+      }
+      if (localErrors.length > 0) {
+        validationErrors = localErrors.map(e => ({ message: e.message }));
+        saveError = 'Fix the errors highlighted below before saving.';
+        return;
+      }
     }
 
     // Get current YAML — serialize from graph if in visual mode
@@ -300,28 +503,42 @@
 
   <!-- Editor area -->
   {#if mode === 'visual'}
-    <div class="flex flex-1 overflow-hidden min-h-0">
+    <div class="flex flex-1 overflow-hidden min-h-0" bind:this={editorDiv}>
       <!-- Left: section navigator -->
       <div class="w-44 border-r shrink-0 overflow-y-auto">
         <SectionNavigator
           sections={graph.sections}
           bind:activeSectionId
           onAddSection={addSection}
+          onRenameSection={renameSection}
+          onRemoveSection={removeSection}
         />
       </div>
 
       <!-- Center: section editor -->
       <div class="flex-1 overflow-y-auto p-4">
         {#if activeSectionIdx >= 0}
-          <SectionEditor bind:section={graph.sections[activeSectionIdx]} configFields={graph.configFields} />
+          <SectionEditor
+            bind:section={graph.sections[activeSectionIdx]}
+            configFields={graph.configFields}
+            allProgramResourceNames={allProgramResourceNames}
+            allProgramResourceRefs={allProgramResourceRefs}
+            variableNames={allVariableNames}
+            onSwitchToYaml={() => handleModeChange('yaml')}
+          />
         {:else}
           <p class="text-sm text-muted-foreground text-center py-12">No section selected.</p>
         {/if}
       </div>
 
-      <!-- Right: config field panel -->
-      <div class="w-56 border-l shrink-0 overflow-y-auto">
-        <ConfigFieldPanel bind:fields={graph.configFields} />
+      <!-- Right: config field panel + outputs panel -->
+      <div class="w-56 border-l shrink-0 flex flex-col overflow-hidden">
+        <div class="flex-1 min-h-0 overflow-y-auto border-b">
+          <ConfigFieldPanel bind:fields={graph.configFields} />
+        </div>
+        <div class="flex-1 min-h-0 overflow-y-auto">
+          <OutputsPanel bind:outputs={graph.outputs} resourceNames={allProgramResourceNames} />
+        </div>
       </div>
     </div>
   {:else}

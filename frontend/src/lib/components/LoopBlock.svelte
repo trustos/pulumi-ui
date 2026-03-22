@@ -1,9 +1,13 @@
 <script lang="ts">
-  import type { LoopItem, LoopSource, ResourceItem } from '$lib/types/program-graph';
+  import type { LoopItem, LoopSource, ResourceItem, ConditionalItem } from '$lib/types/program-graph';
   import type { ConfigFieldDef } from '$lib/types/program-graph';
   import ResourceCard from './ResourceCard.svelte';
+  import ResourceCatalog from './ResourceCatalog.svelte';
   import { Input } from '$lib/components/ui/input';
   import * as Select from '$lib/components/ui/select';
+
+  // Forward-declare ConditionalBlock to break the circular import
+  import ConditionalBlock from './ConditionalBlock.svelte';
 
   let {
     loop = $bindable<LoopItem>({
@@ -15,10 +19,14 @@
     }),
     configFields = [] as ConfigFieldDef[],
     onRemove,
+    onMoveUp,
+    onMoveDown,
   }: {
     loop?: LoopItem;
     configFields?: ConfigFieldDef[];
     onRemove?: () => void;
+    onMoveUp?: () => void;
+    onMoveDown?: () => void;
   } = $props();
 
   const sourceTypeLabels: Record<LoopSource['type'], string> = {
@@ -27,17 +35,83 @@
     'raw': 'Custom expression',
   };
 
+  const integerFields = $derived(configFields.filter(f => f.type === 'integer'));
+
+  // P2-2: variable must start with $
+  const variableError = $derived(
+    loop && loop.variable && !loop.variable.startsWith('$')
+      ? 'Variable must start with $ (e.g. $i)'
+      : null
+  );
+
+  function fixVariablePrefix() {
+    if (!loop || !loop.variable) return;
+    if (!loop.variable.startsWith('$')) {
+      loop = { ...loop, variable: '$' + loop.variable };
+    }
+  }
+
+  // G1-2: when switching to until-config, only do so if integer fields exist
   function updateSourceType(type: LoopSource['type']) {
     if (!loop) return;
     let source: LoopSource;
     if (type === 'until-config') {
-      source = { type: 'until-config', configKey: configFields[0]?.key ?? '' };
+      const first = integerFields[0];
+      if (!first) {
+        // No integer fields — fall back to list and signal the user
+        source = { type: 'list', values: ['a', 'b'] };
+      } else {
+        source = { type: 'until-config', configKey: first.key };
+      }
     } else if (type === 'list') {
       source = { type: 'list', values: ['a', 'b'] };
     } else {
       source = { type: 'raw', expr: '' };
     }
     loop = { ...loop, source };
+  }
+
+  // --- nested item management (G1-1) ---
+  let showCatalog = $state(false);
+
+  const loopResourceNames = $derived(
+    (loop?.items ?? [])
+      .filter((i): i is ResourceItem => i.kind === 'resource')
+      .map(r => r.name)
+  );
+
+  function addResourceToLoop(resource: ResourceItem) {
+    if (!loop) return;
+    loop = { ...loop, items: [...loop.items, resource] };
+    showCatalog = false;
+  }
+
+  function addNestedLoop() {
+    if (!loop) return;
+    const nested: LoopItem = {
+      kind: 'loop',
+      variable: '$j',
+      source: integerFields[0]
+        ? { type: 'until-config', configKey: integerFields[0].key }
+        : { type: 'list', values: ['a', 'b'] },
+      serialized: false,
+      items: [],
+    };
+    loop = { ...loop, items: [...loop.items, nested] };
+  }
+
+  function removeNestedItem(index: number) {
+    if (!loop) return;
+    loop = { ...loop, items: loop.items.filter((_, i) => i !== index) };
+  }
+
+  function moveNestedItem(index: number, direction: -1 | 1) {
+    if (!loop) return;
+    const items = [...loop.items];
+    const target = index + direction;
+    if (target < 0 || target >= items.length) return;
+    [items[index], items[target]] = [items[target], items[index]];
+    loop = { ...loop, items };
   }
 </script>
 
@@ -55,6 +129,12 @@
         </Select.Content>
       </Select.Root>
     </div>
+    {#if onMoveUp || onMoveDown}
+      <div class="flex flex-col">
+        <button class="text-muted-foreground hover:text-foreground text-[10px] leading-none disabled:opacity-30" onclick={onMoveUp} disabled={!onMoveUp} title="Move up">▲</button>
+        <button class="text-muted-foreground hover:text-foreground text-[10px] leading-none disabled:opacity-30" onclick={onMoveDown} disabled={!onMoveDown} title="Move down">▼</button>
+      </div>
+    {/if}
     {#if onRemove}
       <button class="text-muted-foreground hover:text-destructive text-xs" onclick={onRemove}>✕</button>
     {/if}
@@ -62,48 +142,71 @@
 
   <div class="p-3 space-y-2">
     {#if loop.source.type === 'until-config'}
-      <div class="flex items-center gap-2 text-sm">
-        <span class="text-muted-foreground">Count:</span>
-        <Select.Root
-          type="single"
-          value={loop.source.configKey}
-          onValueChange={(v) => { if (loop) loop = { ...loop, source: { type: 'until-config', configKey: v } }; }}
-        >
-          <Select.Trigger class="h-7 text-xs">{loop.source.configKey || 'Select field'}</Select.Trigger>
-          <Select.Content>
-            {#each configFields.filter(f => f.type === 'integer') as f}
-              <Select.Item value={f.key}>{f.key}</Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
-        <span class="text-muted-foreground text-xs">Variable:</span>
-        <Input
-          value={loop.variable}
-          oninput={(e) => { if (loop) loop = { ...loop, variable: (e.currentTarget as HTMLInputElement).value }; }}
-          class="h-7 text-xs font-mono w-16"
-          placeholder="$i"
-        />
+      <div class="space-y-1">
+        <div class="flex items-center gap-2 text-sm">
+          <span class="text-muted-foreground text-xs">Count:</span>
+          {#if integerFields.length === 0}
+            <span class="text-xs text-amber-600 dark:text-amber-400 italic">
+              Add an integer config field first (e.g. nodeCount)
+            </span>
+          {:else}
+            <!-- G1-3: {#key} forces Select to remount when fields list changes -->
+            {#key integerFields.length}
+              <Select.Root
+                type="single"
+                value={loop.source.configKey}
+                onValueChange={(v) => { if (loop) loop = { ...loop, source: { type: 'until-config', configKey: v } }; }}
+              >
+                <Select.Trigger class="h-7 text-xs">
+                  {loop.source.configKey || 'Select field'}
+                </Select.Trigger>
+                <Select.Content>
+                  {#each integerFields as f}
+                    <Select.Item value={f.key}>{f.key}</Select.Item>
+                  {/each}
+                </Select.Content>
+              </Select.Root>
+            {/key}
+          {/if}
+          <span class="text-muted-foreground text-xs">Variable:</span>
+          <Input
+            value={loop.variable}
+            oninput={(e) => { if (loop) loop = { ...loop, variable: (e.currentTarget as HTMLInputElement).value }; }}
+            onblur={fixVariablePrefix}
+            class="h-7 text-xs font-mono w-16 {variableError ? 'border-destructive' : ''}"
+            placeholder="$i"
+          />
+        </div>
+        {#if variableError}
+          <p class="text-xs text-destructive pl-1">{variableError}</p>
+        {/if}
       </div>
     {:else if loop.source.type === 'list'}
-      <div class="flex items-center gap-2 text-sm">
-        <span class="text-muted-foreground">Values:</span>
-        <Input
-          value={loop.source.values.join(' ')}
-          oninput={(e) => { if (loop) loop = { ...loop, source: { type: 'list', values: (e.currentTarget as HTMLInputElement).value.split(/\s+/).filter(Boolean) } }; }}
-          class="h-7 text-xs font-mono"
-          placeholder="80 443 8080"
-        />
-        <span class="text-muted-foreground text-xs">Variable:</span>
-        <Input
-          value={loop.variable}
-          oninput={(e) => { if (loop) loop = { ...loop, variable: (e.currentTarget as HTMLInputElement).value }; }}
-          class="h-7 text-xs font-mono w-16"
-          placeholder="$port"
-        />
+      <div class="space-y-1">
+        <div class="flex items-center gap-2 text-sm">
+          <span class="text-muted-foreground text-xs">Values:</span>
+          <Input
+            value={loop.source.values.join(' ')}
+            oninput={(e) => { if (loop) loop = { ...loop, source: { type: 'list', values: (e.currentTarget as HTMLInputElement).value.split(/\s+/).filter(Boolean) } }; }}
+            class="h-7 text-xs font-mono"
+            placeholder="80 443 8080"
+          />
+          <span class="text-muted-foreground text-xs">Variable:</span>
+          <Input
+            value={loop.variable}
+            oninput={(e) => { if (loop) loop = { ...loop, variable: (e.currentTarget as HTMLInputElement).value }; }}
+            onblur={fixVariablePrefix}
+            class="h-7 text-xs font-mono w-16 {variableError ? 'border-destructive' : ''}"
+            placeholder="$port"
+          />
+        </div>
+        {#if variableError}
+          <p class="text-xs text-destructive pl-1">{variableError}</p>
+        {/if}
       </div>
     {:else}
       <div class="flex items-center gap-2 text-sm">
-        <span class="text-muted-foreground">Expr:</span>
+        <span class="text-muted-foreground text-xs">Expr:</span>
         <Input
           value={(loop.source as { type: 'raw'; expr: string }).expr ?? ''}
           oninput={(e) => { if (loop) loop = { ...loop, source: { type: 'raw', expr: (e.currentTarget as HTMLInputElement).value } }; }}
@@ -123,14 +226,61 @@
       <span class="text-muted-foreground" title="OCI NLB rejects concurrent port mutations — serialization ensures each port is created before the next.">(?)</span>
     </label>
 
-    <!-- Nested items -->
+    <!-- G1-1: Nested items — fully editable -->
     <div class="space-y-2 pt-1 pl-3 border-l-2 border-blue-200 dark:border-blue-800">
-      {#each loop.items as item, i (i)}
+      {#each loop.items as item, i}
         {#if item.kind === 'resource'}
-          <ResourceCard resource={item as ResourceItem} />
+          <ResourceCard
+            bind:resource={loop.items[i] as ResourceItem}
+            allResourceNames={loopResourceNames}
+            {configFields}
+            onRemove={() => removeNestedItem(i)}
+            onMoveUp={i > 0 ? () => moveNestedItem(i, -1) : undefined}
+            onMoveDown={i < loop.items.length - 1 ? () => moveNestedItem(i, 1) : undefined}
+          />
+        {:else if item.kind === 'loop'}
+          <svelte:self
+            bind:loop={loop.items[i] as LoopItem}
+            {configFields}
+            onRemove={() => removeNestedItem(i)}
+            onMoveUp={i > 0 ? () => moveNestedItem(i, -1) : undefined}
+            onMoveDown={i < loop.items.length - 1 ? () => moveNestedItem(i, 1) : undefined}
+          />
+        {:else if item.kind === 'conditional'}
+          <ConditionalBlock
+            bind:conditional={loop.items[i] as ConditionalItem}
+            {configFields}
+            onRemove={() => removeNestedItem(i)}
+          />
+        {:else if item.kind === 'raw'}
+          <div class="border rounded bg-amber-50 dark:bg-amber-950/20 border-amber-200 p-2">
+            <p class="text-xs text-amber-700 dark:text-amber-300">Advanced YAML — edit in YAML mode</p>
+          </div>
         {/if}
       {/each}
+
+      {#if loop.items.length === 0}
+        <p class="text-xs text-muted-foreground py-1 italic">Empty loop body — add resources below.</p>
+      {/if}
+
+      <div class="flex gap-2 pt-1">
+        <button
+          class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+          onclick={() => showCatalog = true}
+        >+ Resource</button>
+        <button
+          class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+          onclick={addNestedLoop}
+        >+ Nested Loop</button>
+      </div>
     </div>
   </div>
 </div>
+
+{#if showCatalog}
+  <ResourceCatalog
+    onSelect={addResourceToLoop}
+    onClose={() => showCatalog = false}
+  />
+{/if}
 {/if}

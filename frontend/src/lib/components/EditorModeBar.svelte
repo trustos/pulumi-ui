@@ -9,13 +9,13 @@
     onModeChange?: (mode: 'visual' | 'yaml') => void;
   } = $props();
 
-  const statusLabels = {
-    synced: 'Synced',
-    'yaml-edited': 'Edited in YAML',
+  const statusLabels: Record<typeof syncStatus, string> = {
+    synced: mode === 'yaml' ? 'Preview — Visual state preserved' : 'Synced',
+    'yaml-edited': 'YAML edited — switching to Visual will re-parse',
     partial: 'Partially structured',
   };
-  const statusColors = {
-    synced: 'text-green-600 dark:text-green-400',
+  const statusColors: Record<typeof syncStatus, string> = {
+    synced: mode === 'yaml' ? 'text-blue-600 dark:text-blue-400' : 'text-green-600 dark:text-green-400',
     'yaml-edited': 'text-amber-600 dark:text-amber-400',
     partial: 'text-amber-600 dark:text-amber-400',
   };

@@ -9,6 +9,7 @@ import type {
   LoopSource,
   ConfigFieldDef,
   OutputDef,
+  VariableDef,
   PropertyEntry,
 } from '$lib/types/program-graph';
 
@@ -33,6 +34,7 @@ export function yamlToGraph(yaml: string): ParseResult {
       description: descMatch ? descMatch[1].trim() : '',
     },
     configFields: parseConfigFields(yaml),
+    variables: parseVariables(yaml),
     sections: [],
     outputs: parseOutputs(yaml),
   };
@@ -57,21 +59,53 @@ function parseConfigFields(yaml: string): ConfigFieldDef[] {
   const configBlock = extractBlock(yaml, 'config');
   if (!configBlock) return fields;
 
-  // Each top-level key in config block is a field
-  const keyRe = /^  (\w+):/gm;
+  // Track current group by scanning lines in order
+  let currentGroup: string | undefined = undefined;
+  const lines = configBlock.split('\n');
+  const groupRe = /^\s+#\s*\[group:\s*([^\]]+)\]/;
+  const keyRe = /^  (\w+):\s*$/;
+
+  // Build a list of (lineIndex, key) for field keys
+  const fieldPositions: { lineIdx: number; key: string }[] = [];
+  const groupBeforeField: Map<number, string | undefined> = new Map();
+  let pendingGroup: string | undefined = undefined;
+
+  for (let i = 0; i < lines.length; i++) {
+    const groupMatch = groupRe.exec(lines[i]);
+    if (groupMatch) {
+      const g = groupMatch[1].trim();
+      pendingGroup = g === 'General' ? undefined : g;
+      continue;
+    }
+    const keyMatch = keyRe.exec(lines[i]);
+    if (keyMatch) {
+      fieldPositions.push({ lineIdx: i, key: keyMatch[1] });
+      groupBeforeField.set(i, pendingGroup);
+      pendingGroup = undefined; // consumed
+    }
+  }
+
+  // For each field key, extract its attributes from the sub-block
+  const keyReGlobal = /^  (\w+):/gm;
   let m: RegExpExecArray | null;
-  while ((m = keyRe.exec(configBlock)) !== null) {
+  keyReGlobal.lastIndex = 0;
+  while ((m = keyReGlobal.exec(configBlock)) !== null) {
     const key = m[1];
-    // Find type, default in the lines after this key
     const afterKey = configBlock.slice(m.index);
     const typeMatch = afterKey.match(/^\s+type:\s*(\S+)/m);
     const defaultMatch = afterKey.match(/^\s+default:\s*"?([^"\n]+)"?/m);
-    const descMatch = afterKey.match(/^\s+#\s*(.+)/m);
+    const descMatch = afterKey.match(/^\s+#(?!\s*\[group:)\s*(.+)/m);
+
+    // Find the corresponding position to get the group
+    const pos = fieldPositions.find(p => p.key === key);
+    const group = pos !== undefined ? groupBeforeField.get(pos.lineIdx) : undefined;
+
     fields.push({
       key,
       type: (typeMatch ? typeMatch[1] : 'string') as ConfigFieldDef['type'],
       default: defaultMatch ? defaultMatch[1].trim() : undefined,
       description: descMatch ? descMatch[1].trim() : undefined,
+      group,
     });
   }
   return fields;
@@ -88,6 +122,26 @@ function parseOutputs(yaml: string): OutputDef[] {
     outputs.push({ key: m[1], value: m[2].trim() });
   }
   return outputs;
+}
+
+function parseVariables(yaml: string): VariableDef[] {
+  const block = extractBlock(yaml, 'variables');
+  if (!block) return [];
+
+  // Each variable is a top-level key at 2-space indent followed by a newline
+  const varRe = /^  ([\w][\w-]*):\s*$/gm;
+  const varStarts: { name: string; index: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = varRe.exec(block)) !== null) {
+    varStarts.push({ name: m[1], index: m.index });
+  }
+
+  return varStarts.map((v, i) => {
+    const end = varStarts[i + 1]?.index ?? block.length;
+    // Keep the value lines (everything after the "  name:" header line)
+    const rawLines = block.slice(v.index, end).split('\n').slice(1);
+    return { name: v.name, yaml: rawLines.join('\n').trimEnd() };
+  });
 }
 
 function extractBlock(yaml: string, key: string): string | null {

@@ -31,7 +31,9 @@ type pulumiMetaGroup struct {
 }
 
 type pulumiMetaField struct {
-	UIType string `yaml:"ui_type"`
+	UIType      string `yaml:"ui_type"`
+	Description string `yaml:"description"`
+	Label       string `yaml:"label"`
 }
 
 // ParseConfigFields parses the config: section of a Pulumi YAML body and
@@ -113,14 +115,29 @@ func ParseConfigFields(yamlBody string) ([]ConfigField, string, error) {
 		gKey := groupByField[key]
 		gLabel := groupLabelByKey[gKey]
 
+		// Description and label from meta.fields take precedence over auto-derived values.
+		description := ""
+		label := keyToLabel(key)
+		if doc.Meta != nil {
+			if mf, ok := doc.Meta.Fields[key]; ok {
+				if mf.Description != "" {
+					description = mf.Description
+				}
+				if mf.Label != "" {
+					label = mf.Label
+				}
+			}
+		}
+
 		fields = append(fields, ConfigField{
-			Key:        key,
-			Label:      keyToLabel(key),
-			Type:       fieldType,
-			Required:   fieldType == "ssh-public-key" && cf.Default == "",
-			Default:    cf.Default,
-			Group:      gKey,
-			GroupLabel: gLabel,
+			Key:         key,
+			Label:       label,
+			Type:        fieldType,
+			Required:    fieldType == "ssh-public-key" && cf.Default == "",
+			Default:     cf.Default,
+			Description: description,
+			Group:       gKey,
+			GroupLabel:  gLabel,
 		})
 	}
 

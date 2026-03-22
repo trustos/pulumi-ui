@@ -17,6 +17,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
 	"github.com/trustos/pulumi-ui/internal/keystore"
+	"github.com/trustos/pulumi-ui/internal/oci"
 	// Importing programs runs init() in nomad_cluster.go and test_vcn.go,
 	// registering the built-in programs before main() executes.
 	"github.com/trustos/pulumi-ui/internal/programs"
@@ -38,6 +39,9 @@ func main() {
 		stateDir = abs
 	}
 	listenAddr := envOr("PULUMI_UI_ADDR", ":8080")
+
+	// OCI schema: configure disk cache dir and kick off background load.
+	oci.SetDataDir(dataDir)
 
 	// Resolve encryption key: env var → keystore → auto-generate
 	ks, err := keystore.New(dataDir)

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/trustos/pulumi-ui/internal/oci"
 	"gopkg.in/yaml.v3"
 )
 
@@ -186,15 +187,6 @@ func validateConfigSection(yamlBody string) []ValidationError {
 
 	var errs []ValidationError
 
-	if len(doc.Config) == 0 {
-		errs = append(errs, ValidationError{
-			Level:   LevelConfigSection,
-			Field:   "config",
-			Message: "config: section is missing or empty — add at least one field",
-		})
-		// Still check meta consistency below if it exists.
-	}
-
 	for key, cf := range doc.Config {
 		if !validFieldKeyRe.MatchString(key) {
 			errs = append(errs, ValidationError{
@@ -248,14 +240,16 @@ var resourceTypeRe = regexp.MustCompile(`^[a-z][a-z0-9]*:[a-zA-Z][a-zA-Z0-9/]*:[
 func validateResourceStructure(rendered string) []ValidationError {
 	var doc struct {
 		Resources map[string]struct {
-			Type string `yaml:"type"`
-			Get  string `yaml:"get"`
+			Type       string                 `yaml:"type"`
+			Get        string                 `yaml:"get"`
+			Properties map[string]interface{} `yaml:"properties"`
 		} `yaml:"resources"`
 	}
 	if err := yaml.Unmarshal([]byte(rendered), &doc); err != nil {
 		return nil // Level 3 already catches YAML parse errors
 	}
 
+	schema := oci.GetSchema()
 	var errs []ValidationError
 	for name, res := range doc.Resources {
 		if res.Get != "" {
@@ -275,6 +269,20 @@ func validateResourceStructure(rendered string) []ValidationError {
 				Field:   name,
 				Message: "resource '" + name + "' has invalid type '" + res.Type + "' — expected pattern provider:Module/submodule:Resource, e.g. oci:Core/instance:Instance",
 			})
+			continue
+		}
+		if resSchema, ok := schema[res.Type]; ok {
+			for prop, pSchema := range resSchema.Inputs {
+				if pSchema.Required {
+					if _, exists := res.Properties[prop]; !exists {
+						errs = append(errs, ValidationError{
+							Level:   LevelResourceStructure,
+							Field:   name,
+							Message: "resource '" + name + "' (" + res.Type + ") is missing required property '" + prop + "'",
+						})
+					}
+				}
+			}
 		}
 	}
 	return errs

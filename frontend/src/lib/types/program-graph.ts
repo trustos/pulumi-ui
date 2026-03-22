@@ -5,8 +5,14 @@ export interface ProgramGraph {
     description: string;
   };
   configFields: ConfigFieldDef[];
+  variables: VariableDef[];
   sections: ProgramSection[];
   outputs: OutputDef[];
+}
+
+export interface VariableDef {
+  name: string;
+  yaml: string; // raw YAML of the value block (indented lines, as found in the source)
 }
 
 export interface ConfigFieldDef {
@@ -14,6 +20,7 @@ export interface ConfigFieldDef {
   type: 'string' | 'integer' | 'boolean' | 'number';
   default?: string;
   description?: string;
+  group?: string; // UI-only grouping, emitted as a comment in the config block
 }
 
 export interface OutputDef {

@@ -1,9 +1,11 @@
 import type { ProgramGraph } from '$lib/types/program-graph';
 
 export const singleInstanceTemplate: ProgramGraph = {
-  metadata: { name: 'single-instance', displayName: 'Single Instance', description: 'Creates a compartment, VCN, subnet, and one compute instance' },
+  metadata: { name: 'single-instance', displayName: 'Single Instance', description: 'Compartment, VCN, subnet, and one compute instance' },
   configFields: [
     { key: 'compartmentName', type: 'string', default: 'my-compartment' },
+    { key: 'imageId', type: 'string', default: '', description: 'OCI image OCID for the boot volume' },
+    { key: 'sshPublicKey', type: 'string', default: '', description: 'SSH public key for instance access' },
     { key: 'shape', type: 'string', default: 'VM.Standard.A1.Flex', description: 'Compute shape' },
     { key: 'ocpus', type: 'string', default: '2' },
     { key: 'memoryInGbs', type: 'string', default: '12' },
@@ -19,7 +21,7 @@ export const singleInstanceTemplate: ProgramGraph = {
           resourceType: 'oci:Identity/compartment:Compartment',
           properties: [
             { key: 'compartmentId', value: '${oci:tenancyOcid}' },
-            { key: 'name', value: '{{ .Config.compartmentName }}' },
+            { key: 'name', value: '"{{ .Config.compartmentName }}"' },
             { key: 'description', value: '"Created by Pulumi"' },
             { key: 'enableDelete', value: 'true' },
           ],
@@ -36,6 +38,32 @@ export const singleInstanceTemplate: ProgramGraph = {
           ],
           options: { dependsOn: ['compartment'] },
         },
+        {
+          kind: 'resource',
+          name: 'igw',
+          resourceType: 'oci:Core/internetGateway:InternetGateway',
+          properties: [
+            { key: 'compartmentId', value: '${compartment.id}' },
+            { key: 'vcnId', value: '${vcn.id}' },
+            { key: 'displayName', value: '"igw"' },
+            { key: 'enabled', value: 'true' },
+          ],
+          options: { dependsOn: ['vcn'] },
+        },
+        {
+          kind: 'resource',
+          name: 'subnet',
+          resourceType: 'oci:Core/subnet:Subnet',
+          properties: [
+            { key: 'compartmentId', value: '${compartment.id}' },
+            { key: 'vcnId', value: '${vcn.id}' },
+            { key: 'cidrBlock', value: '"10.0.1.0/24"' },
+            { key: 'displayName', value: '"subnet"' },
+            { key: 'dnsLabel', value: '"subnet"' },
+            { key: 'prohibitPublicIpOnVnic', value: 'false' },
+          ],
+          options: { dependsOn: ['igw'] },
+        },
       ],
     },
     {
@@ -49,15 +77,19 @@ export const singleInstanceTemplate: ProgramGraph = {
           properties: [
             { key: 'compartmentId', value: '${compartment.id}' },
             { key: 'availabilityDomain', value: '"AD-1"' },
-            { key: 'shape', value: '{{ .Config.shape }}' },
+            { key: 'shape', value: '"{{ .Config.shape }}"' },
             { key: 'displayName', value: '"instance"' },
+            { key: 'sourceDetails', value: '{ sourceType: "image", imageId: "{{ .Config.imageId }}" }' },
+            { key: 'createVnicDetails', value: '{ subnetId: "${subnet.id}", assignPublicIp: true }' },
+            { key: 'metadata', value: '{ ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }' },
+            { key: 'shapeConfig', value: '{ ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }' },
           ],
-          options: { dependsOn: ['vcn'] },
+          options: { dependsOn: ['subnet'] },
         },
       ],
     },
   ],
   outputs: [
-    { key: 'instanceId', value: '${instance.id}' },
+    { key: 'instancePublicIp', value: '${instance.publicIp}' },
   ],
 };

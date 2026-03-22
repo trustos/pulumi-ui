@@ -16,7 +16,7 @@ export const vcnOnlyTemplate: ProgramGraph = {
         resourceType: 'oci:Identity/compartment:Compartment',
         properties: [
           { key: 'compartmentId', value: '${oci:tenancyOcid}' },
-          { key: 'name', value: '{{ .Config.compartmentName }}' },
+          { key: 'name', value: '"{{ .Config.compartmentName }}"' },
           { key: 'description', value: '"Created by Pulumi"' },
           { key: 'enableDelete', value: 'true' },
         ],
@@ -27,7 +27,7 @@ export const vcnOnlyTemplate: ProgramGraph = {
         resourceType: 'oci:Core/vcn:Vcn',
         properties: [
           { key: 'compartmentId', value: '${my-compartment.id}' },
-          { key: 'cidrBlock', value: '{{ .Config.vcnCidr }}' },
+          { key: 'cidrBlock', value: '"{{ .Config.vcnCidr }}"' },
           { key: 'displayName', value: '"my-vcn"' },
           { key: 'dnsLabel', value: '"myvcn"' },
         ],

@@ -12,19 +12,40 @@
       items: [],
     }),
     configFields = [] as ConfigFieldDef[],
+    allProgramResourceNames = [] as string[], // G1-5: names from ALL sections/loops
+    allProgramResourceRefs = [] as { name: string; attrs: string[] }[], // resource names + output attrs
+    variableNames = [] as string[],
+    onSwitchToYaml,                           // P2-1: raw block "edit in YAML" callback
   }: {
     section?: ProgramSection;
     configFields?: ConfigFieldDef[];
+    allProgramResourceNames?: string[];
+    allProgramResourceRefs?: { name: string; attrs: string[] }[];
+    variableNames?: string[];
+    onSwitchToYaml?: () => void;
   } = $props();
 
   let showCatalog = $state(false);
 
+  // G1-5: collect names recursively from all items in this section
+  function collectNames(items: ProgramItem[]): string[] {
+    const names: string[] = [];
+    for (const item of items) {
+      if (item.kind === 'resource') names.push(item.name);
+      else if (item.kind === 'loop') names.push(...collectNames(item.items));
+      else if (item.kind === 'conditional') {
+        names.push(...collectNames(item.items));
+        names.push(...collectNames(item.elseItems ?? []));
+      }
+    }
+    return names;
+  }
+
+  // All names visible for dependsOn: this section's own names + all other sections
   const allResourceNames = $derived(
     section
-      ? section.items
-          .filter((i): i is ResourceItem => i.kind === 'resource')
-          .map(r => r.name)
-      : []
+      ? [...new Set([...collectNames(section.items), ...allProgramResourceNames])]
+      : allProgramResourceNames
   );
 
   function addResource(resource: ResourceItem) {
@@ -61,6 +82,15 @@
     if (!section) return;
     section = { ...section, items: section.items.filter((_, i) => i !== index) };
   }
+
+  function moveItem(index: number, direction: -1 | 1) {
+    if (!section) return;
+    const items = [...section.items];
+    const target = index + direction;
+    if (target < 0 || target >= items.length) return;
+    [items[index], items[target]] = [items[target], items[index]];
+    section = { ...section, items };
+  }
 </script>
 
 {#if section}
@@ -96,30 +126,46 @@
   {:else}
     <div class="space-y-2">
       {#each section.items as item, i}
-        {#if item.kind === 'resource'}
-          <ResourceCard
-            bind:resource={section.items[i] as ResourceItem}
-            allResourceNames={allResourceNames}
-            onRemove={() => removeItem(i)}
-          />
-        {:else if item.kind === 'raw'}
-          <div class="border rounded-md bg-muted/20 p-3">
-            <p class="text-xs font-medium text-muted-foreground mb-1">Advanced YAML (unstructured)</p>
-            <pre class="text-xs font-mono whitespace-pre-wrap text-muted-foreground">{item.yaml}</pre>
-          </div>
-        {:else if item.kind === 'loop'}
-          <LoopBlock
-            bind:loop={section.items[i] as LoopItem}
-            {configFields}
-            onRemove={() => removeItem(i)}
-          />
-        {:else if item.kind === 'conditional'}
-          <ConditionalBlock
-            bind:conditional={section.items[i] as ConditionalItem}
-            {configFields}
-            onRemove={() => removeItem(i)}
-          />
-        {/if}
+        <div>
+          {#if item.kind === 'resource'}
+            <ResourceCard
+              bind:resource={section.items[i] as ResourceItem}
+              allResourceNames={allResourceNames}
+              allResourceRefs={allProgramResourceRefs}
+              {variableNames}
+              {configFields}
+              onRemove={() => removeItem(i)}
+              onMoveUp={i > 0 ? () => moveItem(i, -1) : undefined}
+              onMoveDown={i < section.items.length - 1 ? () => moveItem(i, 1) : undefined}
+            />
+          {:else if item.kind === 'raw'}
+            <div class="border rounded-md bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-3">
+              <div class="flex items-center justify-between mb-1">
+                <p class="text-xs font-medium text-amber-700 dark:text-amber-300">Advanced YAML — not editable in visual mode</p>
+                {#if onSwitchToYaml}
+                  <button class="text-xs text-amber-600 dark:text-amber-400 hover:underline" onclick={onSwitchToYaml}>Edit in YAML mode →</button>
+                {/if}
+              </div>
+              <pre class="text-xs font-mono whitespace-pre-wrap text-muted-foreground select-all">{item.yaml}</pre>
+            </div>
+          {:else if item.kind === 'loop'}
+            <LoopBlock
+              bind:loop={section.items[i] as LoopItem}
+              {configFields}
+              onRemove={() => removeItem(i)}
+              onMoveUp={i > 0 ? () => moveItem(i, -1) : undefined}
+              onMoveDown={i < section.items.length - 1 ? () => moveItem(i, 1) : undefined}
+            />
+          {:else if item.kind === 'conditional'}
+            <ConditionalBlock
+              bind:conditional={section.items[i] as ConditionalItem}
+              {configFields}
+              onRemove={() => removeItem(i)}
+              onMoveUp={i > 0 ? () => moveItem(i, -1) : undefined}
+              onMoveDown={i < section.items.length - 1 ? () => moveItem(i, 1) : undefined}
+            />
+          {/if}
+        </div>
       {/each}
     </div>
   {/if}

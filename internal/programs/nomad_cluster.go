@@ -605,9 +605,8 @@ func createInstancePools(
 	for _, spec := range specs {
 		spec := spec
 
-		cloudInit := buildCloudInit(
+		cloudInitB64 := buildCloudInit(
 			spec.ocpus, spec.memoryInGBs, nodeCount,
-			compartmentID, net.privateSubnetID,
 			nomadVersion, consulVersion,
 		)
 
@@ -643,7 +642,7 @@ func createInstancePools(
 					},
 					Metadata: pulumi.StringMap{
 						"ssh_authorized_keys": pulumi.String(sshPublicKey),
-						"user_data":           cloudInit,
+						"user_data":           pulumi.String(cloudInitB64),
 					},
 					DisplayName: pulumi.StringPtr(fmt.Sprintf("nomad-%s", spec.name)),
 				},

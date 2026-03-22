@@ -165,7 +165,7 @@ config:
 resources:
   {{- range $i := until (atoi $.Config.nodeCount) }}
   instance-{{ $i }}:
-    type: oci:core:Instance
+    type: oci:Core/instance:Instance
     properties:
       compartmentId: ${my-compartment.id}
       displayName: {{ printf "node-%d" $i }}
@@ -184,7 +184,7 @@ resources:
 ```yaml
 {{- range $port := list 4646 4647 4648 }}
   nsg-rule-{{ $port }}:
-    type: oci:core:NetworkSecurityGroupSecurityRule
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
     properties:
       networkSecurityGroupId: ${my-nsg.id}
       direction: INGRESS
@@ -202,7 +202,7 @@ resources:
 {{- range $port := list 80 443 }}
   {{- range $i := until (atoi $.Config.nodeCount) }}
   nlb-backend-{{ $port }}-{{ $i }}:
-    type: oci:networkloadbalancer:Backend
+    type: oci:NetworkLoadBalancer/backend:Backend
     properties:
       backendSetName: backend-set-{{ $port }}
       networkLoadBalancerId: ${my-nlb.id}
@@ -373,14 +373,31 @@ statements:
 
 ## OCI Resource Types
 
-Resource type tokens follow the pattern `oci:[Module]:[Resource]`.
+### Short-form vs Canonical Type Names
+
+The OCI Pulumi provider accepts both short-form aliases and canonical SDK names:
+
+| Short-form (accepted) | Canonical (preferred) |
+|---|---|
+| `oci:core:Vcn` | `oci:Core/vcn:Vcn` |
+| `oci:core:NatGateway` | `oci:Core/natGateway:NatGateway` |
+| `oci:core:NetworkSecurityGroup` | `oci:Core/networkSecurityGroup:NetworkSecurityGroup` |
+| `oci:identity:DynamicGroup` | `oci:Identity/dynamicGroup:DynamicGroup` |
+| `oci:networkloadbalancer:Backend` | `oci:NetworkLoadBalancer/backend:Backend` |
+
+**Use canonical form in new programs.** The visual editor's property autocomplete,
+required-field validation (Level 5), and the Resource Catalog all key off the
+canonical form. Short-form aliases still work at runtime but will not get schema
+assistance in the editor.
+
+Resource type tokens follow the canonical pattern `oci:[Module]/[subpath]:[Resource]`.
 
 ### Identity
 
 ```yaml
 # Compartment
 my-compartment:
-  type: oci:identity:Compartment
+  type: oci:Identity/compartment:Compartment
   properties:
     compartmentId: ${oci:tenancyOcid}   # parent compartment; use tenancyOcid for top-level
     name: {{ .Config.compartmentName }}
@@ -389,7 +406,7 @@ my-compartment:
 
 # Dynamic Group
 my-dg:
-  type: oci:identity:DynamicGroup
+  type: oci:Identity/dynamicGroup:DynamicGroup
   properties:
     compartmentId: ${oci:tenancyOcid}
     name: my-dg
@@ -398,7 +415,7 @@ my-dg:
 
 # Policy
 my-policy:
-  type: oci:identity:Policy
+  type: oci:Identity/policy:Policy
   properties:
     compartmentId: ${oci:tenancyOcid}
     name: my-policy
@@ -413,7 +430,7 @@ my-policy:
 ```yaml
 # VCN
 my-vcn:
-  type: oci:core:Vcn
+  type: oci:Core/vcn:Vcn
   properties:
     compartmentId: ${my-compartment.id}
     cidrBlock: {{ .Config.vcnCidr | quote }}
@@ -422,7 +439,7 @@ my-vcn:
 
 # Internet Gateway
 my-igw:
-  type: oci:core:InternetGateway
+  type: oci:Core/internetGateway:InternetGateway
   properties:
     compartmentId: ${my-compartment.id}
     vcnId: ${my-vcn.id}
@@ -431,7 +448,7 @@ my-igw:
 
 # NAT Gateway
 my-nat:
-  type: oci:core:NatGateway
+  type: oci:Core/natGateway:NatGateway
   properties:
     compartmentId: ${my-compartment.id}
     vcnId: ${my-vcn.id}
@@ -439,7 +456,7 @@ my-nat:
 
 # Route Table (public — routes to internet gateway)
 public-rt:
-  type: oci:core:RouteTable
+  type: oci:Core/routeTable:RouteTable
   properties:
     compartmentId: ${my-compartment.id}
     vcnId: ${my-vcn.id}
@@ -451,7 +468,7 @@ public-rt:
 
 # Security List
 my-sl:
-  type: oci:core:SecurityList
+  type: oci:Core/securityList:SecurityList
   properties:
     compartmentId: ${my-compartment.id}
     vcnId: ${my-vcn.id}
@@ -470,7 +487,7 @@ my-sl:
 
 # Subnet
 my-subnet:
-  type: oci:core:Subnet
+  type: oci:Core/subnet:Subnet
   properties:
     compartmentId: ${my-compartment.id}
     vcnId: ${my-vcn.id}
@@ -483,7 +500,7 @@ my-subnet:
 
 # Network Security Group
 my-nsg:
-  type: oci:core:NetworkSecurityGroup
+  type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
   properties:
     compartmentId: ${my-compartment.id}
     vcnId: ${my-vcn.id}
@@ -491,7 +508,7 @@ my-nsg:
 
 # NSG Rule
 my-nsg-rule-ssh:
-  type: oci:core:NetworkSecurityGroupSecurityRule
+  type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
   properties:
     networkSecurityGroupId: ${my-nsg.id}
     direction: INGRESS
@@ -509,7 +526,7 @@ my-nsg-rule-ssh:
 ```yaml
 # Instance (Ampere A1 shape)
 my-instance:
-  type: oci:core:Instance
+  type: oci:Core/instance:Instance
   properties:
     compartmentId: ${my-compartment.id}
     availabilityDomain: {{ .Config.availabilityDomain }}
@@ -533,7 +550,7 @@ my-instance:
 
 # Block Volume
 my-volume:
-  type: oci:core:Volume
+  type: oci:Core/volume:Volume
   properties:
     compartmentId: ${my-compartment.id}
     availabilityDomain: {{ .Config.availabilityDomain }}
@@ -542,7 +559,7 @@ my-volume:
 
 # Volume Attachment (paravirtualized)
 my-vol-attach:
-  type: oci:core:VolumeAttachment
+  type: oci:Core/volumeAttachment:VolumeAttachment
   properties:
     attachmentType: paravirtualized
     instanceId: ${my-instance.id}
@@ -556,7 +573,7 @@ my-vol-attach:
 ```yaml
 # Network Load Balancer
 my-nlb:
-  type: oci:networkloadbalancer:NetworkLoadBalancer
+  type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
   properties:
     compartmentId: ${my-compartment.id}
     displayName: my-nlb
@@ -565,7 +582,7 @@ my-nlb:
 
 # Backend Set
 my-backend-set:
-  type: oci:networkloadbalancer:BackendSet
+  type: oci:NetworkLoadBalancer/backendSet:BackendSet
   properties:
     networkLoadBalancerId: ${my-nlb.id}
     name: backend-set-80
@@ -574,19 +591,19 @@ my-backend-set:
       protocol: TCP
       port: 80
 
-# Backend
+# Backend — use targetId for instance-based routing (no IP needed)
 my-backend-0:
-  type: oci:networkloadbalancer:Backend
+  type: oci:NetworkLoadBalancer/backend:Backend
   properties:
     networkLoadBalancerId: ${my-nlb.id}
     backendSetName: backend-set-80
-    name: backend-0
-    ipAddress: ${my-instance.privateIp}
+    targetId: ${my-instance.id}   # use targetId for OCI instances
     port: 80
+    # ipAddress: ${my-instance.privateIp}  # alternative when targetId unavailable
 
 # Listener
 my-listener:
-  type: oci:networkloadbalancer:Listener
+  type: oci:NetworkLoadBalancer/listener:Listener
   properties:
     networkLoadBalancerId: ${my-nlb.id}
     name: listener-80
@@ -708,7 +725,7 @@ config:
 
 resources:
   cluster-compartment:
-    type: oci:identity:Compartment
+    type: oci:Identity/compartment:Compartment
     properties:
       compartmentId: ${oci:tenancyOcid}
       name: {{ .Config.compartmentName }}
@@ -716,7 +733,7 @@ resources:
       enableDelete: true
 
   cluster-vcn:
-    type: oci:core:Vcn
+    type: oci:Core/vcn:Vcn
     properties:
       compartmentId: ${cluster-compartment.id}
       cidrBlock: {{ .Config.vcnCidr | quote }}
@@ -724,7 +741,7 @@ resources:
       dnsLabel: clustervcn
 
   cluster-igw:
-    type: oci:core:InternetGateway
+    type: oci:Core/internetGateway:InternetGateway
     properties:
       compartmentId: ${cluster-compartment.id}
       vcnId: ${cluster-vcn.id}
@@ -732,7 +749,7 @@ resources:
       enabled: true
 
   cluster-rt:
-    type: oci:core:RouteTable
+    type: oci:Core/routeTable:RouteTable
     properties:
       compartmentId: ${cluster-compartment.id}
       vcnId: ${cluster-vcn.id}
@@ -743,7 +760,7 @@ resources:
           destinationType: CIDR_BLOCK
 
   cluster-sl:
-    type: oci:core:SecurityList
+    type: oci:Core/securityList:SecurityList
     properties:
       compartmentId: ${cluster-compartment.id}
       vcnId: ${cluster-vcn.id}
@@ -761,7 +778,7 @@ resources:
           destination: "0.0.0.0/0"
 
   cluster-subnet:
-    type: oci:core:Subnet
+    type: oci:Core/subnet:Subnet
     properties:
       compartmentId: ${cluster-compartment.id}
       vcnId: ${cluster-vcn.id}
@@ -774,7 +791,7 @@ resources:
 
   {{- range $i := until (atoi $.Config.nodeCount) }}
   node-{{ $i }}:
-    type: oci:core:Instance
+    type: oci:Core/instance:Instance
     properties:
       compartmentId: ${cluster-compartment.id}
       availabilityDomain: {{ $.Config.availabilityDomain }}
@@ -806,17 +823,21 @@ outputs:
 
 ## Validation
 
-Programs are validated on every save (and checked live as you type in the editor). Validation runs five levels sequentially:
+Programs are validated on every save (and checked live as you type in the editor). Validation runs six levels sequentially:
 
 | Level | Name | What it checks |
 |---|---|---|
 | 1 | Template syntax | Can the Go template be parsed? |
 | 2 | Template render | Can it render with all defaults applied? |
 | 3 | YAML structure | Does the rendered output have `name`, `runtime: yaml`, and `resources`? |
-| 4 | Config section | Are field types valid? Do `meta:` group references exist in `config:`? |
-| 5 | Resource types | Does each resource have a valid `provider:module:Resource` type? |
+| 4 | Config section | Are field types valid? Do `meta:` group references exist in `config:`? Empty `config:` is allowed. |
+| 5 | Resource structure | Does each resource have a `type`? Are all required properties present (schema-validated)? |
+| 6 | Resource types | Does each resource use a known or well-formed provider type token? |
 
 A program that fails validation cannot be saved. Fix all errors shown in the editor panel before saving.
+
+> **Empty config is valid.** Programs with no config fields (e.g. a VCN-only program
+> with hardcoded values) pass Level 4 without error. The `config:` block is optional.
 
 ---
 
@@ -838,4 +859,40 @@ A program that fails validation cannot be saved. Fix all errors shown in the edi
 : The resource name in `${ }` must exactly match the resource key after Go template rendering (after `{{ range }}` expands).
 
 **`atoi: parsing "": invalid syntax`**
-: A config field used with `atoi` has no `default:`. Add `default: "1"` (or any integer string) to the config block.
+: A config field used with `atoi` has no `default:` or the default is not a number string. Add `default: "1"` (or any integer string) to the config block.
+
+**Visual editor shows no property autocomplete for a resource type**
+: The resource type is not in the OCI schema fallback. Either use `pulumi schema get oci`
+  to load the full live schema, or use canonical type form (`oci:Core/natGateway:NatGateway`
+  instead of `oci:core:NatGateway`). Only canonical forms are covered by the fallback.
+
+**Validation error: "missing required property 'X'"**
+: Level 5 schema validation found a required property missing. Add the property
+  (even with an empty value — it will be caught by visual-mode pre-save checks and
+  can be filled in before saving).
+
+**NLB Backend: `ipAddress` validation error when using `targetId`**
+: The schema marks both as optional. Use `targetId: ${my-instance.id}` for OCI
+  instances (routing by instance OCID). `ipAddress` is only needed when routing to
+  an IP that Pulumi cannot discover automatically (e.g. an external server).
+
+**Section rename or delete not working**
+: Section rename uses the pencil (✎) icon visible on hover. Section delete uses the
+  × icon (also on hover). The first section cannot be deleted — it is always required.
+  Deleting a section with resources shows a confirmation dialog.
+
+---
+
+## Reference Programs
+
+Two complete programs are available in the `docs/` directory as reference:
+
+| File | Description |
+|---|---|
+| `docs/nomad-cluster-program.yaml` | v1 — short-form type aliases (`oci:core:NatGateway`). Functional but does not benefit from schema autocomplete for types added after v1. |
+| `docs/nomad-cluster-v2-program.yaml` | v2 — canonical type names throughout, 13 IAM policy statements (vs 10 in v1), NLB NSG association, configurable backup retention via `glusterBackupRetentionDays` config field. |
+
+The v2 program is the recommended starting point for new Nomad + Consul clusters.
+It covers the full production architecture: compartment, IAM, VCN with public/private
+subnets, NAT gateway, 4 NSGs, N compute instances, GlusterFS block volumes with
+backup policy, and a public NLB on ports 80/443/4646.

@@ -1,0 +1,505 @@
+# nomad-cluster-v2 — Go-templated Pulumi YAML
+#
+# v2 of the Nomad + Consul cluster program. Uses canonical Pulumi OCI resource
+# type names throughout so the visual editor's property autocomplete and Level 5
+# schema validation work correctly for every resource type.
+#
+# Architecture (mirrors the production rs-estates/oracle-nomad-cluster):
+#   - Compartment
+#   - IAM: DynamicGroup + Policy (conditional, skip with skipDynamicGroup=true)
+#   - VCN with public + private subnets, Internet Gateway, NAT Gateway
+#   - Two route tables: public (via IGW) and private (via NAT)
+#   - Two security lists: public (SSH + HTTP/HTTPS + VCN) and private (VCN only)
+#   - Three NSGs: ssh-nsg, nomad-nsg, traefik-nsg
+#   - One InstanceConfiguration + one InstancePool (homogeneous instances)
+#   - Public NLB on ports 80, 443, 4646 with one BackendSet + Listener per port
+#
+# Differences from the built-in Go program:
+#
+#   1. cloud-init: COMPARTMENT_OCID and SUBNET_OCID are fetched at boot via the
+#      OCI Instance Metadata Service (IMDS) in cloudinit.sh — not injected at
+#      template-render time. Consul/Nomad auto-join works correctly.
+#
+#   2. sshPublicKey is a config field (pasted or UI-selected value). The built-in
+#      Go program reads it from OCI_USER_SSH_PUBLIC_KEY. Both work; config field
+#      is the correct approach for user-defined YAML programs.
+#
+#   3. InstanceConfiguration + InstancePool are used (homogeneous instances).
+#      All nodes share the same ocpusPerNode / memoryGbPerNode. This is the
+#      canonical approach for a cluster of identical nodes. The built-in Go
+#      program uses an unequal distribution to maximise the 4-OCPU Always Free
+#      quota; for simplicity here we let the user set uniform values.
+#
+#   4. GlusterFS is not included. Shared storage should be provided by a managed
+#      OCI service (e.g. File Storage, Object Storage) or a purpose-built volume
+#      operator, not an in-cluster GlusterFS ring.
+#
+# Go-template directives (double-brace) are resolved before Pulumi runs.
+# Pulumi interpolations (${ }) are resolved by Pulumi at apply time.
+
+name: nomad-cluster-v2
+runtime: yaml
+description: "Nomad + Consul cluster on OCI Always Free A1 — InstancePool, no GlusterFS"
+
+meta:
+  groups:
+    - key: iam
+      label: "IAM & Permissions"
+      fields: [skipDynamicGroup, adminGroupName, identityDomain]
+    - key: infrastructure
+      label: "Infrastructure"
+      fields: [nodeCount, compartmentName, compartmentDescription, vcnCidr, publicSubnetCidr, privateSubnetCidr, sshSourceCidr]
+    - key: compute
+      label: "Compute"
+      fields: [shape, ocpusPerNode, memoryGbPerNode, bootVolSizeGb, imageId, sshPublicKey]
+    - key: software
+      label: "Software Versions"
+      fields: [nomadVersion, consulVersion]
+  fields:
+    shape:
+      ui_type: oci-shape
+    imageId:
+      ui_type: oci-image
+    sshPublicKey:
+      ui_type: ssh-public-key
+
+config:
+  # ── IAM & Permissions ────────────────────────────────────────────────────────
+  skipDynamicGroup:
+    type: string
+    default: "false"
+  adminGroupName:
+    type: string
+    default: ""
+  identityDomain:
+    type: string
+    default: ""
+
+  # ── Infrastructure ───────────────────────────────────────────────────────────
+  nodeCount:
+    type: integer
+    default: 3
+  compartmentName:
+    type: string
+    default: nomad-compartment
+  compartmentDescription:
+    type: string
+    default: "Compartment for Nomad cluster"
+  vcnCidr:
+    type: string
+    default: "10.0.0.0/16"
+  publicSubnetCidr:
+    type: string
+    default: "10.0.1.0/24"
+  privateSubnetCidr:
+    type: string
+    default: "10.0.2.0/24"
+  sshSourceCidr:
+    type: string
+    default: "0.0.0.0/0"
+
+  # ── Compute ──────────────────────────────────────────────────────────────────
+  shape:
+    type: string
+    default: VM.Standard.A1.Flex
+  ocpusPerNode:
+    type: integer
+    default: 1
+  memoryGbPerNode:
+    type: integer
+    default: 6
+  bootVolSizeGb:
+    type: integer
+    default: 50
+  imageId:
+    type: string
+  sshPublicKey:
+    type: string
+
+  # ── Software Versions ────────────────────────────────────────────────────────
+  nomadVersion:
+    type: string
+    default: "1.10.3"
+  consulVersion:
+    type: string
+    default: "1.21.3"
+
+variables:
+  availabilityDomain:
+    fn::invoke:
+      function: oci:identity:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains[0].name
+
+  # Resolved after nomad-pool is created. Used for NLB backend targetIds.
+  pool-instances:
+    fn::invoke:
+      function: oci:core:getInstancePoolInstances
+      arguments:
+        compartmentId: ${nomad-compartment.id}
+        instancePoolId: ${nomad-pool.id}
+
+resources:
+
+  # ── Compartment ──────────────────────────────────────────────────────────────
+
+  nomad-compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: {{ .Config.compartmentName }}
+      description: {{ .Config.compartmentDescription | quote }}
+      enableDelete: false
+
+  # ── IAM ──────────────────────────────────────────────────────────────────────
+  # Entire block omitted when skipDynamicGroup = "true".
+
+  {{- if ne .Config.skipDynamicGroup "true" }}
+
+  {{- if .Config.adminGroupName }}
+  nomad-iam-prereq-policy:
+    type: oci:Identity/policy:Policy
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: nomad-iam-prereq
+      description: "Grants admin group permission to manage dynamic groups and policies"
+      statements:
+        - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}
+        - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage policies in tenancy" | quote }}
+  {{- end }}
+
+  nomad-cluster-dg:
+    type: oci:Identity/dynamicGroup:DynamicGroup
+    {{- if .Config.adminGroupName }}
+    options:
+      dependsOn:
+        - ${nomad-iam-prereq-policy}
+    {{- end }}
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: nomad-cluster-dg
+      description: "Dynamic group for Nomad cluster instances"
+      matchingRule: "ALL {instance.compartment.id = '${nomad-compartment.id}'}"
+
+  nomad-cluster-policy:
+    type: oci:Identity/policy:Policy
+    options:
+      dependsOn:
+        - ${nomad-cluster-dg}
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: nomad-cluster-policy
+      description: "Allow Nomad cluster nodes to manage cluster resources"
+      statements:
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to inspect instances in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to inspect vnics in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to inspect vnic-attachments in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to inspect compartments in tenancy"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to inspect tenancies in tenancy"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to read instance-family in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to manage instance-family in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to read compute-management-family in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to read load-balancers in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to inspect private-ips in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to use volumes in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to manage buckets in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group ${nomad-cluster-dg.name} to manage objects in compartment id ${nomad-compartment.id}"
+
+  {{- end }}
+
+  # ── Network ───────────────────────────────────────────────────────────────────
+
+  nomad-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      cidrBlock: {{ .Config.vcnCidr | quote }}
+      displayName: nomad-vcn
+      dnsLabel: nomadvcn
+
+  nomad-igw:
+    type: oci:Core/internetGateway:InternetGateway
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      enabled: true
+      displayName: nomad-igw
+
+  nomad-natgw:
+    type: oci:Core/natGateway:NatGateway
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: nomad-natgw
+      blockTraffic: false
+
+  public-security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "Public Security List"
+      ingressSecurityRules:
+        - protocol: "6"
+          source: "0.0.0.0/0"
+          sourceType: CIDR_BLOCK
+          tcpOptions: { max: 80, min: 80 }
+        - protocol: "6"
+          source: "0.0.0.0/0"
+          sourceType: CIDR_BLOCK
+          tcpOptions: { max: 443, min: 443 }
+        - protocol: "6"
+          source: {{ .Config.sshSourceCidr | quote }}
+          sourceType: CIDR_BLOCK
+          tcpOptions: { max: 22, min: 22 }
+        - protocol: "all"
+          source: {{ .Config.vcnCidr | quote }}
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  private-security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "Private Security List"
+      ingressSecurityRules:
+        - protocol: "all"
+          source: {{ .Config.vcnCidr | quote }}
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  nomad-public-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: nomad-public-rt
+      routeRules:
+        - networkEntityId: ${nomad-igw.id}
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  nomad-private-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: nomad-private-rt
+      routeRules:
+        - networkEntityId: ${nomad-natgw.id}
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  public-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      cidrBlock: {{ .Config.publicSubnetCidr | quote }}
+      displayName: public-subnet
+      dnsLabel: nomadvcnpub
+      prohibitPublicIpOnVnic: false
+      routeTableId: ${nomad-public-rt.id}
+      securityListIds:
+        - ${public-security-list.id}
+      dhcpOptionsId: ${nomad-vcn.defaultDhcpOptionsId}
+
+  private-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      cidrBlock: {{ .Config.privateSubnetCidr | quote }}
+      displayName: private-subnet
+      dnsLabel: nomadvcnpriv
+      prohibitPublicIpOnVnic: true
+      routeTableId: ${nomad-private-rt.id}
+      securityListIds:
+        - ${private-security-list.id}
+      dhcpOptionsId: ${nomad-vcn.defaultDhcpOptionsId}
+
+  # ── Network Security Groups ───────────────────────────────────────────────────
+  # Three NSGs: SSH (22), Nomad RPC/serf/HTTP (4646-4648), Traefik HTTP/HTTPS (80/443).
+
+  ssh-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: ssh-nsg
+
+  ssh-nsg-rule:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${ssh-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.sshSourceCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange: { min: 22, max: 22 }
+      description: "Allow SSH"
+
+  nomad-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: nomad-nsg
+
+  {{- range $port := list 4646 4647 4648 }}
+  nomad-nsg-rule-{{ $port }}:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${nomad-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ $.Config.vcnCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange: { min: {{ $port }}, max: {{ $port }} }
+      description: {{ printf "Allow Nomad port %d from VCN" $port | quote }}
+  {{- end }}
+
+  traefik-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: traefik-nsg
+
+  {{- range $port := list 80 443 }}
+  traefik-nsg-rule-{{ $port }}:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${traefik-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: "0.0.0.0/0"
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange: { min: {{ $port }}, max: {{ $port }} }
+      description: {{ printf "Allow Traefik port %d from internet" $port | quote }}
+  {{- end }}
+
+  # ── Compute — InstanceConfiguration + InstancePool ───────────────────────────
+  # All nodes are identical (ocpusPerNode / memoryGbPerNode). The InstancePool
+  # manages instance lifecycle and placement. OCI automatically tags pool
+  # instances with oci:compute:instanceconfiguration, enabling subnet-based
+  # peer discovery in cloudinit.sh.
+
+  nomad-ic:
+    type: oci:Core/instanceConfiguration:InstanceConfiguration
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      displayName: nomad-ic
+      instanceDetails:
+        instanceType: compute
+        launchDetails:
+          compartmentId: ${nomad-compartment.id}
+          availabilityDomain: ${availabilityDomain}
+          shape: {{ .Config.shape | quote }}
+          shapeConfig:
+            ocpus: {{ .Config.ocpusPerNode }}
+            memoryInGbs: {{ .Config.memoryGbPerNode }}
+          sourceDetails:
+            sourceType: image
+            imageId: {{ .Config.imageId | quote }}
+            bootVolumeSizeInGbs: {{ .Config.bootVolSizeGb | quote }}
+          createVnicDetails:
+            subnetId: ${private-subnet.id}
+            assignPublicIp: false
+            nsgIds:
+              - ${ssh-nsg.id}
+              - ${nomad-nsg.id}
+              - ${traefik-nsg.id}
+          metadata:
+            ssh_authorized_keys: {{ .Config.sshPublicKey | quote }}
+            user_data: {{ cloudInit 0 .Config }}
+
+  nomad-pool:
+    type: oci:Core/instancePool:InstancePool
+    options:
+      dependsOn:
+        - ${nomad-ic}
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      instanceConfigurationId: ${nomad-ic.id}
+      size: {{ .Config.nodeCount }}
+      displayName: nomad-pool
+      placementConfigurations:
+        - availabilityDomain: ${availabilityDomain}
+          primarySubnetId: ${private-subnet.id}
+
+  # ── Network Load Balancer ──────────────────────────────────────────────────────
+  # Public NLB in the public subnet, attached to traefik-nsg.
+  # Ports: 80 (HTTP), 443 (HTTPS/TLS passthrough), 4646 (Nomad UI/API).
+  # All BackendSet/Listener/Backend resources are serialized via dependsOn to
+  # prevent OCI 409 Conflict errors on concurrent NLB mutations.
+  # Backend targetIds reference pool instances by index via the pool-instances
+  # variable (fn::invoke: oci:core:getInstancePoolInstances).
+
+  traefik-nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      subnetId: ${public-subnet.id}
+      displayName: traefik-nlb
+      isPrivate: false
+      networkSecurityGroupIds:
+        - ${traefik-nsg.id}
+
+  {{- range $port := list 80 443 4646 }}
+  traefik-nlb-bs-{{ $port }}:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: {{ printf "bs-%d" $port | quote }}
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: {{ $port }}
+
+  traefik-nlb-listener-{{ $port }}:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    options:
+      dependsOn:
+        - ${traefik-nlb-bs-{{ $port }}}
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: {{ printf "listener-%d" $port | quote }}
+      defaultBackendSetName: ${traefik-nlb-bs-{{ $port }}.name}
+      protocol: TCP
+      port: {{ $port }}
+
+  {{- range $i := until (atoi $.Config.nodeCount) }}
+  traefik-nlb-backend-{{ $port }}-{{ $i }}:
+    type: oci:NetworkLoadBalancer/backend:Backend
+    options:
+      dependsOn:
+        - ${traefik-nlb-bs-{{ $port }}}
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      backendSetName: ${traefik-nlb-bs-{{ $port }}.name}
+      targetId: {{ printf "${pool-instances.instances[%d].instanceId}" $i }}
+      port: {{ $port }}
+  {{- end }}
+  {{- end }}
+
+outputs:
+  traefikNlbIps: ${traefik-nlb.ipAddresses}
+  privateSubnetId: ${private-subnet.id}
+  compartmentId: ${nomad-compartment.id}
+  nomadUiUrl: {{ printf "http://${traefik-nlb.ipAddresses[0]}:4646" | quote }}

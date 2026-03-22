@@ -65,6 +65,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 	r.Route("/api", func(r chi.Router) {
 		// OCI schema — no authentication required
 		r.Get("/oci-schema", oci.SchemaHandler)
+		r.Post("/oci-schema/refresh", oci.SchemaRefreshHandler)
 
 		// Auth — no authentication required
 		r.Get("/auth/status", h.AuthStatus)

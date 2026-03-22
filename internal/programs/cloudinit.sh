@@ -158,10 +158,8 @@ LOG_LEVEL="INFO"
 NOMAD_CLIENT_CPU="@@NOMAD_CLIENT_CPU@@"
 NOMAD_CLIENT_MEMORY="@@NOMAD_CLIENT_MEMORY@@"
 NOMAD_BOOTSTRAP_EXPECT=@@NOMAD_BOOTSTRAP_EXPECT@@
-COMPARTMENT_OCID="@@COMPARTMENT_OCID@@"
-SUBNET_OCID="@@SUBNET_OCID@@"
 
-for var_name in "NOMAD_CLIENT_CPU" "NOMAD_CLIENT_MEMORY" "NOMAD_BOOTSTRAP_EXPECT" "COMPARTMENT_OCID" "SUBNET_OCID"; do
+for var_name in "NOMAD_CLIENT_CPU" "NOMAD_CLIENT_MEMORY" "NOMAD_BOOTSTRAP_EXPECT"; do
   var_value=$(eval echo $$var_name)
   if [[ "$var_value" =~ @@.+@@ ]]; then  # PLACEHOLDER-CHECK
     echo "ERROR: Variable substitution failed for $var_name: $var_value"
@@ -169,6 +167,22 @@ for var_name in "NOMAD_CLIENT_CPU" "NOMAD_CLIENT_MEMORY" "NOMAD_BOOTSTRAP_EXPECT
   fi
 done
 echo "Variable substitutions validated successfully."
+
+# Fetch compartment and subnet from OCI Instance Metadata Service (IMDS).
+# These are not available at Pulumi template-render time, so we resolve them
+# at boot instead. IMDS is always reachable from within an OCI instance.
+COMPARTMENT_OCID=$(curl -sf -H "Authorization: Bearer Oracle" \
+  http://169.254.169.254/opc/v2/instance/ | jq -r '.compartmentId // empty')
+SUBNET_OCID=$(curl -sf -H "Authorization: Bearer Oracle" \
+  http://169.254.169.254/opc/v2/vnics/ | jq -r '.[0].subnetId // empty')
+
+if [ -z "$COMPARTMENT_OCID" ] || [ -z "$SUBNET_OCID" ]; then
+  echo "ERROR: Could not fetch COMPARTMENT_OCID or SUBNET_OCID from IMDS."
+  echo "  COMPARTMENT_OCID='$COMPARTMENT_OCID'"
+  echo "  SUBNET_OCID='$SUBNET_OCID'"
+  exit 1
+fi
+echo "IMDS: compartment=$COMPARTMENT_OCID subnet=$SUBNET_OCID"
 
 
 # Run IP discovery
@@ -192,12 +206,13 @@ discover_node_ips() {
   while [ $attempt -le $max_retries ]; do
     echo "Attempt $attempt/$max_retries: Querying for node IPs..."
 
-    # Query OCI CLI for private IPs in the subnet with the required tag
+    # Query OCI CLI for all VNIC private IPs in the subnet.
+    # We don't filter by the oci:compute:instanceconfiguration tag because
+    # that tag is only present on InstancePool-managed instances; direct
+    # oci:Core/instance:Instance resources don't have it.
     local private_ips
     private_ips=$(oci network private-ip list --subnet-id "$subnet_ocid" --all \
-      | jq -r '.data[]
-          | select(.["freeform-tags"] and .["freeform-tags"]["oci:compute:instanceconfiguration"])
-          | .["ip-address"]')
+      | jq -r '.data[] | .["ip-address"]')
 
     local ip_count
     ip_count=$(echo "$private_ips" | grep -c '^')

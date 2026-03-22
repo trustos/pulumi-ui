@@ -5,6 +5,11 @@ export const nlbAppTemplate: ProgramGraph = {
   configFields: [
     { key: 'compartmentName', type: 'string', default: 'my-compartment' },
     { key: 'nodeCount', type: 'integer', default: '2', description: 'Number of backend instances' },
+    { key: 'imageId', type: 'string', default: '', description: 'OCI image OCID for the boot volume' },
+    { key: 'sshPublicKey', type: 'string', default: '', description: 'SSH public key for instance access' },
+    { key: 'shape', type: 'string', default: 'VM.Standard.A1.Flex' },
+    { key: 'ocpus', type: 'string', default: '2' },
+    { key: 'memoryInGbs', type: 'string', default: '12' },
   ],
   sections: [
     {
@@ -17,7 +22,7 @@ export const nlbAppTemplate: ProgramGraph = {
           resourceType: 'oci:Identity/compartment:Compartment',
           properties: [
             { key: 'compartmentId', value: '${oci:tenancyOcid}' },
-            { key: 'name', value: '{{ .Config.compartmentName }}' },
+            { key: 'name', value: '"{{ .Config.compartmentName }}"' },
             { key: 'description', value: '"Created by Pulumi"' },
             { key: 'enableDelete', value: 'true' },
           ],
@@ -56,6 +61,7 @@ export const nlbAppTemplate: ProgramGraph = {
             { key: 'cidrBlock', value: '"10.0.1.0/24"' },
             { key: 'displayName', value: '"subnet"' },
             { key: 'dnsLabel', value: '"subnet"' },
+            { key: 'prohibitPublicIpOnVnic', value: 'false' },
           ],
           options: { dependsOn: ['igw'] },
         },
@@ -90,9 +96,14 @@ export const nlbAppTemplate: ProgramGraph = {
               properties: [
                 { key: 'compartmentId', value: '${compartment.id}' },
                 { key: 'availabilityDomain', value: '"AD-1"' },
-                { key: 'shape', value: '"VM.Standard.A1.Flex"' },
+                { key: 'shape', value: '"{{ .Config.shape }}"' },
                 { key: 'displayName', value: '"instance-{{ $i }}"' },
+                { key: 'sourceDetails', value: '{ sourceType: "image", imageId: "{{ .Config.imageId }}" }' },
+                { key: 'createVnicDetails', value: '{ subnetId: "${subnet.id}", assignPublicIp: false }' },
+                { key: 'metadata', value: '{ ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }' },
+                { key: 'shapeConfig', value: '{ ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }' },
               ],
+              options: { dependsOn: ['subnet'] },
             },
           ],
         },

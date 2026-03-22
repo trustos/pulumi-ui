@@ -163,6 +163,8 @@
             </label>
             {#if field.description}
               <p class="text-xs text-muted-foreground">{field.description}</p>
+            {:else}
+              <p class="text-xs text-muted-foreground/60 font-mono">{field.key}</p>
             {/if}
 
             {#if field.type === 'oci-shape'}
