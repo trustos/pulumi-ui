@@ -30,7 +30,34 @@
 
 ---
 
-## Data Flow
+## Two Execution Paths
+
+Programs fall into two types with different execution paths:
+
+| Type | Stored as | Executed via | Examples |
+|---|---|---|---|
+| Built-in | Go source (compiled) | `UpsertStackInlineSource` | `nomad-cluster`, `test-vcn` |
+| User-defined YAML | Go-templated Pulumi YAML in `custom_programs` DB table | `UpsertStackLocalSource` | VCN, bucket, single instance, DNS zone |
+
+The engine checks whether a program implements `YAMLProgramProvider` via type assertion:
+
+```go
+func (e *Engine) resolveStack(ctx, stackName string, prog Program, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
+    if yp, ok := prog.(YAMLProgramProvider); ok {
+        return e.getOrCreateYAMLStack(ctx, stackName, yp, cfg, envVars, creds)
+    }
+    stack, err := e.getOrCreateStack(ctx, stackName, prog, cfg, envVars)
+    return stack, func() {}, err
+}
+```
+
+All four operations (Up, Destroy, Refresh, Preview) automatically use the correct path for any program type.
+
+**Why YAML for user programs:** Pulumi has a first-class YAML runtime (`runtime: yaml`) executed by `pulumi-language-yaml`, which ships inside the Pulumi CLI tarball installed in the Docker image. Pure Pulumi YAML has limitations (no loops, no conditionals), so programs are stored as **Go-templated YAML** — exactly like Helm templates for Kubernetes YAML. The Go `text/template` engine renders structural decisions before Pulumi runs; Pulumi then resolves cross-resource references (`${resource.property}`) at apply time.
+
+---
+
+## Data Flow — Built-in Go Programs
 
 ```
 Browser ──────────────────────────────────────────────────────────────┐
@@ -60,7 +87,8 @@ Svelte SPA ◄────── JSON ──── Go HTTP handlers             
                  │                            │                       │
                  ▼                            ▼                       │
          buildEnvVars(creds)         Pulumi Automation               │
-         writes key temp file        API (Go)                         │
+         returns OCI env vars        API (Go)                         │
+         (inline key, no temp file)  │                               │
                  │                     │                              │
                  └──── OCI env ────────┤                              │
                        vars injected   │                              │
@@ -74,11 +102,7 @@ Svelte SPA ◄────── JSON ──── Go HTTP handlers             
                                (Pulumi OCI Go SDK)
 ```
 
----
-
-## YAML Program Execution Path
-
-User-defined programs stored in the `custom_programs` table use a different execution path than built-in Go programs:
+## Data Flow — YAML Programs
 
 ```
 Browser ──────────────────────────────────────────────────────────────┐
@@ -110,7 +134,7 @@ Pulumi YAML runtime (pulumi-language-yaml binary, bundled in CLI)     │
 OCI APIs ──────────────────────────────────────────────────────────────┘
 ```
 
-Key difference from built-in programs: OCI credentials are passed as Pulumi provider config keys (`oci:tenancyOcid`, etc.) via `stack.SetConfig()` rather than as environment variables, because YAML programs cannot read environment variables directly — the Pulumi OCI provider reads its config from the Pulumi config system.
+Key difference from built-in programs: OCI credentials are passed as Pulumi provider config keys (`oci:tenancyOcid`, `oci:privateKey`, etc.) via `stack.SetConfig()` rather than as environment variables, because YAML programs cannot read environment variables directly — the Pulumi OCI provider reads its config from the Pulumi config system. The private key is always passed as inline PEM content (`oci:privateKey`, `Secret: true`), never as a file path — a temp-file path would be deleted after the operation and cause 401 errors on subsequent Refresh.
 
 ---
 
@@ -138,6 +162,12 @@ Key difference from built-in programs: OCI credentials are passed as Pulumi prov
 - `oci` has no internal imports (standalone HTTP client used by `api/accounts.go`)
 - `crypto` has no internal imports (pure stdlib crypto)
 - `keystore` has no internal imports (only stdlib `net/http` and `os`); imported only by `main`
+
+**Target architecture** (see `docs/roadmap.md`):
+```
+Handler → Service (internal/services/) → Repository interface (internal/ports/) → DB Store
+```
+Business logic moves out of handlers into services. Stores implement narrow interfaces.
 
 ---
 
@@ -169,8 +199,12 @@ require (
 The Go binary itself is fully self-contained. However, **Pulumi resource provider plugins** are separate native binaries that the Pulumi Automation API downloads and caches in `~/.pulumi/plugins/`. These must be pre-installed in the Docker image:
 
 ```dockerfile
-RUN pulumi plugin install resource oci 4.x.x
+RUN pulumi plugin install resource oci 4.3.1
 ```
+
+The OCI provider is pinned to **v4.3.1** throughout the codebase — `engine.go` injects a `plugins:` section into every YAML program to force this exact version, and the engine calls `InstallPlugin` with the same pin. Do not change this version without auditing all resource type tokens (v4 uses the canonical `oci:Module/subtype:Resource` format).
+
+The engine also unconditionally sets `PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING=true` in every workspace. This is required because the OCI v4 provider schema contains `ArrayType`/`MapType` objects with nil `ElementType`, which causes a SIGSEGV in `pulumi-yaml`. The engine's own Level 5/6 schema validation covers the same concern safely.
 
 ---
 

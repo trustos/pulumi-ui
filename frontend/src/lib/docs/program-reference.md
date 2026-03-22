@@ -491,14 +491,16 @@ memoryInGbs: {{ instanceMemoryGb $i (atoi $.Config.nodeCount) }}
 cloudInit(nodeIndex int, config map[string]string) string
 ```
 
-Renders the Nomad/Consul cluster cloud-init script and returns it base64-encoded. Uses config values such as `shape`, `nodeCount`, `nomadVersion`, `consulVersion`.
+Renders the Nomad/Consul cluster cloud-init script, gzip-compresses it, and returns it base64-encoded. Uses config values such as `nodeCount`, `nomadVersion`, `consulVersion`. If `ocpusPerNode` and `memoryGbPerNode` are present they take precedence over the per-node distribution logic.
 
 ```yaml
 metadata:
-  userDataScript: {{ cloudInit $i $.Config }}
+  user_data: {{ cloudInit $i $.Config }}
 ```
 
-> **Limitation:** `COMPARTMENT_OCID` and `SUBNET_OCID` placeholders in the cloud-init script are left empty because those values are only available at Pulumi apply time (as `${resource.id}` outputs), not at template render time.
+The output is suitable for OCI instance `metadata.user_data`. `cloud-init` detects gzip via magic bytes and decompresses transparently. OCI has a 32 KB metadata limit — gzip keeps the encoded script well under that.
+
+> **Limitation:** `COMPARTMENT_OCID` and `SUBNET_OCID` are resolved at VM boot time via the OCI Instance Metadata Service (IMDS) inside `cloudinit.sh` — they are not injected at template render time.
 
 ### `groupRef`
 

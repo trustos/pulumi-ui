@@ -196,23 +196,16 @@ Full detail: `docs/11-architecture-roadmap.md`
 
 | File | Contents |
 |---|---|
-| `docs/01-architecture.md` | Layer diagram, single-binary design |
-| `docs/02-database.md` | SQLite setup, migrations, encryption |
-| `docs/03-programs.md` | Program interface, built-in vs YAML programs |
-| `docs/04-api-routes.md` | All HTTP endpoints |
-| `docs/05-frontend.md` | SPA structure, routing, component overview |
-| `docs/06-deployment.md` | Docker multi-stage build, env vars |
-| `docs/07-program-manifests.md` | Config group design history |
-| `docs/08-dynamic-programs.md` | Hybrid execution model (Go vs YAML) |
-| `docs/09-templated-yaml-programs.md` | YAML program format, template functions |
-| `docs/10-yaml-program-reference.md` | Full template function reference |
-| `docs/11-architecture-roadmap.md` | 10-theme improvement plan |
-| `docs/12-coding-principles.md` | SOLID principles for this codebase |
-| `docs/13-frontend-guidelines.md` | Frontend component rules + UX principles |
-| `docs/14-visual-program-editor.md` | Visual editor design — Program Graph model, phases, component tree |
-| `docs/15-visual-editor-fix-plan.md` | Audit-derived fix plan for visual editor — P1/P2/P3 issues with exact code changes |
-| `docs/16-cloud-init-redesign.md` | Cloud-init redesign — new `internal/cloudinit/` package, `{{ userInit }}` template function, frontend UI |
-| `docs/17-visual-editor-interaction-gaps.md` | Interaction gaps found in testing — loops/conditionals can't add items, broken dropdown, config field groups, dependsOn scope, stack layer editing |
+| `docs/architecture.md` | Layer diagram, single-binary design, two execution paths, security model |
+| `docs/database.md` | SQLite setup, migrations, encryption |
+| `docs/programs.md` | Program interface, built-in programs, YAML programs, OCI API client |
+| `docs/api.md` | All HTTP endpoints |
+| `docs/frontend.md` | SPA structure, routing, component overview, UX rules, type definitions |
+| `docs/deployment.md` | Docker multi-stage build, env vars |
+| `docs/yaml-programs.md` | YAML program format, template functions, full OCI resource reference |
+| `docs/coding-principles.md` | SOLID principles for this codebase |
+| `docs/visual-editor.md` | Visual editor design, Program Graph model, known bugs + fix plan |
+| `docs/roadmap.md` | Architecture improvement roadmap + cloud-init redesign plan |
 
 ---
 

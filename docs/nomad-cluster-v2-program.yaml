@@ -133,12 +133,15 @@ variables:
       return: availabilityDomains
 
   # Resolved after nomad-pool is created. Used for NLB backend targetIds.
+  # return: instances gives us the array directly so we can index with [N].id
+  # (same pattern as availabilityDomains above).
   pool-instances:
     fn::invoke:
       function: oci:Core/getInstancePoolInstances:getInstancePoolInstances
       arguments:
         compartmentId: ${nomad-compartment.id}
         instancePoolId: ${nomad-pool.id}
+      return: instances
 
 resources:
 
@@ -445,7 +448,7 @@ resources:
   # All BackendSet/Listener/Backend resources are serialized via dependsOn to
   # prevent OCI 409 Conflict errors on concurrent NLB mutations.
   # Backend targetIds reference pool instances by index via the pool-instances
-  # variable (fn::invoke: oci:core:getInstancePoolInstances).
+  # variable pool-instances (fn::invoke: getInstancePoolInstances, return: instances).
 
   traefik-nlb:
     type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
@@ -493,7 +496,7 @@ resources:
     properties:
       networkLoadBalancerId: ${traefik-nlb.id}
       backendSetName: ${traefik-nlb-bs-{{ $port }}.name}
-      targetId: {{ printf "${pool-instances.instances[%d].instanceId}" $i }}
+      targetId: {{ printf "${pool-instances[%d].id}" $i }}
       port: {{ $port }}
   {{- end }}
   {{- end }}
