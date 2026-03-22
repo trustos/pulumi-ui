@@ -30,6 +30,14 @@ import (
 var frontendDist embed.FS
 
 func main() {
+	// The OCI v4 provider schema contains ArrayType/MapType entries with a nil
+	// ElementType that causes a nil-pointer SIGSEGV inside pulumi-yaml's
+	// DisplayTypeWithAdhock function. Setting this env var at process startup
+	// ensures all Pulumi subprocesses (including pulumi-language-yaml and all
+	// provider plugins) inherit it before any workspace operation runs.
+	os.Setenv("PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING", "true")
+	log.Printf("[startup] PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING=true")
+
 	dataDir := envOr("PULUMI_UI_DATA_DIR", "/data")
 	stateDir := envOr("PULUMI_UI_STATE_DIR", dataDir+"/state")
 

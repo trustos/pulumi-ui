@@ -2,7 +2,6 @@ package programs
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 
 	"github.com/pulumi/pulumi-oci/sdk/v2/go/oci/core"
@@ -82,12 +81,20 @@ func (p *NomadClusterProgram) ConfigFields() []ConfigField {
 			Required: true, Description: "Oracle Linux image for your region",
 			Group: gInfra, GroupLabel: lInfra},
 
-		// ── Compute & Storage ──────────────────────────────────────────────
+		// ── Compute ────────────────────────────────────────────────────────
+		{Key: "ocpusPerNode", Label: "OCPUs per Node", Type: "number",
+			Required: false, Default: "1",
+			Description: "OCPUs allocated to each node (Always Free limit: 4 total)",
+			Group: gComp, GroupLabel: lComp},
+		{Key: "memoryGbPerNode", Label: "Memory per Node (GB)", Type: "number",
+			Required: false, Default: "6",
+			Description: "Memory GiB per node (Always Free limit: 24 GB total)",
+			Group: gComp, GroupLabel: lComp},
 		{Key: "bootVolSizeGb", Label: "Boot Volume (GB)", Type: "number",
 			Required: false, Default: "50",
 			Group: gComp, GroupLabel: lComp},
-		{Key: "glusterVolSizeGb", Label: "GlusterFS Volume (GB)", Type: "number",
-			Required: false, Default: "100",
+		{Key: "sshPublicKey", Label: "SSH Public Key", Type: "ssh-public-key",
+			Required: true,
 			Group: gComp, GroupLabel: lComp},
 
 		// ── Software Versions ──────────────────────────────────────────────
@@ -114,14 +121,6 @@ type nsgResult struct {
 	sshNsgID     pulumi.IDOutput
 	nomadNsgID   pulumi.IDOutput
 	traefikNsgID pulumi.IDOutput
-	glusterNsgID pulumi.IDOutput
-}
-
-type instanceSpec struct {
-	name        string
-	ocpus       int
-	memoryInGBs int
-	count       int
 }
 
 type poolsResult struct {
@@ -130,35 +129,531 @@ type poolsResult struct {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Node sizing (mirrors v1 TypeScript exactly)
-// ─────────────────────────────────────────────────────────────────────────────
-
-func getInstanceSpecs(nodeCount int) []instanceSpec {
-	switch nodeCount {
-	case 1:
-		return []instanceSpec{{"single-node", 4, 24, 1}}
-	case 2:
-		return []instanceSpec{{"two-nodes", 2, 12, 2}}
-	case 3:
-		return []instanceSpec{
-			{"small-nodes", 1, 8, 2},
-			{"large-node", 2, 8, 1},
-		}
-	case 4:
-		return []instanceSpec{{"four-nodes", 1, 6, 4}}
-	default:
-		return []instanceSpec{{"nodes", 1, 6, nodeCount}}
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Run entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
+func (p *NomadClusterProgram) ForkYAML() string {
+	return `name: nomad-cluster-custom
+runtime: yaml
+description: "Forked from Nomad Cluster"
+
+meta:
+  groups:
+    - key: iam
+      label: "IAM & Permissions"
+      fields: [skipDynamicGroup, adminGroupName, identityDomain]
+    - key: infrastructure
+      label: "Infrastructure"
+      fields: [nodeCount, compartmentName, compartmentDescription, vcnCidr, publicSubnetCidr, privateSubnetCidr, sshSourceCidr, shape, imageId]
+    - key: compute
+      label: "Compute & Storage"
+      fields: [ocpusPerNode, memoryGbPerNode, bootVolSizeGb, sshPublicKey]
+    - key: software
+      label: "Software Versions"
+      fields: [nomadVersion, consulVersion]
+  fields:
+    imageId:
+      ui_type: oci-image
+    shape:
+      ui_type: oci-shape
+    sshPublicKey:
+      ui_type: ssh-public-key
+
+config:
+  skipDynamicGroup:
+    type: string
+    default: "false"
+  adminGroupName:
+    type: string
+    default: ""
+  identityDomain:
+    type: string
+    default: ""
+  nodeCount:
+    type: integer
+    default: 3
+  compartmentName:
+    type: string
+    default: "nomad-compartment"
+  compartmentDescription:
+    type: string
+    default: "Compartment for Nomad cluster"
+  vcnCidr:
+    type: string
+    default: "10.0.0.0/16"
+  publicSubnetCidr:
+    type: string
+    default: "10.0.1.0/24"
+  privateSubnetCidr:
+    type: string
+    default: "10.0.2.0/24"
+  sshSourceCidr:
+    type: string
+    default: "0.0.0.0/0"
+  shape:
+    type: string
+    default: "VM.Standard.A1.Flex"
+  imageId:
+    type: string
+  ocpusPerNode:
+    type: integer
+    default: 1
+  memoryGbPerNode:
+    type: integer
+    default: 6
+  bootVolSizeGb:
+    type: integer
+    default: 50
+  nomadVersion:
+    type: string
+    default: "1.10.3"
+  consulVersion:
+    type: string
+    default: "1.21.3"
+  sshPublicKey:
+    type: string
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+
+resources:
+# --- section: identity ---
+  nomad-compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: {{ .Config.compartmentName }}
+      description: {{ .Config.compartmentDescription | quote }}
+      enableDelete: false
+
+# --- section: iam ---
+{{- if ne .Config.skipDynamicGroup "true" }}
+{{- if .Config.adminGroupName }}
+  nomad-iam-prereq-policy:
+    type: oci:Identity/policy:Policy
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: nomad-iam-prereq
+      description: "Grants admin group permission to manage dynamic groups and policies"
+      statements:
+        - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}
+        - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage policies in tenancy" | quote }}
+{{- end }}
+  nomad-cluster-dg:
+    type: oci:Identity/dynamicGroup:DynamicGroup
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: nomad-cluster-dg
+      description: "Dynamic group for Nomad cluster instances"
+      matchingRule: "ALL {instance.compartment.id = '${nomad-compartment.id}'}"
+{{- if .Config.adminGroupName }}
+    options:
+      dependsOn:
+        - ${nomad-iam-prereq-policy}
+{{- end }}
+  nomad-cluster-policy:
+    type: oci:Identity/policy:Policy
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      name: nomad-cluster-policy
+      description: "Allow Nomad cluster nodes to manage cluster resources"
+      statements:
+        - "Allow dynamic-group nomad-cluster-dg to inspect instances in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to inspect vnics in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to inspect compartments in tenancy"
+        - "Allow dynamic-group nomad-cluster-dg to inspect tenancies in tenancy"
+        - "Allow dynamic-group nomad-cluster-dg to read instance-family in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to read compute-management-family in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to read load-balancers in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to inspect private-ips in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to manage buckets in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to manage objects in compartment id ${nomad-compartment.id}"
+    options:
+      dependsOn:
+        - ${nomad-cluster-dg}
+{{- end }}
+
+# --- section: networking ---
+  nomad-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      cidrBlock: {{ .Config.vcnCidr | quote }}
+      displayName: "nomad-vcn"
+      dnsLabel: "nomadvcn"
+
+  nomad-igw:
+    type: oci:Core/internetGateway:InternetGateway
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      enabled: true
+      displayName: "nomad-igw"
+
+  nomad-natgw:
+    type: oci:Core/natGateway:NatGateway
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "nomad-natgw"
+      blockTraffic: false
+
+  public-security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "Public Security List"
+      ingressSecurityRules:
+        - protocol: "6"
+          source: "0.0.0.0/0"
+          sourceType: CIDR_BLOCK
+          tcpOptions:
+            max: 80
+            min: 80
+        - protocol: "6"
+          source: "0.0.0.0/0"
+          sourceType: CIDR_BLOCK
+          tcpOptions:
+            max: 443
+            min: 443
+        - protocol: "6"
+          source: {{ .Config.sshSourceCidr | quote }}
+          sourceType: CIDR_BLOCK
+          tcpOptions:
+            max: 22
+            min: 22
+        - protocol: "all"
+          source: {{ .Config.vcnCidr | quote }}
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  private-security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "Private Security List"
+      ingressSecurityRules:
+        - protocol: "all"
+          source: {{ .Config.vcnCidr | quote }}
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  nomad-public-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "nomad-public-rt"
+      routeRules:
+        - networkEntityId: ${nomad-igw.id}
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  nomad-private-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "nomad-private-rt"
+      routeRules:
+        - networkEntityId: ${nomad-natgw.id}
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  public-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      cidrBlock: {{ .Config.publicSubnetCidr | quote }}
+      displayName: "public-subnet"
+      dnsLabel: "nomadvcnpub"
+      prohibitPublicIpOnVnic: false
+      routeTableId: ${nomad-public-rt.id}
+      securityListIds:
+        - ${public-security-list.id}
+      dhcpOptionsId: ${nomad-vcn.defaultDhcpOptionsId}
+
+  private-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      cidrBlock: {{ .Config.privateSubnetCidr | quote }}
+      displayName: "private-subnet"
+      dnsLabel: "nomadvcnpriv"
+      prohibitPublicIpOnVnic: true
+      routeTableId: ${nomad-private-rt.id}
+      securityListIds:
+        - ${private-security-list.id}
+      dhcpOptionsId: ${nomad-vcn.defaultDhcpOptionsId}
+
+  ssh-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "ssh-nsg"
+
+  ssh-nsg-rule:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${ssh-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.sshSourceCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 22
+          max: 22
+      description: "Allow SSH"
+
+  nomad-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "nomad-nsg"
+
+  nomad-nsg-rule-4646:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${nomad-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.publicSubnetCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 4646
+          max: 4646
+      description: "Allow Nomad port 4646 from public subnet"
+
+  nomad-nsg-rule-4647:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${nomad-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.publicSubnetCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 4647
+          max: 4647
+      description: "Allow Nomad port 4647 from public subnet"
+
+  nomad-nsg-rule-4648:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${nomad-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.publicSubnetCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 4648
+          max: 4648
+      description: "Allow Nomad port 4648 from public subnet"
+
+  traefik-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "traefik-nsg"
+
+  traefik-nsg-rule-80:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${traefik-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: "0.0.0.0/0"
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 80
+          max: 80
+      description: "Allow HTTP"
+
+  traefik-nsg-rule-443:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${traefik-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: "0.0.0.0/0"
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 443
+          max: 443
+      description: "Allow HTTPS"
+
+# --- section: compute ---
+  nomad-ic:
+    type: oci:Core/instanceConfiguration:InstanceConfiguration
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      displayName: "nomad-ic"
+      instanceDetails:
+        instanceType: compute
+        launchDetails:
+          compartmentId: ${nomad-compartment.id}
+          availabilityDomain: ${availabilityDomains[0].name}
+          shape: {{ .Config.shape }}
+          shapeConfig:
+            ocpus: {{ .Config.ocpusPerNode }}
+            memoryInGbs: {{ .Config.memoryGbPerNode }}
+          sourceDetails:
+            sourceType: image
+            imageId: {{ .Config.imageId }}
+            bootVolumeSizeInGbs: {{ .Config.bootVolSizeGb | quote }}
+          createVnicDetails:
+            subnetId: ${private-subnet.id}
+            assignPublicIp: false
+            nsgIds:
+              - ${ssh-nsg.id}
+              - ${nomad-nsg.id}
+              - ${traefik-nsg.id}
+          metadata:
+            ssh_authorized_keys: {{ .Config.sshPublicKey }}
+            user_data: {{ cloudInit 0 .Config }}
+
+  nomad-pool:
+    type: oci:Core/instancePool:InstancePool
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      instanceConfigurationId: ${nomad-ic.id}
+      size: {{ .Config.nodeCount }}
+      displayName: "nomad-pool"
+      placementConfigurations:
+        - availabilityDomain: ${availabilityDomains[0].name}
+          primarySubnetId: ${private-subnet.id}
+    options:
+      dependsOn:
+        - ${nomad-ic}
+
+# --- section: loadbalancer ---
+  traefik-nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      subnetId: ${public-subnet.id}
+      displayName: "traefik-nlb"
+      isPrivate: false
+      networkSecurityGroupIds:
+        - ${traefik-nsg.id}
+
+  traefik-nlb-bs-80:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: bs-80
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: 80
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+
+  traefik-nlb-listener-80:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: listener-80
+      defaultBackendSetName: bs-80
+      protocol: TCP
+      port: 80
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+        - ${traefik-nlb-bs-80}
+
+  traefik-nlb-bs-443:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: bs-443
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: 443
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+        - ${traefik-nlb-listener-80}
+
+  traefik-nlb-listener-443:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: listener-443
+      defaultBackendSetName: bs-443
+      protocol: TCP
+      port: 443
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+        - ${traefik-nlb-bs-443}
+
+  traefik-nlb-bs-4646:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: bs-4646
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: 4646
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+        - ${traefik-nlb-listener-443}
+
+  traefik-nlb-listener-4646:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: listener-4646
+      defaultBackendSetName: bs-4646
+      protocol: TCP
+      port: 4646
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+        - ${traefik-nlb-bs-4646}
+
+outputs:
+  traefikNlbIps: ${traefik-nlb.ipAddresses}
+  privateSubnetId: ${private-subnet.id}
+`
+}
+
 func (p *NomadClusterProgram) Run(cfg map[string]string) pulumi.RunFunc {
 	return func(ctx *pulumi.Context) error {
-		tenancyOCID := os.Getenv("OCI_TENANCY_OCID")
-		sshPublicKey := os.Getenv("OCI_USER_SSH_PUBLIC_KEY")
+		tenancyOCID := cfgOr(cfg, "OCI_TENANCY_OCID", "")
+		sshPublicKey := cfgOr(cfg, "OCI_USER_SSH_PUBLIC_KEY", "")
 
 		nodeCount, _ := strconv.Atoi(cfgOr(cfg, "nodeCount", "3"))
 		if nodeCount < 1 || nodeCount > 4 {
@@ -194,24 +689,19 @@ func (p *NomadClusterProgram) Run(cfg map[string]string) pulumi.RunFunc {
 
 		// 4. NSGs
 		nsgs, err := createNSGs(ctx, comp.ID(), net.vcnID,
-			cfgOr(cfg, "vcnCidr", "10.0.0.0/16"),
-			cfgOr(cfg, "sshSourceCidr", "0.0.0.0/0"))
+			cfgOr(cfg, "sshSourceCidr", "0.0.0.0/0"),
+			cfgOr(cfg, "publicSubnetCidr", "10.0.1.0/24"))
 		if err != nil {
 			return err
 		}
 
-		// 5. Instance pools
+		// 5. Instance pool (homogeneous)
 		pools, err := createInstancePools(ctx, tenancyOCID, comp.ID(), net, nsgs, cfg, nodeCount, sshPublicKey)
 		if err != nil {
 			return err
 		}
 
-		// 6. Block volumes (GlusterFS)
-		if err := attachGlusterVolumes(ctx, comp.ID(), pools.adName, pools.instanceIDs, cfg, nodeCount); err != nil {
-			return err
-		}
-
-		// 7. Network Load Balancer
+		// 6. Network Load Balancer
 		nlb, err := createNLB(ctx, comp.ID(), net.publicSubnetID, nsgs.traefikNsgID, pools.instanceIDs, nodeCount)
 		if err != nil {
 			return err
@@ -461,7 +951,7 @@ func createNetwork(ctx *pulumi.Context, compartmentID pulumi.IDOutput, cfg map[s
 // 3. NSGs
 // ─────────────────────────────────────────────────────────────────────────────
 
-func createNSGs(ctx *pulumi.Context, compartmentID, vcnID pulumi.IDOutput, vcnCidr, sshSourceCidr string) (nsgResult, error) {
+func createNSGs(ctx *pulumi.Context, compartmentID, vcnID pulumi.IDOutput, sshSourceCidr, publicSubnetCidr string) (nsgResult, error) {
 	// SSH NSG
 	sshNsg, err := core.NewNetworkSecurityGroup(ctx, "ssh-nsg", &core.NetworkSecurityGroupArgs{
 		CompartmentId: compartmentID, VcnId: vcnID, DisplayName: pulumi.String("ssh-nsg"),
@@ -493,7 +983,7 @@ func createNSGs(ctx *pulumi.Context, compartmentID, vcnID pulumi.IDOutput, vcnCi
 		port := port
 		if _, err := core.NewNetworkSecurityGroupSecurityRule(ctx, fmt.Sprintf("nomad-nsg-rule-%d", port), &core.NetworkSecurityGroupSecurityRuleArgs{
 			NetworkSecurityGroupId: nomadNsg.ID(), Direction: pulumi.String("INGRESS"), Protocol: pulumi.String("6"),
-			Source: pulumi.String("10.0.1.0/24"), SourceType: pulumi.String("CIDR_BLOCK"),
+			Source: pulumi.String(publicSubnetCidr), SourceType: pulumi.String("CIDR_BLOCK"),
 			TcpOptions: core.NetworkSecurityGroupSecurityRuleTcpOptionsArgs{
 				DestinationPortRange: core.NetworkSecurityGroupSecurityRuleTcpOptionsDestinationPortRangeArgs{
 					Min: pulumi.Int(port), Max: pulumi.Int(port),
@@ -516,58 +1006,22 @@ func createNSGs(ctx *pulumi.Context, compartmentID, vcnID pulumi.IDOutput, vcnCi
 		port := port
 		if _, err := core.NewNetworkSecurityGroupSecurityRule(ctx, fmt.Sprintf("traefik-nsg-rule-%d", port), &core.NetworkSecurityGroupSecurityRuleArgs{
 			NetworkSecurityGroupId: traefikNsg.ID(), Direction: pulumi.String("INGRESS"), Protocol: pulumi.String("6"),
-			Source: pulumi.String("10.0.1.0/24"), SourceType: pulumi.String("CIDR_BLOCK"),
+			Source: pulumi.String("0.0.0.0/0"), SourceType: pulumi.String("CIDR_BLOCK"),
 			TcpOptions: core.NetworkSecurityGroupSecurityRuleTcpOptionsArgs{
 				DestinationPortRange: core.NetworkSecurityGroupSecurityRuleTcpOptionsDestinationPortRangeArgs{
 					Min: pulumi.Int(port), Max: pulumi.Int(port),
 				},
 			},
-			Description: pulumi.Sprintf("Allow Traefik port %d from public subnet", port),
+			Description: pulumi.Sprintf("Allow Traefik port %d", port),
 		}); err != nil {
 			return nsgResult{}, err
 		}
-	}
-
-	// GlusterFS NSG
-	glusterNsg, err := core.NewNetworkSecurityGroup(ctx, "gluster-nsg", &core.NetworkSecurityGroupArgs{
-		CompartmentId: compartmentID, VcnId: vcnID, DisplayName: pulumi.String("gluster-nsg"),
-	})
-	if err != nil {
-		return nsgResult{}, err
-	}
-	for _, port := range []int{24007, 24008} {
-		port := port
-		if _, err := core.NewNetworkSecurityGroupSecurityRule(ctx, fmt.Sprintf("gluster-nsg-rule-%d", port), &core.NetworkSecurityGroupSecurityRuleArgs{
-			NetworkSecurityGroupId: glusterNsg.ID(), Direction: pulumi.String("INGRESS"), Protocol: pulumi.String("6"),
-			Source: pulumi.String(vcnCidr), SourceType: pulumi.String("CIDR_BLOCK"),
-			TcpOptions: core.NetworkSecurityGroupSecurityRuleTcpOptionsArgs{
-				DestinationPortRange: core.NetworkSecurityGroupSecurityRuleTcpOptionsDestinationPortRangeArgs{
-					Min: pulumi.Int(port), Max: pulumi.Int(port),
-				},
-			},
-			Description: pulumi.Sprintf("Allow GlusterFS port %d from VCN", port),
-		}); err != nil {
-			return nsgResult{}, err
-		}
-	}
-	if _, err := core.NewNetworkSecurityGroupSecurityRule(ctx, "gluster-nsg-rule-dynamic", &core.NetworkSecurityGroupSecurityRuleArgs{
-		NetworkSecurityGroupId: glusterNsg.ID(), Direction: pulumi.String("INGRESS"), Protocol: pulumi.String("6"),
-		Source: pulumi.String(vcnCidr), SourceType: pulumi.String("CIDR_BLOCK"),
-		TcpOptions: core.NetworkSecurityGroupSecurityRuleTcpOptionsArgs{
-			DestinationPortRange: core.NetworkSecurityGroupSecurityRuleTcpOptionsDestinationPortRangeArgs{
-				Min: pulumi.Int(49152), Max: pulumi.Int(49251),
-			},
-		},
-		Description: pulumi.String("Allow GlusterFS dynamic ports from VCN"),
-	}); err != nil {
-		return nsgResult{}, err
 	}
 
 	return nsgResult{
 		sshNsgID:     sshNsg.ID(),
 		nomadNsgID:   nomadNsg.ID(),
 		traefikNsgID: traefikNsg.ID(),
-		glusterNsgID: glusterNsg.ID(),
 	}, nil
 }
 
@@ -588,6 +1042,14 @@ func createInstancePools(
 	shape := cfgOr(cfg, "shape", "VM.Standard.A1.Flex")
 	imageID := cfgOr(cfg, "imageId", "")
 	bootVolSizeGb, _ := strconv.Atoi(cfgOr(cfg, "bootVolSizeGb", "50"))
+	ocpusPerNode, _ := strconv.Atoi(cfgOr(cfg, "ocpusPerNode", "1"))
+	if ocpusPerNode < 1 {
+		ocpusPerNode = 1
+	}
+	memoryGbPerNode, _ := strconv.Atoi(cfgOr(cfg, "memoryGbPerNode", "6"))
+	if memoryGbPerNode < 1 {
+		memoryGbPerNode = 6
+	}
 	nomadVersion := cfgOr(cfg, "nomadVersion", "1.10.3")
 	consulVersion := cfgOr(cfg, "consulVersion", "1.21.3")
 
@@ -597,175 +1059,83 @@ func createInstancePools(
 	})
 	adName := adsResult.AvailabilityDomains().Index(pulumi.Int(0)).Name()
 
-	specs := getInstanceSpecs(nodeCount)
+	cloudInitB64 := buildCloudInit(ocpusPerNode, memoryGbPerNode, nodeCount, nomadVersion, consulVersion)
 
-	// Collect per-pool instance ID outputs so we can combine them
-	var perPoolIDs []interface{}
-
-	for _, spec := range specs {
-		spec := spec
-
-		cloudInitB64 := buildCloudInit(
-			spec.ocpus, spec.memoryInGBs, nodeCount,
-			nomadVersion, consulVersion,
-		)
-
-		nsgIDs := pulumi.StringArray{
-			nsgs.sshNsgID.ToStringOutput(),
-			nsgs.nomadNsgID.ToStringOutput(),
-			nsgs.traefikNsgID.ToStringOutput(),
-			nsgs.glusterNsgID.ToStringOutput(),
-		}
-
-		instanceConfig, err := core.NewInstanceConfiguration(ctx, fmt.Sprintf("nomad-ic-%s", spec.name), &core.InstanceConfigurationArgs{
-			CompartmentId: compartmentID,
-			DisplayName:   pulumi.String(fmt.Sprintf("nomad-ic-%s", spec.name)),
-			InstanceDetails: core.InstanceConfigurationInstanceDetailsArgs{
-				InstanceType: pulumi.String("compute"),
-				LaunchDetails: core.InstanceConfigurationInstanceDetailsLaunchDetailsArgs{
-					CompartmentId:      compartmentID.ToStringOutput().ToStringPtrOutput(),
-					AvailabilityDomain: adName.ToStringPtrOutput(),
-					Shape:              pulumi.StringPtr(shape),
-					ShapeConfig: core.InstanceConfigurationInstanceDetailsLaunchDetailsShapeConfigArgs{
-						Ocpus:       pulumi.Float64Ptr(float64(spec.ocpus)),
-						MemoryInGbs: pulumi.Float64Ptr(float64(spec.memoryInGBs)),
-					},
-					SourceDetails: core.InstanceConfigurationInstanceDetailsLaunchDetailsSourceDetailsArgs{
-						SourceType:          pulumi.String("image"),
-						ImageId:             pulumi.StringPtr(imageID),
-						BootVolumeSizeInGbs: pulumi.StringPtr(strconv.Itoa(bootVolSizeGb)),
-					},
-					CreateVnicDetails: core.InstanceConfigurationInstanceDetailsLaunchDetailsCreateVnicDetailsArgs{
-						SubnetId:       net.privateSubnetID.ToStringOutput().ToStringPtrOutput(),
-						AssignPublicIp: pulumi.BoolPtr(false),
-						NsgIds:         nsgIDs,
-					},
-					Metadata: pulumi.StringMap{
-						"ssh_authorized_keys": pulumi.String(sshPublicKey),
-						"user_data":           pulumi.String(cloudInitB64),
-					},
-					DisplayName: pulumi.StringPtr(fmt.Sprintf("nomad-%s", spec.name)),
-				},
-			},
-		})
-		if err != nil {
-			return poolsResult{}, err
-		}
-
-		pool, err := core.NewInstancePool(ctx, fmt.Sprintf("nomad-pool-%s", spec.name), &core.InstancePoolArgs{
-			CompartmentId:           compartmentID,
-			InstanceConfigurationId: instanceConfig.ID(),
-			Size:                    pulumi.Int(spec.count),
-			DisplayName:             pulumi.String(fmt.Sprintf("nomad-pool-%s", spec.name)),
-			PlacementConfigurations: core.InstancePoolPlacementConfigurationArray{
-				core.InstancePoolPlacementConfigurationArgs{
-					AvailabilityDomain: adName,
-					PrimarySubnetId:    net.privateSubnetID,
-				},
-			},
-		})
-		if err != nil {
-			return poolsResult{}, err
-		}
-
-		// Collect instance IDs from this pool
-		poolInstancesResult := core.GetInstancePoolInstancesOutput(ctx, core.GetInstancePoolInstancesOutputArgs{
-			CompartmentId:  compartmentID.ToStringOutput(),
-			InstancePoolId: pool.ID().ToStringOutput(),
-		}, pulumi.DependsOn([]pulumi.Resource{pool}))
-
-		poolIDs := poolInstancesResult.Instances().ApplyT(func(instances []core.GetInstancePoolInstancesInstance) []string {
-			ids := make([]string, len(instances))
-			for i, inst := range instances {
-				ids[i] = inst.InstanceId
-			}
-			return ids
-		}).(pulumi.StringArrayOutput)
-
-		perPoolIDs = append(perPoolIDs, poolIDs)
+	nsgIDs := pulumi.StringArray{
+		nsgs.sshNsgID.ToStringOutput(),
+		nsgs.nomadNsgID.ToStringOutput(),
+		nsgs.traefikNsgID.ToStringOutput(),
 	}
 
-	// Combine all instance IDs from all pools into a single array
-	allIDs := pulumi.All(perPoolIDs...).ApplyT(func(args []interface{}) ([]string, error) {
-		var combined []string
-		for _, arg := range args {
-			ids := arg.([]string)
-			combined = append(combined, ids...)
+	instanceConfig, err := core.NewInstanceConfiguration(ctx, "nomad-ic", &core.InstanceConfigurationArgs{
+		CompartmentId: compartmentID,
+		DisplayName:   pulumi.String("nomad-ic"),
+		InstanceDetails: core.InstanceConfigurationInstanceDetailsArgs{
+			InstanceType: pulumi.String("compute"),
+			LaunchDetails: core.InstanceConfigurationInstanceDetailsLaunchDetailsArgs{
+				CompartmentId:      compartmentID.ToStringOutput().ToStringPtrOutput(),
+				AvailabilityDomain: adName.ToStringPtrOutput(),
+				Shape:              pulumi.StringPtr(shape),
+				ShapeConfig: core.InstanceConfigurationInstanceDetailsLaunchDetailsShapeConfigArgs{
+					Ocpus:       pulumi.Float64Ptr(float64(ocpusPerNode)),
+					MemoryInGbs: pulumi.Float64Ptr(float64(memoryGbPerNode)),
+				},
+				SourceDetails: core.InstanceConfigurationInstanceDetailsLaunchDetailsSourceDetailsArgs{
+					SourceType:          pulumi.String("image"),
+					ImageId:             pulumi.StringPtr(imageID),
+					BootVolumeSizeInGbs: pulumi.StringPtr(strconv.Itoa(bootVolSizeGb)),
+				},
+				CreateVnicDetails: core.InstanceConfigurationInstanceDetailsLaunchDetailsCreateVnicDetailsArgs{
+					SubnetId:       net.privateSubnetID.ToStringOutput().ToStringPtrOutput(),
+					AssignPublicIp: pulumi.BoolPtr(false),
+					NsgIds:         nsgIDs,
+				},
+				Metadata: pulumi.StringMap{
+					"ssh_authorized_keys": pulumi.String(sshPublicKey),
+					"user_data":           pulumi.String(cloudInitB64),
+				},
+				DisplayName: pulumi.StringPtr("nomad-node"),
+			},
+		},
+	})
+	if err != nil {
+		return poolsResult{}, err
+	}
+
+	pool, err := core.NewInstancePool(ctx, "nomad-pool", &core.InstancePoolArgs{
+		CompartmentId:           compartmentID,
+		InstanceConfigurationId: instanceConfig.ID(),
+		Size:                    pulumi.Int(nodeCount),
+		DisplayName:             pulumi.String("nomad-pool"),
+		PlacementConfigurations: core.InstancePoolPlacementConfigurationArray{
+			core.InstancePoolPlacementConfigurationArgs{
+				AvailabilityDomain: adName,
+				PrimarySubnetId:    net.privateSubnetID,
+			},
+		},
+	})
+	if err != nil {
+		return poolsResult{}, err
+	}
+
+	poolInstancesResult := core.GetInstancePoolInstancesOutput(ctx, core.GetInstancePoolInstancesOutputArgs{
+		CompartmentId:  compartmentID.ToStringOutput(),
+		InstancePoolId: pool.ID().ToStringOutput(),
+	}, pulumi.DependsOn([]pulumi.Resource{pool}))
+
+	allIDs := poolInstancesResult.Instances().ApplyT(func(instances []core.GetInstancePoolInstancesInstance) []string {
+		ids := make([]string, len(instances))
+		for i, inst := range instances {
+			ids[i] = inst.InstanceId
 		}
-		return combined, nil
+		return ids
 	}).(pulumi.StringArrayOutput)
 
 	return poolsResult{instanceIDs: allIDs, adName: adName}, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. GlusterFS volumes
-// ─────────────────────────────────────────────────────────────────────────────
-
-func attachGlusterVolumes(
-	ctx *pulumi.Context,
-	compartmentID pulumi.IDOutput,
-	adName pulumi.StringOutput,
-	instanceIDs pulumi.StringArrayOutput,
-	cfg map[string]string,
-	nodeCount int,
-) error {
-	glusterVolSizeGb, _ := strconv.Atoi(cfgOr(cfg, "glusterVolSizeGb", "100"))
-
-	// Create one GlusterFS volume per node and attach it to the corresponding instance
-	for i := 0; i < nodeCount; i++ {
-		i := i
-		instanceID := instanceIDs.Index(pulumi.Int(i))
-
-		vol, err := core.NewVolume(ctx, fmt.Sprintf("glusterfs-volume-%d", i+1), &core.VolumeArgs{
-			CompartmentId:      compartmentID,
-			AvailabilityDomain: adName,
-			SizeInGbs:          pulumi.String(strconv.Itoa(glusterVolSizeGb)),
-			DisplayName:        pulumi.String(fmt.Sprintf("glusterfs-data-%d", i+1)),
-		})
-		if err != nil {
-			return err
-		}
-
-		if _, err := core.NewVolumeAttachment(ctx, fmt.Sprintf("glusterfs-attachment-%d", i+1), &core.VolumeAttachmentArgs{
-			InstanceId:     instanceID,
-			VolumeId:       vol.ID(),
-			AttachmentType: pulumi.String("paravirtualized"),
-			DisplayName:    pulumi.String(fmt.Sprintf("glusterfs-attachment-%d", i+1)),
-		}); err != nil {
-			return err
-		}
-
-		// Incremental daily backup policy on the first volume only
-		if i == 0 {
-			backupPolicy, err := core.NewVolumeBackupPolicy(ctx, "glusterfs-backup-policy", &core.VolumeBackupPolicyArgs{
-				CompartmentId: compartmentID,
-				DisplayName:   pulumi.String("glusterfs-backup-policy"),
-				Schedules: core.VolumeBackupPolicyScheduleArray{
-					core.VolumeBackupPolicyScheduleArgs{
-						BackupType:       pulumi.String("INCREMENTAL"),
-						Period:           pulumi.String("ONE_DAY"),
-						RetentionSeconds: pulumi.Int(5 * 24 * 60 * 60),
-						TimeZone:         pulumi.String("UTC"),
-					},
-				},
-			})
-			if err != nil {
-				return err
-			}
-			if _, err := core.NewVolumeBackupPolicyAssignment(ctx, "glusterfs-backup-policy-assignment", &core.VolumeBackupPolicyAssignmentArgs{
-				AssetId:  vol.ID(),
-				PolicyId: backupPolicy.ID(),
-			}); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 6. Network Load Balancer
+// 5. Network Load Balancer
 // ─────────────────────────────────────────────────────────────────────────────
 
 func createNLB(

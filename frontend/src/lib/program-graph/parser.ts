@@ -271,7 +271,8 @@ function parseItems(content: string): ProgramItem[] {
 
 /** Parse a chunk of plain (non-template) YAML into ResourceItems, appending to items. */
 function parseResourceChunk(chunk: string, items: ProgramItem[]): void {
-  const resourceRe = /^  ([\w][\w-]*):\s*$/gm;
+  // Also match names that contain {{ $i }} template expressions (e.g. node-{{ $i }})
+  const resourceRe = /^  ([\w][\w-]*(?:\{\{[^}]*\}\}[\w-]*)*):\s*$/gm;
   let rm: RegExpExecArray | null;
   const resourceStarts: { name: string; index: number }[] = [];
   while ((rm = resourceRe.exec(chunk)) !== null) {
@@ -331,24 +332,41 @@ function tryParseResource(name: string, block: string): ResourceItem | null {
   const resourceType = typeMatch[1].trim();
   const properties: PropertyEntry[] = [];
 
-  // Parse properties block
-  const propsMatch = block.match(/^\s+properties:\s*$([\s\S]*?)(?=^\s+\w|\s*$)/m);
-  if (propsMatch) {
-    const propsBlock = propsMatch[1];
-    const propRe = /^\s{4,6}(\w[\w-]*):\s*(.+)$/gm;
+  // Parse properties block.
+  // "    properties:" is at 4-space indent; property lines are at 6-space indent.
+  // We extract everything after "    properties:\n" until the next 4-space sibling
+  // key (e.g. "    options:") or end of block. We cannot use a lookahead with
+  // \s*$ because that matches at every end-of-line, not only blank lines.
+  const propsHeaderRe = /^    properties:\s*$/m;
+  const propsHeader = propsHeaderRe.exec(block);
+  if (propsHeader) {
+    const afterHeader = block.indexOf('\n', propsHeader.index) + 1;
+    const remainder = block.slice(afterHeader);
+    // Stop at next 4-space sibling (options:, get:, etc.)
+    const nextSiblingIdx = remainder.search(/^    \S/m);
+    const propsBlock = nextSiblingIdx === -1 ? remainder : remainder.slice(0, nextSiblingIdx);
+    // Capture property lines at exactly 6 spaces: both scalar (key: value) and
+    // object-type (key: alone, value will be empty string — counts as present).
+    const propRe = /^      (\w[\w-]*):\s*(.*)$/gm;
     let pm: RegExpExecArray | null;
     while ((pm = propRe.exec(propsBlock)) !== null) {
       properties.push({ key: pm[1], value: pm[2].trim() });
     }
   }
 
-  // Parse dependsOn
+  // Parse dependsOn.
+  // "      dependsOn:" is at 6-space indent; list items are at 8-space indent.
   const dependsOn: string[] = [];
-  const depsMatch = block.match(/dependsOn:([\s\S]*?)(?=^\s+\w|\s*$)/m);
-  if (depsMatch) {
+  const depsHeaderRe = /^      dependsOn:\s*$/m;
+  const depsHeader = depsHeaderRe.exec(block);
+  if (depsHeader) {
+    const afterHeader = block.indexOf('\n', depsHeader.index) + 1;
+    const remainder = block.slice(afterHeader);
+    const nextSiblingIdx = remainder.search(/^      \S/m);
+    const depsBlock = nextSiblingIdx === -1 ? remainder : remainder.slice(0, nextSiblingIdx);
     const depRe = /- \$\{([\w-]+)\}/g;
     let dm: RegExpExecArray | null;
-    while ((dm = depRe.exec(depsMatch[1])) !== null) {
+    while ((dm = depRe.exec(depsBlock)) !== null) {
       dependsOn.push(dm[1]);
     }
   }

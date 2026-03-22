@@ -198,6 +198,12 @@ func (h *Handler) ForkProgram(w http.ResponseWriter, r *http.Request) {
 }
 
 func buildForkYAML(prog programs.Program) string {
+	// If the program provides a full YAML fork template, use it directly.
+	if fp, ok := prog.(programs.ForkableProgram); ok {
+		return fp.ForkYAML()
+	}
+
+	// Fallback: generate a config-only stub for programs without a fork template.
 	var sb strings.Builder
 	sb.WriteString("name: ")
 	sb.WriteString(prog.Name())
@@ -214,7 +220,7 @@ func buildForkYAML(prog programs.Program) string {
 			sb.WriteString("\"\n")
 		}
 	}
-	sb.WriteString("\nresources:\n  # TODO: add your resources here\n  # Example:\n  # my-compartment:\n  #   type: oci:Identity/compartment:Compartment\n  #   properties:\n  #     compartmentId: ${oci:tenancyOcid}\n  #     name: {{ .Config.compartmentName }}\n  #     description: Created by Pulumi\n  #     enableDelete: true\n\noutputs:\n  # TODO: export resource IDs here\n")
+	sb.WriteString("\nresources:\n  # TODO: add your resources here\n  # Example:\n  # my-compartment:\n  #   type: oci:identity:Compartment\n  #   properties:\n  #     compartmentId: ${oci:tenancyOcid}\n  #     name: {{ .Config.compartmentName }}\n  #     description: Created by Pulumi\n  #     enableDelete: true\n\noutputs:\n  # TODO: export resource IDs here\n")
 	return sb.String()
 }
 

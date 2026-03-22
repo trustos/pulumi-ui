@@ -2,7 +2,6 @@ package programs
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/pulumi/pulumi-oci/sdk/v2/go/oci/core"
 	"github.com/pulumi/pulumi-oci/sdk/v2/go/oci/identity"
@@ -28,12 +27,48 @@ func (p *TestVcnProgram) ConfigFields() []ConfigField {
 	}
 }
 
+func (p *TestVcnProgram) ForkYAML() string {
+	return `name: test-vcn-custom
+runtime: yaml
+description: "Forked from Test VCN"
+
+config:
+  compartmentName:
+    type: string
+    default: "test-compartment"
+  vcnCidr:
+    type: string
+    default: "10.0.0.0/16"
+
+resources:
+  test-compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: {{ .Config.compartmentName }}
+      description: "Test compartment — safe to destroy"
+      enableDelete: true
+
+  test-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${test-compartment.id}
+      cidrBlock: {{ .Config.vcnCidr | quote }}
+      displayName: "test-vcn"
+      dnsLabel: "testvcn"
+
+outputs:
+  compartmentId: ${test-compartment.id}
+  vcnId: ${test-vcn.id}
+`
+}
+
 func (p *TestVcnProgram) Run(cfg map[string]string) pulumi.RunFunc {
 	compartmentName := cfgOr(cfg, "compartmentName", "test-compartment")
 	vcnCidr := cfgOr(cfg, "vcnCidr", "10.0.0.0/16")
+	tenancyOCID := cfgOr(cfg, "OCI_TENANCY_OCID", "")
 
 	return func(ctx *pulumi.Context) error {
-		tenancyOCID := os.Getenv("OCI_TENANCY_OCID")
 		if tenancyOCID == "" {
 			return fmt.Errorf("OCI_TENANCY_OCID must be set")
 		}

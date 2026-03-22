@@ -57,3 +57,10 @@ func RegisterYAML(name, displayName, description, yamlBody string) {
 type YAMLProgramProvider interface {
 	YAMLBody() string
 }
+
+// ForkableProgram is an optional capability interface. Built-in programs that
+// implement it return a full, deployable YAML template when forked, instead of
+// the minimal config-only stub that buildForkYAML generates as a fallback.
+type ForkableProgram interface {
+	ForkYAML() string
+}

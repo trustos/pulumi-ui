@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib
 RUN curl -fsSL https://get.pulumi.com | sh
 ENV PATH="/root/.pulumi/bin:$PATH"
 
-# Pre-warm Pulumi resource plugins (avoids runtime downloads)
+# Pre-warm Pulumi resource plugins (avoids runtime downloads).
 RUN pulumi plugin install resource oci 4.3.1
 
 # Copy the single Go binary

@@ -82,13 +82,14 @@ func (e *Engine) buildEnvVars(creds Credentials) (map[string]string, func(), err
 	cleanup := func() { os.Remove(keyPath) }
 
 	return map[string]string{
-		"PULUMI_CONFIG_PASSPHRASE": creds.Passphrase,
-		"OCI_TENANCY_OCID":         oci.TenancyOCID,
-		"OCI_USER_OCID":            oci.UserOCID,
-		"OCI_FINGERPRINT":          oci.Fingerprint,
-		"OCI_PRIVATE_KEY_PATH":     keyPath,
-		"OCI_REGION":               oci.Region,
-		"OCI_USER_SSH_PUBLIC_KEY":  oci.SSHPublicKey,
+		"PULUMI_CONFIG_PASSPHRASE":               creds.Passphrase,
+		"PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING": "true",
+		"OCI_TENANCY_OCID":                        oci.TenancyOCID,
+		"OCI_USER_OCID":                           oci.UserOCID,
+		"OCI_FINGERPRINT":                         oci.Fingerprint,
+		"OCI_PRIVATE_KEY_PATH":                    keyPath,
+		"OCI_REGION":                              oci.Region,
+		"OCI_USER_SSH_PUBLIC_KEY":                 oci.SSHPublicKey,
 	}, cleanup, nil
 }
 
@@ -106,6 +107,46 @@ func (e *Engine) getOrCreateStack(ctx context.Context, stackName string, prog pr
 			Backend: &workspace.ProjectBackend{URL: e.backendURL()},
 		}),
 	)
+}
+
+// ociPinnedVersion is the OCI provider version used for all YAML programs.
+// Pinned explicitly so that the plugins: path injection below selects this
+// exact binary rather than whatever is newest in $PULUMI_HOME/plugins/.
+const ociPinnedVersion = "4.3.1"
+
+// ociPluginDir returns the directory where the pinned OCI provider binary is
+// installed, or an empty string if it cannot be found.
+func ociPluginDir() string {
+	home := os.Getenv("PULUMI_HOME")
+	if home == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			home = filepath.Join(h, ".pulumi")
+		}
+	}
+	if home == "" {
+		return ""
+	}
+	p := filepath.Join(home, "plugins", "resource-oci-v"+ociPinnedVersion)
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
+}
+
+// injectPluginsSection prepends a plugins: block that pins the OCI provider to
+// ociPinnedVersion via a local path. This forces pulumi-language-yaml to use
+// exactly that binary rather than selecting the newest installed version.
+// If the YAML already contains a plugins: key, it is left untouched.
+func injectPluginsSection(yaml string) string {
+	if strings.Contains(yaml, "plugins:") {
+		return yaml
+	}
+	dir := ociPluginDir()
+	if dir == "" {
+		return yaml
+	}
+	header := fmt.Sprintf("plugins:\n  providers:\n    - name: oci\n      path: %s\n\n", dir)
+	return header + yaml
 }
 
 // getOrCreateYAMLStack renders the program's Go-templated YAML body with cfg,
@@ -126,6 +167,11 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yam
 	// Strip potentially dangerous fn::readFile directives.
 	sanitized := programs.SanitizeYAML(rendered)
 
+	// Pin the OCI provider to ociPinnedVersion by injecting a plugins: section
+	// that uses a local path. pulumi-language-yaml will use that exact binary
+	// rather than the newest installed version.
+	pinned := injectPluginsSection(sanitized)
+
 	// Write to a unique temp directory.
 	tempDir, err := os.MkdirTemp("", "pulumi-yaml-")
 	if err != nil {
@@ -133,7 +179,7 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yam
 	}
 	cleanup := func() { os.RemoveAll(tempDir) }
 
-	if err := os.WriteFile(filepath.Join(tempDir, "Pulumi.yaml"), []byte(sanitized), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tempDir, "Pulumi.yaml"), []byte(pinned), 0644); err != nil {
 		cleanup()
 		return auto.Stack{}, nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
 	}
@@ -148,6 +194,14 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yam
 	if err != nil {
 		cleanup()
 		return auto.Stack{}, nil, fmt.Errorf("upsert YAML stack: %w", err)
+	}
+
+	// Ensure the pinned OCI provider plugin is installed. This is a no-op when
+	// running inside Docker (the image pre-installs it). For local dev it will
+	// download v2.33.0 on first run.
+	if err := stack.Workspace().InstallPlugin(ctx, "oci", ociPinnedVersion); err != nil {
+		cleanup()
+		return auto.Stack{}, nil, fmt.Errorf("install oci plugin: %w", err)
 	}
 
 	// Inject OCI credentials as Pulumi provider config keys.
@@ -189,7 +243,23 @@ func (e *Engine) resolveStack(ctx context.Context, stackName string, prog progra
 	if yp, ok := prog.(programs.YAMLProgramProvider); ok {
 		return e.getOrCreateYAMLStack(ctx, stackName, yp, cfg, envVars, creds)
 	}
-	stack, err := e.getOrCreateStack(ctx, stackName, prog, cfg, envVars)
+	// For inline Go programs, the Pulumi Automation API passes EnvVars only to
+	// the pulumi subprocess — it never calls os.Setenv on the current process.
+	// The Run func closure executes in-process, so os.Getenv() sees nothing.
+	// Inject OCI credentials directly into the cfg map so Go programs can read
+	// them via cfgOr(cfg, key, "") instead of os.Getenv.
+	goCfg := make(map[string]string, len(cfg)+6)
+	for k, v := range cfg {
+		goCfg[k] = v
+	}
+	oci := creds.OCI
+	goCfg["OCI_TENANCY_OCID"] = oci.TenancyOCID
+	goCfg["OCI_USER_OCID"] = oci.UserOCID
+	goCfg["OCI_FINGERPRINT"] = oci.Fingerprint
+	goCfg["OCI_PRIVATE_KEY"] = oci.PrivateKey
+	goCfg["OCI_REGION"] = oci.Region
+	goCfg["OCI_USER_SSH_PUBLIC_KEY"] = oci.SSHPublicKey
+	stack, err := e.getOrCreateStack(ctx, stackName, prog, goCfg, envVars)
 	return stack, func() {}, err
 }
 
