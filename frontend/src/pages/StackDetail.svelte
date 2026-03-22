@@ -23,6 +23,7 @@
   let sshKeys = $state<SshKey[]>([]);
   let editOpen = $state(false);
   let copyState = $state<'idle' | 'copied'>('idle');
+  let currentOp = $state<'up' | 'refresh' | 'destroy' | 'preview' | ''>('');
 
   const linkedAccount = $derived(
     info?.ociAccountId ? accounts.find((a) => a.id === info!.ociAccountId) ?? null : null
@@ -105,9 +106,27 @@
     }
   });
 
+  const OP_LABELS: Record<string, string> = {
+    up: 'Deploying',
+    destroy: 'Destroying',
+    refresh: 'Refreshing',
+    preview: 'Previewing',
+  };
+
+  $effect(() => {
+    const base = `${name} · Stacks | Pulumi UI`;
+    if (isRunning) {
+      const label = currentOp ? (OP_LABELS[currentOp] ?? currentOp) : 'Running';
+      document.title = `${label}… · ${name} · Stacks | Pulumi UI`;
+    } else {
+      document.title = base;
+    }
+  });
+
   function startOperation(op: 'up' | 'refresh' | 'destroy' | 'preview') {
     if (isRunning) return;
     isRunning = true;
+    currentOp = op;
 
     // Append a visual separator rather than clearing — use Clear button to wipe
     logLines = [...logLines, {
@@ -125,6 +144,7 @@
       (status) => {
         isRunning = false;
         cancelFn = null;
+        currentOp = '';
         logLines = [...logLines, {
           type: 'done',
           data: `─── Operation ${status} ───`,
@@ -141,6 +161,7 @@
     await cancelOperation(name);
     isRunning = false;
     cancelFn = null;
+    currentOp = '';
   }
 
   async function handleUnlock() {

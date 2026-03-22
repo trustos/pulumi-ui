@@ -58,39 +58,21 @@ func (e *Engine) unlock(stackName string) {
 	delete(e.running, stackName)
 }
 
-// buildEnvVars writes the OCI private key to a temp file and returns the full
-// workspace env map. The returned cleanup func must be called after the operation.
+// buildEnvVars returns the full workspace env map.
+// The OCI private key is passed as inline content (OCI_PRIVATE_KEY), never as
+// a temp file path — temp files are deleted after Up which breaks Refresh.
 func (e *Engine) buildEnvVars(creds Credentials) (map[string]string, func(), error) {
 	oci := creds.OCI
-
-	f, err := os.CreateTemp("", "pulumi-oci-key-*.pem")
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating OCI private key temp file: %w", err)
-	}
-	if err := f.Chmod(0600); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return nil, nil, err
-	}
-	if _, err := f.WriteString(oci.PrivateKey); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return nil, nil, fmt.Errorf("writing OCI private key: %w", err)
-	}
-	f.Close()
-	keyPath := f.Name()
-	cleanup := func() { os.Remove(keyPath) }
-
 	return map[string]string{
-		"PULUMI_CONFIG_PASSPHRASE":               creds.Passphrase,
+		"PULUMI_CONFIG_PASSPHRASE":                creds.Passphrase,
 		"PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING": "true",
 		"OCI_TENANCY_OCID":                        oci.TenancyOCID,
 		"OCI_USER_OCID":                           oci.UserOCID,
 		"OCI_FINGERPRINT":                         oci.Fingerprint,
-		"OCI_PRIVATE_KEY_PATH":                    keyPath,
+		"OCI_PRIVATE_KEY":                         oci.PrivateKey,
 		"OCI_REGION":                              oci.Region,
 		"OCI_USER_SSH_PUBLIC_KEY":                 oci.SSHPublicKey,
-	}, cleanup, nil
+	}, func() {}, nil
 }
 
 func (e *Engine) backendURL() string {
@@ -205,15 +187,16 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yam
 	}
 
 	// Inject OCI credentials as Pulumi provider config keys.
-	// The Pulumi OCI provider (Terraform bridge) reads these from stack config.
-	keyPath := envVars["OCI_PRIVATE_KEY_PATH"]
+	// Use oci:privateKey (inline PEM) — never oci:privateKeyPath (temp file).
+	// A temp file is deleted after Up; subsequent Refresh would see a missing path
+	// and the provider falls back to ~/.oci/config, causing 401-NotAuthenticated.
 	oci := creds.OCI
 	ociConfigs := map[string]auto.ConfigValue{
-		"oci:tenancyOcid":    {Value: oci.TenancyOCID},
-		"oci:userOcid":       {Value: oci.UserOCID},
-		"oci:fingerprint":    {Value: oci.Fingerprint},
-		"oci:privateKeyPath": {Value: keyPath},
-		"oci:region":         {Value: oci.Region},
+		"oci:tenancyOcid": {Value: oci.TenancyOCID},
+		"oci:userOcid":    {Value: oci.UserOCID},
+		"oci:fingerprint": {Value: oci.Fingerprint},
+		"oci:privateKey":  {Value: oci.PrivateKey, Secret: true},
+		"oci:region":      {Value: oci.Region},
 	}
 	for k, v := range ociConfigs {
 		if err := stack.SetConfig(ctx, k, v); err != nil {

@@ -1,6 +1,8 @@
 package programs
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/base64"
 	_ "embed"
 	"strconv"
@@ -30,5 +32,12 @@ func buildCloudInit(
 	for k, v := range replacements {
 		result = strings.ReplaceAll(result, "@@"+k+"@@", v)
 	}
-	return base64.StdEncoding.EncodeToString([]byte(result))
+	// Gzip before base64: OCI metadata limit is 32 KB total; the uncompressed
+	// script is ~29 KB (~39 KB base64). Gzipped it is ~8.5 KB (~11 KB base64).
+	// cloud-init detects gzip via magic bytes and decompresses transparently.
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	gz.Write([]byte(result))
+	gz.Close()
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }

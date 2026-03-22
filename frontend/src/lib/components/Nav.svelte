@@ -1,6 +1,7 @@
 <script lang="ts">
   import { router, navigate } from '$lib/router';
   import { currentUser, logout } from '$lib/auth';
+  import Logo from '$lib/components/Logo.svelte';
 
   let path = $derived($router);
   let user = $derived($currentUser);
@@ -15,9 +16,10 @@
   <div class="container mx-auto px-4 flex h-14 items-center gap-6">
     <button
       onclick={() => navigate('/')}
-      class="font-semibold text-sm hover:opacity-80 transition-opacity"
+      class="flex items-center gap-2 hover:opacity-80 transition-opacity"
     >
-      Pulumi UI
+      <Logo size={28} />
+      <span class="font-semibold text-sm">Pulumi UI</span>
     </button>
     {#if user}
       <div class="flex gap-4 text-sm">

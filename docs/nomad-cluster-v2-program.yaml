@@ -125,17 +125,17 @@ config:
     default: "1.21.3"
 
 variables:
-  availabilityDomain:
+  availabilityDomains:
     fn::invoke:
-      function: oci:identity:getAvailabilityDomains
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
       arguments:
         compartmentId: ${oci:tenancyOcid}
-      return: availabilityDomains[0].name
+      return: availabilityDomains
 
   # Resolved after nomad-pool is created. Used for NLB backend targetIds.
   pool-instances:
     fn::invoke:
-      function: oci:core:getInstancePoolInstances
+      function: oci:Core/getInstancePoolInstances:getInstancePoolInstances
       arguments:
         compartmentId: ${nomad-compartment.id}
         instancePoolId: ${nomad-pool.id}
@@ -405,7 +405,7 @@ resources:
         instanceType: compute
         launchDetails:
           compartmentId: ${nomad-compartment.id}
-          availabilityDomain: ${availabilityDomain}
+          availabilityDomain: ${availabilityDomains[0].name}
           shape: {{ .Config.shape | quote }}
           shapeConfig:
             ocpus: {{ .Config.ocpusPerNode }}
@@ -436,7 +436,7 @@ resources:
       size: {{ .Config.nodeCount }}
       displayName: nomad-pool
       placementConfigurations:
-        - availabilityDomain: ${availabilityDomain}
+        - availabilityDomain: ${availabilityDomains[0].name}
           primarySubnetId: ${private-subnet.id}
 
   # ── Network Load Balancer ──────────────────────────────────────────────────────

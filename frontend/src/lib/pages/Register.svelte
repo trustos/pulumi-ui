@@ -3,6 +3,7 @@
   import { navigate } from '$lib/router';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import Logo from '$lib/components/Logo.svelte';
 
   let username = $state('');
   let password = $state('');
@@ -31,9 +32,16 @@
 
 <div class="min-h-screen flex items-center justify-center bg-background">
   <div class="w-full max-w-sm space-y-6 p-8 border rounded-lg shadow-sm bg-card">
+    <div class="flex flex-col items-center gap-3 pb-2">
+      <Logo size={52} />
+      <div class="text-center">
+        <p class="text-xl font-bold tracking-tight">Pulumi UI</p>
+        <p class="text-xs text-muted-foreground">OCI infrastructure provisioning</p>
+      </div>
+    </div>
     <div class="space-y-1">
-      <h1 class="text-2xl font-bold">Create account</h1>
-      <p class="text-sm text-muted-foreground">Set up your Pulumi provisioning dashboard</p>
+      <h1 class="text-lg font-semibold">Create account</h1>
+      <p class="text-sm text-muted-foreground">Set up your provisioning dashboard</p>
     </div>
 
     {#if error}
