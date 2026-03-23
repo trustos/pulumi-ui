@@ -193,8 +193,8 @@ Sections can be renamed via double-click on the label in `SectionNavigator`. The
 ### Agent Connect Toggle
 The program editor header contains an **Agent Connect** toggle button (visible in both visual and YAML modes). When enabled:
 - The serializer emits `meta.agentAccess: true` in the YAML `meta:` block.
-- In YAML mode, toggling ON inserts `agentAccess: true` into the existing `meta:` block (or creates one); toggling OFF removes it.
-- An informational banner appears below the mode bar listing all resources that will be auto-injected at deploy time (user_data, NSG rules, NLB backend sets/listeners/backends).
+- In YAML mode, toggling uses `insertAgentAccess()` / `removeAgentAccess()` from `$lib/program-graph/agent-access.ts` — pure functions that safely patch the YAML text (inserting into existing `meta:` or creating one, removing and cleaning up empty blocks).
+- An informational banner appears below the mode bar listing all resources that will be auto-injected at deploy time: user_data (with automatic intermediate node creation), NSG rules (added to existing or created from VCN), NLB (added to existing or created from subnet), and backends for each compute instance.
 - The toggle state round-trips correctly between visual and YAML modes.
 
 ### Outputs Panel

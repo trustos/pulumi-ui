@@ -123,9 +123,11 @@ getOrCreateYAMLStack()                                                │
   ├─ programs.SanitizeYAML()  — strips fn::readFile                    │
   ├─ agentinject.InjectIntoYAML()  — if ApplicationProvider or          │
   │   AgentAccessProvider: walks resources, composes user_data          │
-  │   with agent bootstrap via multipart MIME                           │
+  │   with agent bootstrap via multipart MIME (creates missing          │
+  │   intermediate nodes like metadata if absent)                       │
   ├─ agentinject.InjectNetworkingIntoYAML() — if AgentAccessProvider:   │
-  │   auto-adds NSG rules + NLB backend set/listener for agent port     │
+  │   adds NSG rules + NLB backend set/listener for agent port;         │
+  │   creates NSG/NLB from VCN/subnet context when none exist          │
   ├─ os.MkdirTemp() + WriteFile("Pulumi.yaml", rendered)               │
   ├─ auto.UpsertStackLocalSource(ctx, stackName, tempDir)              │
   ├─ stack.SetConfig("oci:tenancyOcid", ...)  — inject OCI creds       │

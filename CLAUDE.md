@@ -270,6 +270,7 @@ make build           # or: cd frontend && npm run build && go build ./cmd/server
 
 # Run tests
 make test            # Go unit + integration tests
+make test-frontend   # Vitest frontend unit tests
 make lint            # Svelte-check (warnings threshold)
 ```
 

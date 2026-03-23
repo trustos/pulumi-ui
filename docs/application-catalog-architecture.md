@@ -134,15 +134,18 @@ The Nebula mesh and pulumi-ui agent are **not** part of any program's applicatio
    - **YAML programs** (`yaml.go`): Post-render YAML transformation. The engine parses the rendered Pulumi YAML, walks all resources, detects compute types via the map, and composes their `user_data` with the agent bootstrap.
    - **Go programs** (`goprog.go` + engine): The engine renders the agent bootstrap and passes it to Go programs via a special config key (`__agentBootstrap`). `buildCloudInit()` accepts this and composes via multipart MIME.
 
-5. **Networking injection** (`network.go`): For programs implementing `AgentAccessProvider` (YAML programs with `meta.agentAccess: true`), the engine also auto-adds networking resources for agent connectivity:
-   - **NSG security rules** — adds UDP ingress on port 41820 to each detected `oci:Core/networkSecurityGroup:NetworkSecurityGroup`
-   - **NLB backend set + listener** — adds a backend set (UDP health check on 41820) and listener on port 41820 to each detected `oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer`
-   - **NLB backends** — links each detected compute instance to the NLB backend set
-   - All injected resources use a `__agent_` prefix to avoid naming collisions. If agent resources already exist, injection is skipped.
+5. **Networking injection** (`network.go`): For programs implementing `AgentAccessProvider` (YAML programs with `meta.agentAccess: true`), the engine also auto-adds networking resources for agent connectivity. The injection adapts to what already exists in the program:
+   - **Existing NSG/NLB** — adds UDP ingress rules on port 41820 to each detected NSG, and a backend set + listener + backends to each detected NLB.
+   - **No NSG but VCN exists** — creates a new `__agent_nsg` in the first VCN with the UDP 41820 rule, and attaches it to each compute instance via `createVnicDetails.nsgIds`.
+   - **No NLB but subnet exists** — creates a new `__agent_nlb` in the first subnet, plus backend set, listener, and backends linking each compute instance.
+   - All injected resources use a `__agent_` prefix to avoid naming collisions. If agent resources already exist (detected by prefix), injection is skipped.
+   - Compartment IDs are inferred from the VCN/subnet resource being referenced.
+
+6. **Intermediate node creation** (`yaml.go`): When injecting `user_data` into compute resources, the engine creates missing intermediate YAML mapping nodes (e.g. if an instance has no `metadata` section, it is created automatically before `user_data` is set). This handles bare instances that lack the full property path.
 
 **Injection gating:**
 - **`ApplicationProvider`** (built-in Go programs like `nomad-cluster`): User_data injection is automatic. Networking is managed by the program itself (the program provisions its own NSG rules and NLB configuration).
-- **`AgentAccessProvider`** (YAML programs with `meta.agentAccess: true`): Both user_data injection AND networking injection are automatic. The engine detects existing NSG/NLB resources and adds agent-specific rules.
+- **`AgentAccessProvider`** (YAML programs with `meta.agentAccess: true`): Both user_data injection AND networking injection are automatic. The engine detects existing NSG/NLB resources and adds agent-specific rules, or creates networking resources from VCN/subnet context when none exist.
 - Programs implementing neither interface are unaffected.
 
 **Provider extensibility:** Adding a new cloud provider (AWS, GCP) requires adding entries to the `ComputeResources` map in `internal/agentinject/map.go` and networking resource types in `network.go`. The multipart MIME composition and agent bootstrap script are provider-agnostic (cloud-init is a Linux guest standard).

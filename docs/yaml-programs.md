@@ -156,11 +156,11 @@ meta:
 ```
 
 When enabled, an informational banner in the editor lists exactly what will be auto-injected. At deploy time, the engine automatically:
-1. Injects the Nebula mesh + pulumi-ui agent bootstrap into every compute resource's `user_data` (via multipart MIME)
-2. Adds NSG security rules for UDP port 41820 on detected `oci:Core/networkSecurityGroup:NetworkSecurityGroup` resources
-3. Adds NLB backend set, listener, and backends for port 41820 on detected `oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer` resources
+1. Injects the Nebula mesh + pulumi-ui agent bootstrap into every compute resource's `user_data` (via multipart MIME). Missing intermediate property nodes (e.g. `metadata`) are created automatically.
+2. **If NSG exists**: adds UDP ingress rules on port 41820 to each detected NSG. **If no NSG but VCN exists**: creates a new NSG (`__agent_nsg`) in the first VCN and attaches it to each compute instance.
+3. **If NLB exists**: adds backend set, listener, and backends for port 41820 to each detected NLB. **If no NLB but subnet exists**: creates a new NLB (`__agent_nlb`) in the first subnet with backend set, listener, and backends for each instance.
 
-Injected resources use a `__agent_` prefix to avoid naming collisions. If agent networking resources already exist, injection is skipped.
+Injected resources use a `__agent_` prefix to avoid naming collisions. If agent networking resources already exist (detected by prefix), injection is skipped. Compartment IDs are inferred from the VCN/subnet being referenced.
 
 This is separate from the `ApplicationProvider` interface (which provides a full application catalog). A program can use `agentAccess: true` without implementing an application catalog.
 
@@ -370,7 +370,7 @@ The output is suitable for OCI instance `metadata.user_data`. `cloud-init` detec
 
 > **Limitation:** `cloudInit` runs at template render time, before Pulumi provisions any resources. `COMPARTMENT_OCID` and `SUBNET_OCID` are resolved at VM boot time via the OCI Instance Metadata Service (IMDS) inside `cloudinit.sh` — they are not injected at template render time. If your boot script needs a compartment or subnet OCID at render time, you must use a built-in Go program where `pulumi.All(...).ApplyT(...)` is available.
 
-> **Agent injection:** For YAML programs whose Go program implements `ApplicationProvider`, the engine automatically injects the Nebula mesh + pulumi-ui agent bootstrap into every compute resource's `user_data` **after** template rendering, via multipart MIME composition. This happens transparently — program authors do not need to include agent or Nebula setup in their `cloudInit` calls or `user_data` values. The engine detects compute resource types (e.g. `oci:Core/instance:Instance`, `oci:Core/instanceConfiguration:InstanceConfiguration`) from the `internal/agentinject` registry and composes the existing `user_data` with the agent bootstrap script. See `docs/application-catalog-architecture.md` for details.
+> **Agent injection:** For YAML programs implementing `ApplicationProvider` or with `meta.agentAccess: true` (`AgentAccessProvider`), the engine automatically injects the Nebula mesh + pulumi-ui agent bootstrap into every compute resource's `user_data` **after** template rendering, via multipart MIME composition. Missing intermediate YAML nodes (e.g. `metadata`) are created automatically. This happens transparently — program authors do not need to include agent or Nebula setup in their `cloudInit` calls or `user_data` values. The engine detects compute resource types from the `internal/agentinject` registry and composes the existing `user_data` with the agent bootstrap script. For `AgentAccessProvider` programs, the engine also injects networking resources (NSG rules, NLB) — modifying existing resources or creating new ones from VCN/subnet context. See `docs/application-catalog-architecture.md` for details.
 
 ### `groupRef`
 

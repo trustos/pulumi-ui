@@ -261,7 +261,8 @@ traefik-nlb-bs-{{ $port }}:
 - Stores: integration-test against a real in-memory SQLite instance.
 - Engine: integration-test against a real Pulumi workspace (expensive; run in CI only).
 - Programs/validation: unit-test the 6-level validator (template syntax → template render → YAML structure → config section → resource structure → variable references) with known good/bad YAML inputs.
-- Agent injection: unit-test `internal/agentinject/` (MIME composition, YAML injection, networking injection).
+- Agent injection: unit-test `internal/agentinject/` (MIME composition, YAML injection with intermediate node creation, networking injection including bare-instance NSG/NLB creation). Tests in `yaml_test.go` (11 tests) and `network_test.go` (12 tests).
 - Crypto: unit-test `internal/crypto/` (encrypt/decrypt round-trip).
-- Pipeline integration: test the full engine pipeline (template render → agent user_data injection → networking injection) in `internal/programs/pipeline_test.go`.
-- CI: GitHub Actions runs `go test ./internal/... -count=1 -race` and `npx svelte-check --threshold warning` on every push and PR.
+- Pipeline integration: test the full engine pipeline (template render → agent user_data injection → networking injection) in `internal/programs/pipeline_test.go`. Covers both full-networking and bare-instance scenarios.
+- Frontend: Vitest unit tests for pure utility modules (e.g. `agent-access.test.ts` tests the YAML patching for the Agent Connect toggle — insert/remove/round-trip/multi-cycle stability). Run via `npx vitest run` in the `frontend/` directory.
+- CI: GitHub Actions runs `go test ./internal/... -count=1 -race`, `npx svelte-check --threshold warning`, and `npx vitest run` on every push and PR.

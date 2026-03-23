@@ -290,13 +290,13 @@ Programs implementing `ApplicationProvider` or `AgentAccessProvider` (with `Agen
 - **`agent_bootstrap.sh`** — standalone Nebula + agent installer with `@@PLACEHOLDER@@` markers.
 - **`bootstrap.go`** — embeds the script and renders placeholders with `AgentVars`.
 - **`compose.go`** — multipart MIME composition (`ComposeAndEncode`), gzip/base64 helpers (`GzipBase64`).
-- **`yaml.go`** — `InjectIntoYAML()` post-render YAML transformation: walks resources, detects compute types, composes `user_data` with agent bootstrap.
-- **`network.go`** — `InjectNetworkingIntoYAML()` post-render YAML transformation: detects existing NSG and NLB resources, auto-adds NSG security rules (UDP 41820) and NLB backend set/listener/backends for agent connectivity. Uses `__agent_` prefix to avoid naming collisions.
+- **`yaml.go`** — `InjectIntoYAML()` post-render YAML transformation: walks resources, detects compute types, composes `user_data` with agent bootstrap. Creates missing intermediate mapping nodes (e.g. `metadata`) when the property path doesn't exist.
+- **`network.go`** — `InjectNetworkingIntoYAML()` post-render YAML transformation: detects existing NSG and NLB resources, auto-adds NSG security rules (UDP 41820) and NLB backend set/listener/backends for agent connectivity. When no NSG/NLB exist but VCN/subnet context is available, creates them from scratch and attaches the NSG to compute instances. Uses `__agent_` prefix to avoid naming collisions.
 - **`goprog.go`** — `CfgKeyAgentBootstrap` constant. Go programs receive the rendered agent script via cfg map and pass it to `buildCloudInit()`.
 
 **Injection gating:**
 - `ApplicationProvider` — full application catalog programs (Go built-ins). Agent bootstrap injected; networking is managed by the program itself.
-- `AgentAccessProvider` (YAML `meta.agentAccess: true`) — agent bootstrap injected AND networking resources auto-added. Programs without either interface are unaffected.
+- `AgentAccessProvider` (YAML `meta.agentAccess: true`) — agent bootstrap injected AND networking resources auto-added (existing resources modified, or new NSG/NLB created from VCN/subnet context). Programs without either interface are unaffected.
 
 **Go template rendering in `cloudinit.sh`:**
 

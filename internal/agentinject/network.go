@@ -99,6 +99,47 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 
 	modified := false
 
+	// When no VCN/subnet resources exist but compute does, try to extract
+	// subnetId from the first compute instance's createVnicDetails. Use
+	// fn::invoke to resolve the subnet's VCN at deploy time.
+	if len(vcns) == 0 && len(subnets) == 0 && len(computes) > 0 && len(nsgs) == 0 && len(nlbs) == 0 {
+		subnetRef, compartmentRef := extractSubnetFromCompute(resourcesNode, computes[0].name)
+		if subnetRef != "" {
+			// Inject a variables: block with fn::invoke to resolve the VCN
+			variablesNode := findMapValue(root, "variables")
+			if variablesNode == nil {
+				variablesNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+				root.Content = append(root.Content,
+					&yaml.Node{Kind: yaml.ScalarNode, Value: "variables"},
+					variablesNode,
+				)
+			}
+			addVariable(variablesNode, "__agent_subnet_info", buildSubnetLookupVariable(subnetRef))
+
+			nsgName := "__agent_nsg"
+			addResource(resourcesNode, nsgName, buildNSGResourceFromSubnetLookup(compartmentRef))
+			ruleName := "__agent_nsg_rule"
+			addResource(resourcesNode, ruleName, buildNSGRuleResource(nsgName))
+			for _, compute := range computes {
+				attachNSGToInstance(resourcesNode, compute.name, nsgName)
+			}
+
+			nlbName := "__agent_nlb"
+			addResource(resourcesNode, nlbName, buildNLBResourceFromSubnetRef(compartmentRef, subnetRef))
+			bsName := "__agent_bs"
+			lnName := "__agent_ln"
+			addResource(resourcesNode, bsName, buildNLBBackendSetResource(nlbName))
+			addResource(resourcesNode, lnName, buildNLBListenerResource(nlbName, bsName))
+			prevDep := lnName
+			for _, compute := range computes {
+				beName := fmt.Sprintf("__agent_be_%s", compute.name)
+				addResource(resourcesNode, beName, buildNLBBackendResource(nlbName, bsName, compute.name, prevDep))
+				prevDep = beName
+			}
+			modified = true
+		}
+	}
+
 	// When no NSG exists but we have a VCN and compute, create one with the agent rule
 	if len(nsgs) == 0 && len(vcns) > 0 && len(computes) > 0 {
 		vcn := vcns[0]
@@ -107,7 +148,6 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 		addResource(resourcesNode, nsgName, buildNSGResource(compartmentRef, vcn.name))
 		ruleName := "__agent_nsg_rule"
 		addResource(resourcesNode, ruleName, buildNSGRuleResource(nsgName))
-		// Attach NSG to each compute instance
 		for _, compute := range computes {
 			attachNSGToInstance(resourcesNode, compute.name, nsgName)
 		}
@@ -261,6 +301,79 @@ func buildNLBBackendResource(nlbName, bsName, computeName, prevDep string) *yaml
 		},
 		"options": map[string]interface{}{
 			"dependsOn": []string{fmt.Sprintf("${%s}", prevDep)},
+		},
+	})
+}
+
+// extractSubnetFromCompute extracts the subnetId and compartmentId from a
+// compute instance's createVnicDetails. Returns empty strings if not found.
+func extractSubnetFromCompute(resourcesNode *yaml.Node, instanceName string) (subnetRef, compartmentRef string) {
+	for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
+		if resourcesNode.Content[i].Value != instanceName {
+			continue
+		}
+		resNode := resourcesNode.Content[i+1]
+		if resNode.Kind != yaml.MappingNode {
+			continue
+		}
+		props := findMapValue(resNode, "properties")
+		if props == nil || props.Kind != yaml.MappingNode {
+			continue
+		}
+
+		if cid := findMapValue(props, "compartmentId"); cid != nil {
+			compartmentRef = cid.Value
+		}
+
+		vnicDetails := findMapValue(props, "createVnicDetails")
+		if vnicDetails != nil && vnicDetails.Kind == yaml.MappingNode {
+			if sid := findMapValue(vnicDetails, "subnetId"); sid != nil {
+				subnetRef = sid.Value
+			}
+		}
+		return
+	}
+	return
+}
+
+func addVariable(variablesNode *yaml.Node, name string, valueNode *yaml.Node) {
+	variablesNode.Content = append(variablesNode.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: name},
+		valueNode,
+	)
+}
+
+// buildSubnetLookupVariable creates a Pulumi fn::invoke that looks up a subnet
+// to get its vcnId at deploy time.
+func buildSubnetLookupVariable(subnetRef string) *yaml.Node {
+	return buildMappingNode(map[string]interface{}{
+		"fn::invoke": map[string]interface{}{
+			"function":  "oci:Core/getSubnet:getSubnet",
+			"arguments": map[string]interface{}{"subnetId": subnetRef},
+		},
+	})
+}
+
+func buildNSGResourceFromSubnetLookup(compartmentRef string) *yaml.Node {
+	return buildMappingNode(map[string]interface{}{
+		"type": "oci:Core/networkSecurityGroup:NetworkSecurityGroup",
+		"properties": map[string]interface{}{
+			"compartmentId": compartmentRef,
+			"vcnId":         "${__agent_subnet_info.vcnId}",
+			"displayName":   "pulumi-ui-agent-nsg",
+		},
+	})
+}
+
+func buildNLBResourceFromSubnetRef(compartmentRef, subnetRef string) *yaml.Node {
+	return buildMappingNode(map[string]interface{}{
+		"type": "oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer",
+		"properties": map[string]interface{}{
+			"compartmentId":               compartmentRef,
+			"subnetId":                    subnetRef,
+			"displayName":                 "pulumi-ui-agent-nlb",
+			"isPrivate":                   false,
+			"isPreserveSourceDestination": false,
 		},
 	})
 }

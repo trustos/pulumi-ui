@@ -228,7 +228,7 @@ The `applications` and `appConfig` fields are present only for stacks whose prog
 
 The `applications` field is present only for programs implementing `ApplicationProvider`. Programs without an application catalog omit this field (`null` / absent). When present, the UI shows an application selection step in the stack creation wizard.
 
-The `agentAccess` field is `true` when the program opts into automatic agent connectivity injection (YAML programs with `meta.agentAccess: true`). When enabled, the engine auto-adds NSG rules and NLB resources for the agent port alongside user_data injection. This is independent of `applications` — a program can have `agentAccess` without an application catalog.
+The `agentAccess` field is `true` when the program opts into automatic agent connectivity injection (YAML programs with `meta.agentAccess: true`). When enabled, the engine injects agent bootstrap into compute `user_data`, adds NSG rules to existing NSGs (or creates a new NSG from the VCN), and adds NLB backend set/listener to existing NLBs (or creates a new NLB from the subnet). This is independent of `applications` — a program can have `agentAccess` without an application catalog.
 
 `CustomProgram` response shape (from `GET /api/programs/{name}` for custom programs):
 ```json

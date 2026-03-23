@@ -238,8 +238,8 @@ Before saving in visual mode, `collectVisualErrors()` checks:
 ### Agent Connect Toggle
 The program editor header contains an **Agent Connect** toggle visible in both visual and YAML modes. When toggled:
 - **Visual mode**: sets `graph.metadata.agentAccess` which the serializer emits as `meta.agentAccess: true`.
-- **YAML mode**: patches the YAML text directly — inserts/removes `agentAccess: true` in the `meta:` block.
-- An informational banner below the mode bar lists all resources auto-injected at deploy time (user_data on compute instances, NSG rules, NLB backend sets/listeners/backends).
+- **YAML mode**: patches the YAML text directly via `insertAgentAccess()` / `removeAgentAccess()` from `$lib/program-graph/agent-access.ts`. These are pure functions extracted for testability (see `agent-access.test.ts`).
+- An informational banner below the mode bar lists all resources auto-injected at deploy time: user_data on compute instances, NSG rules (added to existing or created from VCN), NLB (added to existing or created from subnet), backend sets/listeners/backends.
 - State syncs on visual↔YAML mode switches, template selection, fork, and load.
 
 ### Promote to Variable

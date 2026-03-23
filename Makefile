@@ -3,7 +3,7 @@ DATA_DIR := ./dev-data
 ADDR     := :8080
 
 .PHONY: all build frontend backend backend-static build-agent dev run watch-frontend dev-watch \
-        docker docker-push deploy clean clean-all help test lint
+        docker docker-push deploy clean clean-all help test test-frontend lint
 
 # ── Default ───────────────────────────────────────────────────────────────────
 
@@ -74,6 +74,10 @@ _require-binary:
 ## test: Run all Go tests
 test:
 	go test ./internal/... -count=1
+
+## test-frontend: Run Vitest frontend unit tests
+test-frontend:
+	cd frontend && npx vitest run
 
 ## lint: Run svelte-check on the frontend
 lint:

@@ -249,9 +249,9 @@ When `agentBootstrap` is nil, the result is a simple gzip+base64 encoded script.
 Programs can optionally implement the `ApplicationProvider` interface to expose an application catalog — a list of selectable applications deployed after infrastructure provisioning via the pulumi-ui agent. When a program implements this interface, the engine automatically injects the Nebula mesh + agent bootstrap into every compute resource's `user_data` via multipart MIME composition (see `internal/agentinject`). Nebula and the agent are **not** part of the program's application catalog; they are infrastructure plumbing managed by the engine.
 
 Separately, YAML programs can declare `meta.agentAccess: true` to opt into automatic agent connectivity. This causes the engine to:
-1. Inject the agent bootstrap into compute resource `user_data` (same as `ApplicationProvider`)
-2. Auto-add NSG security rules for the Nebula UDP port on detected NSG resources
-3. Auto-add NLB backend set + listener for the agent port on detected NLB resources
+1. Inject the agent bootstrap into compute resource `user_data` (same as `ApplicationProvider`). Missing intermediate property nodes (e.g. `metadata`) are created automatically.
+2. Auto-add NSG security rules for the Nebula UDP port on existing NSG resources, or create a new NSG from the VCN if none exist
+3. Auto-add NLB backend set + listener for the agent port on existing NLB resources, or create a new NLB from the subnet if none exist
 
 See `docs/application-catalog-architecture.md` for the full architecture.
 
@@ -317,7 +317,7 @@ meta:
       ui_type: oci-image
 ```
 
-When `agentAccess: true` is set, the YAML program implements `AgentAccessProvider` and the engine automatically injects agent bootstrap into compute `user_data` and adds NSG/NLB resources for agent connectivity (see `internal/agentinject/network.go`).
+When `agentAccess: true` is set, the YAML program implements `AgentAccessProvider` and the engine automatically injects agent bootstrap into compute `user_data` (creating intermediate nodes like `metadata` if missing) and adds or creates NSG/NLB resources for agent connectivity (see `internal/agentinject/network.go`).
 
 ### `internal/programs/template.go`
 

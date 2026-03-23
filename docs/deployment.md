@@ -256,6 +256,7 @@ make watch-frontend # terminal 2 — Vite HMR on :5173
 
 # Run tests and linting
 make test           # Go unit + integration tests (./internal/...)
+make test-frontend  # Vitest frontend unit tests (agent-access, etc.)
 make lint           # Svelte-check with warning threshold
 ```
 
@@ -268,9 +269,9 @@ GitHub Actions CI (`.github/workflows/ci.yml`) runs on pushes to `main` and pull
 | Job | Steps |
 |---|---|
 | `go-test` | `go test ./internal/... -count=1 -race`, build server binary, build agent binary |
-| `frontend-check` | `npm ci`, `npx svelte-check --threshold warning`, `npm run build` |
+| `frontend-check` | `npm ci`, `npx vitest run`, `npx svelte-check --threshold warning`, `npm run build` |
 
-The pipeline catches Go test regressions, Svelte type errors, and build failures automatically.
+The pipeline catches Go test regressions, frontend unit test failures, Svelte type errors, and build failures automatically.
 
 ---
 

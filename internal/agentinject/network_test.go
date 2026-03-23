@@ -291,3 +291,96 @@ resources:
 	assert.Equal(t, 1, strings.Count(result2, "__agent_nsg:"),
 		"should not inject duplicate NSG")
 }
+
+func TestInjectNetworking_OnlyInstance_WithSubnetRef(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment.test
+      shape: VM.Standard.A1.Flex
+      createVnicDetails:
+        subnetId: ocid1.subnet.existing
+`
+	result, err := InjectNetworkingIntoYAML(yaml)
+	require.NoError(t, err)
+
+	// Should create NSG using fn::invoke to resolve VCN from subnet
+	assert.Contains(t, result, "__agent_subnet_info", "should create subnet lookup variable")
+	assert.Contains(t, result, "getSubnet", "should use fn::invoke for subnet")
+	assert.Contains(t, result, "ocid1.subnet.existing", "should reference the instance's subnetId")
+	assert.Contains(t, result, "__agent_nsg", "should create NSG")
+	assert.Contains(t, result, "${__agent_subnet_info.vcnId}", "NSG should use VCN from subnet lookup")
+	assert.Contains(t, result, "__agent_nsg_rule", "should create NSG rule")
+
+	// Should create NLB using the same subnetId
+	assert.Contains(t, result, "__agent_nlb", "should create NLB")
+	assert.Contains(t, result, "__agent_bs", "should create backend set")
+	assert.Contains(t, result, "__agent_ln", "should create listener")
+	assert.Contains(t, result, "__agent_be_my-instance", "should create backend for instance")
+
+	// Should attach NSG to instance
+	assert.Contains(t, result, "nsgIds", "should add nsgIds")
+	assert.Contains(t, result, "${__agent_nsg.id}", "should reference created NSG")
+}
+
+func TestInjectNetworking_OnlyInstance_WithPulumiSubnetRef(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${compartmentId}
+      shape: VM.Standard.A1.Flex
+      createVnicDetails:
+        subnetId: ${subnetId}
+`
+	result, err := InjectNetworkingIntoYAML(yaml)
+	require.NoError(t, err)
+
+	assert.Contains(t, result, "__agent_subnet_info")
+	assert.Contains(t, result, "${subnetId}", "should pass through the Pulumi ref")
+	assert.Contains(t, result, "__agent_nsg")
+	assert.Contains(t, result, "__agent_nlb")
+}
+
+func TestInjectNetworking_OnlyInstance_NoSubnetRef(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment.test
+      shape: VM.Standard.A1.Flex
+`
+	result, err := InjectNetworkingIntoYAML(yaml)
+	require.NoError(t, err)
+	assert.NotContains(t, result, "__agent_nsg",
+		"no subnetId means no networking can be inferred")
+}
+
+func TestInjectNetworking_OnlyInstance_SkipsDuplicate(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment.test
+      shape: VM.Standard.A1.Flex
+      createVnicDetails:
+        subnetId: ocid1.subnet.existing
+`
+	result1, err := InjectNetworkingIntoYAML(yaml)
+	require.NoError(t, err)
+	assert.Contains(t, result1, "__agent_nsg")
+
+	result2, err := InjectNetworkingIntoYAML(result1)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(result2, "__agent_nsg:"),
+		"should not inject duplicate resources on second pass")
+}
