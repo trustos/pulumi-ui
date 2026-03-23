@@ -66,6 +66,11 @@ func ValidateProgram(yamlBody string) []ValidationError {
 	// Level 6 — variable reference integrity (needs rendered body).
 	errs = append(errs, validateVariableReferences(rendered)...)
 
+	// Level 7 — agent access networking context (needs rendered body + meta).
+	if ParseAgentAccess(yamlBody) {
+		errs = append(errs, validateAgentAccessContext(rendered)...)
+	}
+
 	return errs
 }
 
@@ -345,6 +350,76 @@ func checkRefValues(props map[string]interface{}, resName string, defined map[st
 			checkRefValues(v, resName, defined, errs)
 		}
 	}
+}
+
+// --- Level 7: agent access networking context --------------------------------
+
+const LevelAgentAccess ValidationLevel = 7
+
+// validateAgentAccessContext checks both the raw template and rendered YAML.
+// The raw template is needed because config-driven subnetId values may render
+// as empty strings during validation (synthetic config has no real OCIDs).
+func validateAgentAccessContext(rendered string) []ValidationError {
+	var doc struct {
+		Resources map[string]struct {
+			Type       string                 `yaml:"type"`
+			Properties map[string]interface{} `yaml:"properties"`
+		} `yaml:"resources"`
+	}
+	if err := yaml.Unmarshal([]byte(rendered), &doc); err != nil {
+		return nil
+	}
+
+	hasCompute := false
+	hasVCN := false
+	hasSubnet := false
+	hasNSG := false
+	hasNLB := false
+	hasSubnetRef := false
+
+	for _, res := range doc.Resources {
+		switch {
+		case res.Type == "oci:Core/vcn:Vcn":
+			hasVCN = true
+		case res.Type == "oci:Core/subnet:Subnet":
+			hasSubnet = true
+		case res.Type == "oci:Core/networkSecurityGroup:NetworkSecurityGroup":
+			hasNSG = true
+		case res.Type == "oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer":
+			hasNLB = true
+		}
+		if isComputeType(res.Type) {
+			hasCompute = true
+			if vnic, ok := res.Properties["createVnicDetails"].(map[string]interface{}); ok {
+				if _, hasKey := vnic["subnetId"]; hasKey {
+					hasSubnetRef = true
+				}
+			}
+		}
+	}
+
+	if !hasCompute {
+		return []ValidationError{{
+			Level:   LevelAgentAccess,
+			Field:   "meta.agentAccess",
+			Message: "agentAccess is enabled but the program has no compute resources — the agent bootstrap has nothing to inject into",
+		}}
+	}
+
+	if !hasVCN && !hasSubnet && !hasNSG && !hasNLB && !hasSubnetRef {
+		return []ValidationError{{
+			Level:   LevelAgentAccess,
+			Field:   "meta.agentAccess",
+			Message: "agentAccess is enabled but no networking context found — add a VCN + subnet, or set createVnicDetails.subnetId on the compute instance so the engine can create NSG and NLB for agent connectivity",
+		}}
+	}
+
+	return nil
+}
+
+func isComputeType(t string) bool {
+	return t == "oci:Core/instance:Instance" ||
+		t == "oci:Core/instanceConfiguration:InstanceConfiguration"
 }
 
 // --- helpers ----------------------------------------------------------------

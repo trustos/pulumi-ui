@@ -260,9 +260,10 @@ traefik-nlb-bs-{{ $port }}:
 - Services: unit-test with mock repositories.
 - Stores: integration-test against a real in-memory SQLite instance.
 - Engine: integration-test against a real Pulumi workspace (expensive; run in CI only).
-- Programs/validation: unit-test the 6-level validator (template syntax → template render → YAML structure → config section → resource structure → variable references) with known good/bad YAML inputs.
+- Programs/validation: unit-test the 7-level validator (template syntax → template render → YAML structure → config section → resource structure → variable references → agent access context) with known good/bad YAML inputs.
 - Agent injection: unit-test `internal/agentinject/` (MIME composition, YAML injection with intermediate node creation, networking injection including bare-instance NSG/NLB creation). Tests in `yaml_test.go` (11 tests) and `network_test.go` (12 tests).
+- API handlers: unit-test `internal/api/` — `programs_test.go` (5 tests) covers the `hasBlockingErrors` helper ensuring Level 7 warnings are non-blocking while Levels 1–6 block saving.
 - Crypto: unit-test `internal/crypto/` (encrypt/decrypt round-trip).
 - Pipeline integration: test the full engine pipeline (template render → agent user_data injection → networking injection) in `internal/programs/pipeline_test.go`. Covers both full-networking and bare-instance scenarios.
-- Frontend: Vitest unit tests for pure utility modules (e.g. `agent-access.test.ts` tests the YAML patching for the Agent Connect toggle — insert/remove/round-trip/multi-cycle stability). Run via `npx vitest run` in the `frontend/` directory.
+- Frontend: Vitest unit tests for pure utility modules — `agent-access.test.ts` (12 tests) for Agent Connect toggle YAML patching, `scaffold-networking.test.ts` (16 tests) for the VCN+Subnet scaffold in both visual graph and YAML modes. Run via `npx vitest run` in the `frontend/` directory.
 - CI: GitHub Actions runs `go test ./internal/... -count=1 -race`, `npx svelte-check --threshold warning`, and `npx vitest run` on every push and PR.

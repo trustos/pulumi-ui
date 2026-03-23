@@ -218,7 +218,7 @@ RUN pulumi plugin install resource oci 4.3.1
 
 The OCI provider is pinned to **v4.3.1** throughout the codebase — `engine.go` injects a `plugins:` section into every YAML program to force this exact version, and the engine calls `InstallPlugin` with the same pin. Do not change this version without auditing all resource type tokens (v4 uses the canonical `oci:Module/subtype:Resource` format).
 
-The engine also unconditionally sets `PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING=true` in every workspace. This is required because the OCI v4 provider schema contains `ArrayType`/`MapType` objects with nil `ElementType`, which causes a SIGSEGV in `pulumi-yaml`. The engine's own Level 5 (resource structure / schema) and Level 6 (variable reference integrity) validations cover these concerns safely.
+The engine also unconditionally sets `PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING=true` in every workspace. This is required because the OCI v4 provider schema contains `ArrayType`/`MapType` objects with nil `ElementType`, which causes a SIGSEGV in `pulumi-yaml`. The engine's own Level 5 (resource structure / schema), Level 6 (variable reference integrity), and Level 7 (agent access context) validations cover these concerns safely.
 
 ---
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,8 +182,13 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 	// (NSG rules, NLB backend sets/listeners) for agent connectivity.
 	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
 		netInjected, netErr := agentinject.InjectNetworkingIntoYAML(sanitized)
-		if netErr == nil {
+		if netErr != nil {
+			log.Printf("[agent-inject] networking injection error for stack %s: %v", stackName, netErr)
+		} else if netInjected != sanitized {
 			sanitized = netInjected
+			log.Printf("[agent-inject] networking resources injected for stack %s", stackName)
+		} else {
+			log.Printf("[agent-inject] agentAccess is ON for stack %s but no networking context found (no VCN/subnet/NSG/NLB resources and no createVnicDetails.subnetId on compute instances). Agent networking was NOT injected.", stackName)
 		}
 	}
 

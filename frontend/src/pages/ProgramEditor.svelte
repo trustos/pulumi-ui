@@ -6,6 +6,7 @@
   import { graphToYaml } from '$lib/program-graph/serializer';
   import { yamlToGraph } from '$lib/program-graph/parser';
   import { insertAgentAccess, removeAgentAccess } from '$lib/program-graph/agent-access';
+  import { scaffoldNetworkingGraph, scaffoldNetworkingYaml } from '$lib/program-graph/scaffold-networking';
   import type { ProgramGraph, ProgramSection } from '$lib/types/program-graph';
   import type { ValidationError } from '$lib/types';
   import EditorModeBar from '$lib/components/EditorModeBar.svelte';
@@ -282,6 +283,17 @@
     yamlText = agentAccess ? insertAgentAccess(yamlText) : removeAgentAccess(yamlText);
     syncStatus = 'yaml-edited';
     scheduleValidation();
+  }
+
+  function scaffoldAgentNetworking() {
+    if (mode === 'visual') {
+      graph = scaffoldNetworkingGraph(graph);
+      validationErrors = validationErrors.filter(e => e.level !== 7);
+    } else {
+      yamlText = scaffoldNetworkingYaml(yamlText);
+      syncStatus = 'yaml-edited';
+      scheduleValidation();
+    }
   }
 
   // ── Validation (debounced, YAML mode only) ────────────────────────────────
@@ -587,6 +599,12 @@
             <span class="font-medium shrink-0">[{err.field}]</span>
           {/if}
           <span>{err.message}</span>
+          {#if err.level === 7 && err.message.includes('no networking context')}
+            <button
+              class="shrink-0 text-[11px] font-medium text-primary hover:text-primary/80 underline underline-offset-2"
+              onclick={scaffoldAgentNetworking}
+            >Add VCN + Subnet</button>
+          {/if}
         </div>
       {/each}
     </div>

@@ -197,6 +197,15 @@ The program editor header contains an **Agent Connect** toggle button (visible i
 - An informational banner appears below the mode bar listing all resources that will be auto-injected at deploy time: user_data (with automatic intermediate node creation), NSG rules (added to existing or created from VCN), NLB (added to existing or created from subnet), and backends for each compute instance.
 - The toggle state round-trips correctly between visual and YAML modes.
 
+### Agent Networking Scaffold
+When Level 7 validation detects `agentAccess` is enabled but no networking context exists, an **"Add VCN + Subnet"** action button appears inline in the validation error panel. Clicking it scaffolds:
+- `agent-vcn` (VCN) and `agent-subnet` (Subnet) resources.
+- `createVnicDetails.subnetId: ${agent-subnet.id}` wired on each compute instance.
+- `compartmentId` added as a config field if not already present.
+This works in both visual and YAML modes — in visual mode it mutates the graph; in YAML mode it patches the text inline. Logic is in `$lib/program-graph/scaffold-networking.ts` (`scaffoldNetworkingGraph` / `scaffoldNetworkingYaml`), with 16 Vitest unit tests in `scaffold-networking.test.ts`.
+
+Level 7 warnings are **non-blocking** — users can save and address networking later. The backend `hasBlockingErrors()` helper (tested in `internal/api/programs_test.go`) only blocks on Levels 1–6.
+
 ### Outputs Panel
 `OutputsPanel.svelte` in the right sidebar (below `ConfigFieldPanel`) allows adding, editing, and removing `outputs: OutputDef[]` entries. Changes are preserved through visual/YAML round-trips.
 

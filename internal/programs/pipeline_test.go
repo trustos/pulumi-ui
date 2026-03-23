@@ -210,6 +210,108 @@ resources:
 	assert.Contains(t, netInjected, "${__agent_nsg.id}", "NSG reference in instance")
 }
 
+// TestPipeline_BareInstance_NoSubnet_AgentAccess verifies that a single
+// instance with agentAccess but no VCN/subnet/createVnicDetails.subnetId
+// triggers a Level 7 validation warning and produces NO networking injection.
+func TestPipeline_BareInstance_NoSubnet_AgentAccess(t *testing.T) {
+	yamlTemplate := `name: bare
+runtime: yaml
+
+config:
+  compartmentId:
+    type: string
+
+meta:
+  agentAccess: true
+
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      shape: VM.Standard.A1.Flex
+`
+	assert.True(t, ParseAgentAccess(yamlTemplate))
+
+	// Validation should flag missing networking context
+	errs := ValidateProgram(yamlTemplate)
+	var l7 []ValidationError
+	for _, e := range errs {
+		if e.Level == LevelAgentAccess {
+			l7 = append(l7, e)
+		}
+	}
+	require.NotEmpty(t, l7, "should warn about missing networking context")
+	assert.Contains(t, l7[0].Message, "no networking context")
+
+	// Render and check injection does NOT add networking (no context)
+	cfg := ApplyConfigDefaults(yamlTemplate, map[string]string{
+		"compartmentId": "ocid1.compartment.test",
+	})
+	rendered, err := RenderTemplate(yamlTemplate, cfg)
+	require.NoError(t, err)
+
+	netResult, err := agentinject.InjectNetworkingIntoYAML(rendered)
+	require.NoError(t, err)
+	assert.NotContains(t, netResult, "__agent_nsg",
+		"no VCN/subnet/subnetId → no networking injected")
+}
+
+// TestPipeline_BareInstance_WithSubnetRef_AgentAccess verifies that a single
+// instance with createVnicDetails.subnetId and agentAccess triggers full
+// networking injection via fn::invoke.
+func TestPipeline_BareInstance_WithSubnetRef_AgentAccess(t *testing.T) {
+	yamlTemplate := `name: bare-subnet
+runtime: yaml
+
+config:
+  compartmentId:
+    type: string
+  subnetId:
+    type: string
+
+meta:
+  agentAccess: true
+
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      shape: VM.Standard.A1.Flex
+      createVnicDetails:
+        subnetId: {{ .Config.subnetId }}
+`
+	assert.True(t, ParseAgentAccess(yamlTemplate))
+
+	// Validation should pass (has createVnicDetails.subnetId)
+	errs := ValidateProgram(yamlTemplate)
+	for _, e := range errs {
+		if e.Level == LevelAgentAccess {
+			t.Errorf("unexpected Level 7 error: %s", e.Message)
+		}
+	}
+
+	cfg := ApplyConfigDefaults(yamlTemplate, map[string]string{
+		"compartmentId": "ocid1.compartment.test",
+		"subnetId":      "ocid1.subnet.existing",
+	})
+	rendered, err := RenderTemplate(yamlTemplate, cfg)
+	require.NoError(t, err)
+
+	sanitized := SanitizeYAML(rendered)
+
+	// Networking injection should create NSG+NLB from subnetId
+	netInjected, err := agentinject.InjectNetworkingIntoYAML(sanitized)
+	require.NoError(t, err)
+
+	assert.Contains(t, netInjected, "__agent_subnet_info", "should create fn::invoke variable")
+	assert.Contains(t, netInjected, "__agent_nsg", "should create NSG")
+	assert.Contains(t, netInjected, "__agent_nlb", "should create NLB")
+	assert.Contains(t, netInjected, "__agent_be_my-instance", "should create backend")
+	assert.Contains(t, netInjected, "ocid1.subnet.existing", "should reference the subnet OCID")
+}
+
 // TestPipeline_VariableRef_Validation tests that undefined variable references
 // are caught by the validation pipeline.
 func TestPipeline_VariableRef_Validation(t *testing.T) {

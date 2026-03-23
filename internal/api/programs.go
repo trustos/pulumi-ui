@@ -71,9 +71,16 @@ func (h *Handler) ValidateProgramHandler(w http.ResponseWriter, r *http.Request)
 	if errs == nil {
 		errs = []programs.ValidationError{}
 	}
+	blocking := false
+	for _, e := range errs {
+		if e.Level < programs.LevelAgentAccess {
+			blocking = true
+			break
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"valid":  len(errs) == 0,
+		"valid":  !blocking,
 		"errors": errs,
 	})
 }
@@ -91,7 +98,7 @@ func (h *Handler) CreateProgram(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name, displayName, and programYaml are required", http.StatusBadRequest)
 		return
 	}
-	if errs := programs.ValidateProgram(req.ProgramYAML); len(errs) > 0 {
+	if errs := programs.ValidateProgram(req.ProgramYAML); hasBlockingErrors(errs) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		json.NewEncoder(w).Encode(errs)
@@ -149,7 +156,7 @@ func (h *Handler) UpdateProgram(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "programYaml is required", http.StatusBadRequest)
 		return
 	}
-	if errs := programs.ValidateProgram(req.ProgramYAML); len(errs) > 0 {
+	if errs := programs.ValidateProgram(req.ProgramYAML); hasBlockingErrors(errs) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		json.NewEncoder(w).Encode(errs)
@@ -262,4 +269,13 @@ func (h *Handler) DeleteProgram(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[programs] deleted custom program %q", name)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func hasBlockingErrors(errs []programs.ValidationError) bool {
+	for _, e := range errs {
+		if e.Level < programs.LevelAgentAccess {
+			return true
+		}
+	}
+	return false
 }

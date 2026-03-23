@@ -47,7 +47,7 @@ export interface ProgramMeta {
 }
 
 export interface ValidationError {
-  level: 1 | 2 | 3 | 4 | 5;
+  level: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   field?: string;
   message: string;
   line?: number;

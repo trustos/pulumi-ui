@@ -699,7 +699,7 @@ compartmentId: ${oci:tenancyOcid}
 
 ## Validation
 
-Programs are validated on every save. Validation runs six levels sequentially:
+Programs are validated on every save. Validation runs seven levels sequentially:
 
 | Level | Name | What it checks |
 |---|---|---|
@@ -709,6 +709,9 @@ Programs are validated on every save. Validation runs six levels sequentially:
 | 4 | Config section | Are field types valid? Do `meta:` group references exist in `config:`? Empty `config:` is allowed. |
 | 5 | Resource structure | Does each resource have a `type` with a valid/well-formed provider token? Are all required properties present (schema-validated)? |
 | 6 | Variable references | Does every `${varName}` in resource properties reference a name defined in `variables:` or `resources:`? Provider config refs (containing `:`) are skipped. |
+| 7 | Agent access context | If `meta.agentAccess: true`, are there compute resources? Is there networking context (VCN, subnet, NSG, NLB, or `createVnicDetails.subnetId`)? Warns (non-blocking) if not. |
+
+Levels 1–6 are blocking — a program that fails cannot be saved. Level 7 produces warnings: the program can still be saved, but the editor shows an inline **"Add VCN + Subnet"** button to scaffold the missing networking in one click.
 
 A program that fails validation cannot be saved. Fix all errors shown in the editor panel before saving.
 

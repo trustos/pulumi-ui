@@ -242,6 +242,17 @@ The program editor header contains an **Agent Connect** toggle visible in both v
 - An informational banner below the mode bar lists all resources auto-injected at deploy time: user_data on compute instances, NSG rules (added to existing or created from VCN), NLB (added to existing or created from subnet), backend sets/listeners/backends.
 - State syncs on visual↔YAML mode switches, template selection, fork, and load.
 
+### Agent Access Networking Scaffold
+When a Level 7 validation error detects that `agentAccess` is enabled but no networking context exists, an **"Add VCN + Subnet"** button appears inline in the validation error panel. Clicking it:
+- Adds `agent-vcn` (VCN) and `agent-subnet` (Subnet) resources to the program.
+- Wires `createVnicDetails.subnetId: ${agent-subnet.id}` on each compute instance.
+- Adds `compartmentId` as a config field if not already present.
+- Works in both visual and YAML modes. In visual mode, resources are prepended to the first section. In YAML mode, resources are inserted after `resources:` and the instance is patched inline.
+
+The logic is extracted into pure functions in `$lib/program-graph/scaffold-networking.ts` (`scaffoldNetworkingGraph` for visual mode, `scaffoldNetworkingYaml` for YAML mode), covered by `scaffold-networking.test.ts` (16 tests).
+
+Level 7 validation errors are **non-blocking** — the program can still be saved even if the warning is shown. Only Levels 1–6 block saving. This is enforced by `hasBlockingErrors()` in the backend API handler.
+
 ### Promote to Variable
 `PropertyEditor` offers two promotion actions for empty required property values:
 

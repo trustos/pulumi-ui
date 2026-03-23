@@ -206,3 +206,161 @@ resources:
 		}
 	}
 }
+
+func TestValidateProgram_Level7_AgentAccess_NoCompute(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+
+meta:
+  agentAccess: true
+
+resources:
+  my-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+      cidrBlock: 10.0.0.0/16
+`
+	errs := ValidateProgram(yaml)
+	var l7 []ValidationError
+	for _, e := range errs {
+		if e.Level == LevelAgentAccess {
+			l7 = append(l7, e)
+		}
+	}
+	require.NotEmpty(t, l7, "should warn when agentAccess is ON but no compute exists")
+	assert.Contains(t, l7[0].Message, "no compute resources")
+}
+
+func TestValidateProgram_Level7_AgentAccess_NoNetworkingContext(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+
+meta:
+  agentAccess: true
+
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+`
+	errs := ValidateProgram(yaml)
+	var l7 []ValidationError
+	for _, e := range errs {
+		if e.Level == LevelAgentAccess {
+			l7 = append(l7, e)
+		}
+	}
+	require.NotEmpty(t, l7, "should warn when agentAccess is ON but no networking context")
+	assert.Contains(t, l7[0].Message, "no networking context")
+}
+
+func TestValidateProgram_Level7_AgentAccess_WithVCN_NoWarning(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+
+meta:
+  agentAccess: true
+
+resources:
+  my-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+      cidrBlock: 10.0.0.0/16
+  my-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ocid1.compartment
+      vcnId: ${my-vcn.id}
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+`
+	errs := ValidateProgram(yaml)
+	for _, e := range errs {
+		if e.Level == LevelAgentAccess {
+			t.Errorf("unexpected Level 7 error when VCN+subnet+instance exist: %s", e.Message)
+		}
+	}
+}
+
+func TestValidateProgram_Level7_AgentAccess_WithSubnetRef_NoWarning(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+
+meta:
+  agentAccess: true
+
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+      createVnicDetails:
+        subnetId: ocid1.subnet.existing
+`
+	errs := ValidateProgram(yaml)
+	for _, e := range errs {
+		if e.Level == LevelAgentAccess {
+			t.Errorf("unexpected Level 7 error when instance has createVnicDetails.subnetId: %s", e.Message)
+		}
+	}
+}
+
+func TestValidateProgram_Level7_NoAgentAccess_NoWarning(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+`
+	errs := ValidateProgram(yaml)
+	for _, e := range errs {
+		if e.Level == LevelAgentAccess {
+			t.Errorf("Level 7 should not run when agentAccess is OFF: %s", e.Message)
+		}
+	}
+}
+
+func TestValidateProgram_Level7_OnlyWarnings_NonBlocking(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+
+meta:
+  agentAccess: true
+
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      availabilityDomain: test-AD-1
+      shape: VM.Standard.A1.Flex
+`
+	errs := ValidateProgram(yaml)
+	var blocking, warnings int
+	for _, e := range errs {
+		if e.Level < LevelAgentAccess {
+			blocking++
+		} else {
+			warnings++
+		}
+	}
+	assert.Equal(t, 0, blocking, "should have no blocking errors")
+	assert.Greater(t, warnings, 0, "should have at least one Level 7 warning")
+	for _, e := range errs {
+		if e.Level == LevelAgentAccess {
+			assert.Contains(t, e.Message, "no networking context")
+		}
+	}
+}
