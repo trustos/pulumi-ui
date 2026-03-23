@@ -54,10 +54,22 @@ ENTRYPOINT ["/usr/local/bin/pulumi-ui"]
 - The SQLite engine (`modernc.org/sqlite`, pure Go)
 - All SQL migrations (embedded via `go:embed`)
 - All Pulumi program logic (Go inline functions)
+- The agent bootstrap script (embedded via `go:embed` in `internal/agentinject/`)
 
 **What the binary does NOT contain (must be on the filesystem):**
 - Pulumi resource provider plugins (`~/.pulumi/plugins/` — pre-installed in image)
 - Persistent data (`/data/pulumi-ui.db`, `/data/state/`, `/data/encryption.key` — mounted volume)
+
+### Agent binary (`cmd/agent/`)
+
+The `pulumi-ui-agent` is a separate Go binary deployed to provisioned instances. It embeds a Nebula mesh client and exposes a management HTTP API for `exec`, `upload`, `health`, and `services`. The agent is **not** bundled in the main `pulumi-ui` binary — it is downloaded by instances at boot time via the agent bootstrap script injected into cloud-init.
+
+```bash
+# Build the agent binary
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o pulumi-ui-agent ./cmd/agent
+```
+
+The agent binary must be hosted at a URL accessible by provisioned instances (e.g., a GitHub release, OCI Object Storage, or HTTP server). The download URL is configured in the agent bootstrap variables (`AgentDownloadURL`).
 
 ---
 
@@ -241,7 +253,24 @@ make dev-watch
 # Or separately:
 make run            # terminal 1 — Go server on :8080
 make watch-frontend # terminal 2 — Vite HMR on :5173
+
+# Run tests and linting
+make test           # Go unit + integration tests (./internal/...)
+make lint           # Svelte-check with warning threshold
 ```
+
+---
+
+## CI Pipeline
+
+GitHub Actions CI (`.github/workflows/ci.yml`) runs on pushes to `main` and pull requests:
+
+| Job | Steps |
+|---|---|
+| `go-test` | `go test ./internal/... -count=1 -race`, build server binary, build agent binary |
+| `frontend-check` | `npm ci`, `npx svelte-check --threshold warning`, `npm run build` |
+
+The pipeline catches Go test regressions, Svelte type errors, and build failures automatically.
 
 ---
 

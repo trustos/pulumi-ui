@@ -8,6 +8,7 @@ import (
 	"github.com/pulumi/pulumi-oci/sdk/v2/go/oci/identity"
 	"github.com/pulumi/pulumi-oci/sdk/v2/go/oci/networkloadbalancer"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+	"github.com/trustos/pulumi-ui/internal/agentinject"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -105,6 +106,74 @@ func (p *NomadClusterProgram) ConfigFields() []ConfigField {
 	}
 }
 
+// Applications implements ApplicationProvider, exposing the catalog of
+// selectable applications for the Nomad cluster program.
+func (p *NomadClusterProgram) Applications() []ApplicationDef {
+	return []ApplicationDef{
+		{
+			Key:         "docker",
+			Name:        "Docker",
+			Description: "Container runtime (required for Nomad workloads)",
+			Tier:        TierBootstrap,
+			Target:      TargetAll,
+			Required:    true,
+			DefaultOn:   true,
+		},
+		{
+			Key:         "consul",
+			Name:        "Consul",
+			Description: "Service mesh and service discovery",
+			Tier:        TierBootstrap,
+			Target:      TargetAll,
+			Required:    true,
+			DefaultOn:   true,
+		},
+		{
+			Key:         "nomad",
+			Name:        "Nomad",
+			Description: "Workload orchestrator",
+			Tier:        TierBootstrap,
+			Target:      TargetAll,
+			Required:    true,
+			DefaultOn:   true,
+			DependsOn:   []string{"docker", "consul"},
+		},
+		{
+			Key:         "traefik",
+			Name:        "Traefik Reverse Proxy",
+			Description: "Ingress controller and automatic TLS",
+			Tier:        TierWorkload,
+			Target:      TargetFirst,
+			Required:    false,
+			DefaultOn:   true,
+			DependsOn:   []string{"nomad"},
+		},
+		{
+			Key:         "postgres",
+			Name:        "PostgreSQL",
+			Description: "Managed PostgreSQL database on Nomad",
+			Tier:        TierWorkload,
+			Target:      TargetFirst,
+			Required:    false,
+			DefaultOn:   false,
+			DependsOn:   []string{"nomad"},
+		},
+		{
+			Key:         "nomad-ops",
+			Name:        "nomad-ops",
+			Description: "Nomad operations dashboard and management UI",
+			Tier:        TierWorkload,
+			Target:      TargetFirst,
+			Required:    false,
+			DefaultOn:   false,
+			DependsOn:   []string{"nomad"},
+		},
+	}
+}
+
+// Compile-time check that NomadClusterProgram implements ApplicationProvider.
+var _ ApplicationProvider = (*NomadClusterProgram)(nil)
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,6 +188,7 @@ type nsgResult struct {
 	sshNsgID     pulumi.IDOutput
 	nomadNsgID   pulumi.IDOutput
 	traefikNsgID pulumi.IDOutput
+	nebulaNsgID  pulumi.IDOutput
 }
 
 type poolsResult struct {
@@ -700,13 +770,25 @@ func (p *NomadClusterProgram) Run(cfg map[string]string) pulumi.RunFunc {
 		}
 
 		// 6. Network Load Balancer
-		nlb, err := createNLB(ctx, comp.ID(), net.publicSubnetID, nsgs.traefikNsgID, pools.instanceIDs, nodeCount)
+		nlb, err := createNLB(ctx, comp.ID(), net.publicSubnetID, nsgs.traefikNsgID, nsgs.nebulaNsgID, pools.instanceIDs, nodeCount)
 		if err != nil {
 			return err
 		}
 
 		ctx.Export("traefikNlbIps", nlb.IpAddresses)
 		ctx.Export("privateSubnetId", net.privateSubnetID)
+
+		// Nebula lighthouse address: NLB public IP + UDP port
+		nebulaAddr := nlb.IpAddresses.ApplyT(func(addrs []networkloadbalancer.NetworkLoadBalancerIpAddress) string {
+			for _, a := range addrs {
+				if a.IpAddress != nil && (a.IsPublic == nil || *a.IsPublic) {
+					return *a.IpAddress + ":41820"
+				}
+			}
+			return ""
+		}).(pulumi.StringOutput)
+		ctx.Export("nebulaLighthouseAddr", nebulaAddr)
+
 		return nil
 	}
 }
@@ -1016,10 +1098,32 @@ func createNSGs(ctx *pulumi.Context, compartmentID, vcnID pulumi.IDOutput, sshSo
 		}
 	}
 
+	// Nebula NSG — UDP 41820 for Nebula mesh overlay
+	nebulaNsg, err := core.NewNetworkSecurityGroup(ctx, "nebula-nsg", &core.NetworkSecurityGroupArgs{
+		CompartmentId: compartmentID, VcnId: vcnID, DisplayName: pulumi.String("nebula-nsg"),
+	})
+	if err != nil {
+		return nsgResult{}, err
+	}
+	if _, err := core.NewNetworkSecurityGroupSecurityRule(ctx, "nebula-nsg-rule", &core.NetworkSecurityGroupSecurityRuleArgs{
+		NetworkSecurityGroupId: nebulaNsg.ID(), Direction: pulumi.String("INGRESS"),
+		Protocol: pulumi.String("17"), // UDP
+		Source:   pulumi.String("0.0.0.0/0"), SourceType: pulumi.String("CIDR_BLOCK"),
+		UdpOptions: core.NetworkSecurityGroupSecurityRuleUdpOptionsArgs{
+			DestinationPortRange: core.NetworkSecurityGroupSecurityRuleUdpOptionsDestinationPortRangeArgs{
+				Min: pulumi.Int(41820), Max: pulumi.Int(41820),
+			},
+		},
+		Description: pulumi.String("Allow Nebula mesh UDP"),
+	}); err != nil {
+		return nsgResult{}, err
+	}
+
 	return nsgResult{
 		sshNsgID:     sshNsg.ID(),
 		nomadNsgID:   nomadNsg.ID(),
 		traefikNsgID: traefikNsg.ID(),
+		nebulaNsgID:  nebulaNsg.ID(),
 	}, nil
 }
 
@@ -1057,12 +1161,17 @@ func createInstancePools(
 	})
 	adName := adsResult.AvailabilityDomains().Index(pulumi.Int(0)).Name()
 
-	cloudInitB64 := buildCloudInit(ocpusPerNode, memoryGbPerNode, nodeCount, nomadVersion, consulVersion)
+	var agentBootstrap []byte
+	if v, ok := cfg[agentinject.CfgKeyAgentBootstrap]; ok && v != "" {
+		agentBootstrap = []byte(v)
+	}
+	cloudInitB64 := buildCloudInit(ocpusPerNode, memoryGbPerNode, nodeCount, nomadVersion, consulVersion, nil, nil, agentBootstrap)
 
 	nsgIDs := pulumi.StringArray{
 		nsgs.sshNsgID.ToStringOutput(),
 		nsgs.nomadNsgID.ToStringOutput(),
 		nsgs.traefikNsgID.ToStringOutput(),
+		nsgs.nebulaNsgID.ToStringOutput(),
 	}
 
 	instanceConfig, err := core.NewInstanceConfiguration(ctx, "nomad-ic", &core.InstanceConfigurationArgs{
@@ -1141,20 +1250,28 @@ func createNLB(
 	compartmentID pulumi.IDOutput,
 	publicSubnetID pulumi.IDOutput,
 	traefikNsgID pulumi.IDOutput,
+	nebulaNsgID pulumi.IDOutput,
 	instanceIDs pulumi.StringArrayOutput,
 	nodeCount int,
 ) (*networkloadbalancer.NetworkLoadBalancer, error) {
 	nlb, err := networkloadbalancer.NewNetworkLoadBalancer(ctx, "traefik-nlb", &networkloadbalancer.NetworkLoadBalancerArgs{
-		CompartmentId:           compartmentID,
-		SubnetId:                publicSubnetID,
-		DisplayName:             pulumi.String("traefik-nlb"),
-		IsPrivate:               pulumi.Bool(false),
-		NetworkSecurityGroupIds: pulumi.StringArray{traefikNsgID.ToStringOutput()},
+		CompartmentId: compartmentID,
+		SubnetId:      publicSubnetID,
+		DisplayName:   pulumi.String("traefik-nlb"),
+		IsPrivate:     pulumi.Bool(false),
+		NetworkSecurityGroupIds: pulumi.StringArray{
+			traefikNsgID.ToStringOutput(),
+			nebulaNsgID.ToStringOutput(),
+		},
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	// TCP backend sets/listeners/backends for Traefik and Nomad API.
+	// OCI NLB rejects concurrent mutations (409 Conflict), so all port
+	// resources must be serialized via dependsOn.
+	var prevResource pulumi.Resource = nlb
 	for _, port := range []int{80, 443, 4646} {
 		port := port
 		bsName := fmt.Sprintf("bs-%d", port)
@@ -1168,34 +1285,81 @@ func createNLB(
 				Protocol: pulumi.String("TCP"),
 				Port:     pulumi.Int(port),
 			},
-		})
+		}, pulumi.DependsOn([]pulumi.Resource{prevResource}))
 		if err != nil {
 			return nil, err
 		}
+		prevResource = bs
 
-		if _, err := networkloadbalancer.NewListener(ctx, fmt.Sprintf("traefik-nlb-listener-%d", port), &networkloadbalancer.ListenerArgs{
+		listener, err := networkloadbalancer.NewListener(ctx, fmt.Sprintf("traefik-nlb-listener-%d", port), &networkloadbalancer.ListenerArgs{
 			NetworkLoadBalancerId: nlb.ID(),
 			Name:                  pulumi.String(fmt.Sprintf("listener-%d", port)),
 			DefaultBackendSetName: bs.Name,
 			Protocol:              pulumi.String("TCP"),
 			Port:                  pulumi.Int(port),
-		}, pulumi.DependsOn([]pulumi.Resource{nlb, bs})); err != nil {
+		}, pulumi.DependsOn([]pulumi.Resource{prevResource}))
+		if err != nil {
 			return nil, err
 		}
+		prevResource = listener
 
-		// Add each instance as a backend using TargetId (instance OCID)
 		for i := 0; i < nodeCount; i++ {
 			i := i
 			targetID := instanceIDs.Index(pulumi.Int(i))
-			if _, err := networkloadbalancer.NewBackend(ctx, fmt.Sprintf("traefik-nlb-backend-%d-%d", port, i), &networkloadbalancer.BackendArgs{
+			backend, err := networkloadbalancer.NewBackend(ctx, fmt.Sprintf("traefik-nlb-backend-%d-%d", port, i), &networkloadbalancer.BackendArgs{
 				NetworkLoadBalancerId: nlb.ID(),
 				BackendSetName:        bs.Name,
 				TargetId:              targetID.ToStringPtrOutput(),
 				Port:                  pulumi.Int(port),
-			}, pulumi.DependsOn([]pulumi.Resource{nlb, bs})); err != nil {
+			}, pulumi.DependsOn([]pulumi.Resource{prevResource}))
+			if err != nil {
 				return nil, err
 			}
+			prevResource = backend
 		}
+	}
+
+	// Nebula UDP 41820 backend set + listener
+	nebulaBS, err := networkloadbalancer.NewBackendSet(ctx, "nebula-nlb-bs", &networkloadbalancer.BackendSetArgs{
+		NetworkLoadBalancerId: nlb.ID(),
+		Name:                  pulumi.String("bs-nebula"),
+		Policy:                pulumi.String("FIVE_TUPLE"),
+		IsPreserveSource:      pulumi.Bool(false),
+		HealthChecker: networkloadbalancer.BackendSetHealthCheckerArgs{
+			Protocol: pulumi.String("TCP"),
+			Port:     pulumi.Int(22), // health check on SSH since UDP has no native health check
+		},
+	}, pulumi.DependsOn([]pulumi.Resource{prevResource}))
+	if err != nil {
+		return nil, err
+	}
+	prevResource = nebulaBS
+
+	nebulaListener, err := networkloadbalancer.NewListener(ctx, "nebula-nlb-listener", &networkloadbalancer.ListenerArgs{
+		NetworkLoadBalancerId: nlb.ID(),
+		Name:                  pulumi.String("listener-nebula"),
+		DefaultBackendSetName: nebulaBS.Name,
+		Protocol:              pulumi.String("UDP"),
+		Port:                  pulumi.Int(41820),
+	}, pulumi.DependsOn([]pulumi.Resource{prevResource}))
+	if err != nil {
+		return nil, err
+	}
+	prevResource = nebulaListener
+
+	for i := 0; i < nodeCount; i++ {
+		i := i
+		targetID := instanceIDs.Index(pulumi.Int(i))
+		backend, err := networkloadbalancer.NewBackend(ctx, fmt.Sprintf("nebula-nlb-backend-%d", i), &networkloadbalancer.BackendArgs{
+			NetworkLoadBalancerId: nlb.ID(),
+			BackendSetName:        nebulaBS.Name,
+			TargetId:              targetID.ToStringPtrOutput(),
+			Port:                  pulumi.Int(41820),
+		}, pulumi.DependsOn([]pulumi.Resource{prevResource}))
+		if err != nil {
+			return nil, err
+		}
+		prevResource = backend
 	}
 
 	return nlb, nil

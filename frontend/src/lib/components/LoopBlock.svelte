@@ -5,8 +5,9 @@
   import ResourceCatalog from './ResourceCatalog.svelte';
   import { Input } from '$lib/components/ui/input';
   import * as Select from '$lib/components/ui/select';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
-  // Forward-declare ConditionalBlock to break the circular import
+  import LoopBlockSelf from './LoopBlock.svelte';
   import ConditionalBlock from './ConditionalBlock.svelte';
 
   let {
@@ -223,7 +224,12 @@
         onchange={(e) => { if (loop) loop = { ...loop, serialized: (e.currentTarget as HTMLInputElement).checked }; }}
       />
       <span>Serialize operations</span>
-      <span class="text-muted-foreground" title="OCI NLB rejects concurrent port mutations — serialization ensures each port is created before the next.">(?)</span>
+      <Tooltip.Root>
+        <Tooltip.Trigger class="cursor-help">
+          <span class="text-muted-foreground">(?)</span>
+        </Tooltip.Trigger>
+        <Tooltip.Content>Adds a dependsOn chain so resources are created sequentially. Required for OCI NLB — concurrent port mutations return 409 Conflict.</Tooltip.Content>
+      </Tooltip.Root>
     </label>
 
     <!-- G1-1: Nested items — fully editable -->
@@ -239,7 +245,7 @@
             onMoveDown={i < loop.items.length - 1 ? () => moveNestedItem(i, 1) : undefined}
           />
         {:else if item.kind === 'loop'}
-          <svelte:self
+          <LoopBlockSelf
             bind:loop={loop.items[i] as LoopItem}
             {configFields}
             onRemove={() => removeNestedItem(i)}
@@ -264,14 +270,20 @@
       {/if}
 
       <div class="flex gap-2 pt-1">
-        <button
-          class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
-          onclick={() => showCatalog = true}
-        >+ Resource</button>
-        <button
-          class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
-          onclick={addNestedLoop}
-        >+ Nested Loop</button>
+        <Tooltip.Root>
+          <Tooltip.Trigger
+            class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+            onclick={() => showCatalog = true}
+          >+ Resource</Tooltip.Trigger>
+          <Tooltip.Content>Add a resource inside this loop — it will be created once per iteration</Tooltip.Content>
+        </Tooltip.Root>
+        <Tooltip.Root>
+          <Tooltip.Trigger
+            class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+            onclick={addNestedLoop}
+          >+ Nested Loop</Tooltip.Trigger>
+          <Tooltip.Content>Nest a loop inside this one — e.g. for per-port, per-node backends</Tooltip.Content>
+        </Tooltip.Root>
       </div>
     </div>
   </div>

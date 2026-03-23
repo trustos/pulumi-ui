@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/trustos/pulumi-ui/internal/api"
+	"github.com/trustos/pulumi-ui/internal/applications"
 	"github.com/trustos/pulumi-ui/internal/crypto"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
@@ -114,11 +115,15 @@ func main() {
 		}
 	}
 
-	// Engine
-	eng := engine.New(stateDir, registry)
+	// Stack connections
+	connStore := db.NewStackConnectionStore(database, enc)
+
+	// Application deployer + engine
+	deployer := applications.NewDeployer(connStore)
+	eng := engine.New(stateDir, registry, deployer, connStore)
 
 	// HTTP handler
-	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customPrograms, eng, registry)
+	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customPrograms, eng, registry, connStore)
 
 	// Embedded frontend — serve from the embed.FS sub-tree
 	sub, err := fs.Sub(frontendDist, "frontend/dist")

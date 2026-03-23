@@ -17,6 +17,8 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"github.com/trustos/pulumi-ui/internal/agentinject"
+	"github.com/trustos/pulumi-ui/internal/applications"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/programs"
 )
@@ -28,20 +30,24 @@ type Credentials struct {
 }
 
 type Engine struct {
-	stateDir string
-	registry *programs.ProgramRegistry
+	stateDir  string
+	registry  *programs.ProgramRegistry
+	deployer  *applications.Deployer
+	connStore *db.StackConnectionStore
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
 	running map[string]bool
 }
 
-func New(stateDir string, registry *programs.ProgramRegistry) *Engine {
+func New(stateDir string, registry *programs.ProgramRegistry, deployer *applications.Deployer, connStore *db.StackConnectionStore) *Engine {
 	return &Engine{
-		stateDir: stateDir,
-		registry: registry,
-		cancels:  make(map[string]context.CancelFunc),
-		running:  make(map[string]bool),
+		stateDir:  stateDir,
+		registry:  registry,
+		deployer:  deployer,
+		connStore: connStore,
+		cancels:   make(map[string]context.CancelFunc),
+		running:   make(map[string]bool),
 	}
 }
 
@@ -139,7 +145,7 @@ func injectPluginsSection(yaml string) string {
 // writes the result to a temp directory, and creates a stack via
 // UpsertStackLocalSource. OCI credentials are injected as Pulumi provider
 // config (YAML programs cannot read environment variables directly).
-func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yamlProg programs.YAMLProgramProvider, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
+func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, prog programs.Program, yamlProg programs.YAMLProgramProvider, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
 	// Merge program defaults into cfg so that fields with a default: value in
 	// the config: section are never absent from the template context.
 	cfg = programs.ApplyConfigDefaults(yamlProg.YAMLBody(), cfg)
@@ -152,6 +158,33 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yam
 
 	// Strip potentially dangerous fn::readFile directives.
 	sanitized := programs.SanitizeYAML(rendered)
+
+	// For YAML programs with ApplicationProvider or AgentAccessProvider,
+	// automatically inject the agent bootstrap into compute user_data.
+	shouldInjectAgent := false
+	if _, ok := prog.(programs.ApplicationProvider); ok {
+		shouldInjectAgent = true
+	}
+	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
+		shouldInjectAgent = true
+	}
+	if shouldInjectAgent {
+		if vars := e.agentVarsForStack(stackName); vars != nil {
+			injected, injErr := agentinject.InjectIntoYAML(sanitized, *vars)
+			if injErr == nil {
+				sanitized = injected
+			}
+		}
+	}
+
+	// For programs with AgentAccessProvider, inject networking resources
+	// (NSG rules, NLB backend sets/listeners) for agent connectivity.
+	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
+		netInjected, netErr := agentinject.InjectNetworkingIntoYAML(sanitized)
+		if netErr == nil {
+			sanitized = netInjected
+		}
+	}
 
 	// Pin the OCI provider to ociPinnedVersion by injecting a plugins: section
 	// that uses a local path. pulumi-language-yaml will use that exact binary
@@ -228,7 +261,7 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, yam
 // program type. The returned cleanup func must be called after the operation.
 func (e *Engine) resolveStack(ctx context.Context, stackName string, prog programs.Program, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
 	if yp, ok := prog.(programs.YAMLProgramProvider); ok {
-		return e.getOrCreateYAMLStack(ctx, stackName, yp, cfg, envVars, creds)
+		return e.getOrCreateYAMLStack(ctx, stackName, prog, yp, cfg, envVars, creds)
 	}
 	// For inline Go programs, the Pulumi Automation API passes EnvVars only to
 	// the pulumi subprocess — it never calls os.Setenv on the current process.
@@ -246,8 +279,38 @@ func (e *Engine) resolveStack(ctx context.Context, stackName string, prog progra
 	goCfg["OCI_PRIVATE_KEY"] = oci.PrivateKey
 	goCfg["OCI_REGION"] = oci.Region
 	goCfg["OCI_USER_SSH_PUBLIC_KEY"] = oci.SSHPublicKey
+
+	// For Go programs with an ApplicationProvider, render the agent bootstrap
+	// and inject it into cfg so buildCloudInit() can compose it.
+	if _, ok := prog.(programs.ApplicationProvider); ok {
+		if vars := e.agentVarsForStack(stackName); vars != nil {
+			goCfg[agentinject.CfgKeyAgentBootstrap] = string(agentinject.RenderAgentBootstrap(*vars))
+		}
+	}
+
 	stack, err := e.getOrCreateStack(ctx, stackName, prog, goCfg, envVars)
 	return stack, func() {}, err
+}
+
+// agentVarsForStack loads the Nebula connection for a stack and returns
+// AgentVars suitable for rendering the agent bootstrap script.
+// Returns nil if the stack has no connection record (agent injection skipped).
+func (e *Engine) agentVarsForStack(stackName string) *agentinject.AgentVars {
+	if e.connStore == nil {
+		return nil
+	}
+	conn, err := e.connStore.Get(stackName)
+	if err != nil || conn == nil {
+		return nil
+	}
+	return &agentinject.AgentVars{
+		NebulaCACert:    string(conn.NebulaCACert),
+		NebulaHostCert:  string(conn.NebulaUICert),
+		NebulaHostKey:   string(conn.NebulaUIKey),
+		AgentVersion:    "latest",
+		AgentDownloadURL: "",
+		AgentToken:      "placeholder-token",
+	}
 }
 
 // Up runs pulumi up for the given stack.
@@ -283,7 +346,9 @@ func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[
 	}()
 
 	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
-	defer stackCleanup()
+	if stackCleanup != nil {
+		defer stackCleanup()
+	}
 	if err != nil {
 		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
 		return "failed"
@@ -334,7 +399,9 @@ func (e *Engine) Destroy(ctx context.Context, stackName, programName string, cfg
 	}()
 
 	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
-	defer stackCleanup()
+	if stackCleanup != nil {
+		defer stackCleanup()
+	}
 	if err != nil {
 		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
 		return "failed"
@@ -388,7 +455,9 @@ func (e *Engine) Refresh(ctx context.Context, stackName, programName string, cfg
 	}()
 
 	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
-	defer stackCleanup()
+	if stackCleanup != nil {
+		defer stackCleanup()
+	}
 	if err != nil {
 		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
 		return "failed"
@@ -446,7 +515,9 @@ func (e *Engine) Preview(ctx context.Context, stackName, programName string, cfg
 	}()
 
 	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
-	defer stackCleanup()
+	if stackCleanup != nil {
+		defer stackCleanup()
+	}
 	if err != nil {
 		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
 		return "failed"
@@ -605,7 +676,9 @@ func (e *Engine) GetStackOutputs(ctx context.Context, stackName, programName str
 	}
 
 	stack, stackCleanup, err := e.resolveStack(ctx, stackName, prog, cfg, envVars, creds)
-	defer stackCleanup()
+	if stackCleanup != nil {
+		defer stackCleanup()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -623,4 +696,74 @@ func (w *sseWriter) Write(p []byte) (n int, err error) {
 		w.send(SSEEvent{Type: "output", Data: line})
 	}
 	return len(p), nil
+}
+
+// DeployApps runs Phase 2 + Phase 3 (mesh connectivity + workload deployment).
+func (e *Engine) DeployApps(ctx context.Context, stackName, programName string, cfg map[string]string, selectedApps map[string]bool, creds Credentials, send SSESender) (status string) {
+	if !e.tryLock(stackName) {
+		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
+		return "conflict"
+	}
+	defer e.unlock(stackName)
+
+	prog, ok := e.registry.Get(programName)
+	if !ok {
+		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
+		return "failed"
+	}
+
+	provider, ok := prog.(programs.ApplicationProvider)
+	if !ok {
+		send(SSEEvent{Type: "error", Data: "program does not support application deployment"})
+		return "failed"
+	}
+
+	if e.deployer == nil {
+		send(SSEEvent{Type: "error", Data: "application deployer not configured"})
+		return "failed"
+	}
+
+	opCtx, cancel := context.WithCancel(ctx)
+	e.mu.Lock()
+	e.cancels[stackName] = cancel
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.cancels, stackName)
+		e.mu.Unlock()
+		cancel()
+	}()
+
+	// Read Pulumi outputs to get the lighthouse address
+	outputs, err := e.GetStackOutputs(opCtx, stackName, programName, cfg, creds)
+	if err != nil {
+		send(SSEEvent{Type: "error", Data: "failed to read stack outputs: " + err.Error()})
+		return "failed"
+	}
+
+	lighthouseAddr := ""
+	if v, ok := outputs["nebulaLighthouseAddr"]; ok {
+		if s, ok := v.Value.(string); ok {
+			lighthouseAddr = s
+		}
+	}
+
+	if lighthouseAddr == "" {
+		send(SSEEvent{Type: "error", Data: "nebulaLighthouseAddr not found in stack outputs — deploy infrastructure first"})
+		return "failed"
+	}
+
+	logFn := func(eventType, message string) {
+		send(SSEEvent{Type: eventType, Data: message})
+	}
+	if err := e.deployer.DeployApps(opCtx, stackName, lighthouseAddr, selectedApps, provider.Applications(), logFn); err != nil {
+		if opCtx.Err() != nil {
+			send(SSEEvent{Type: "output", Data: "Application deployment cancelled."})
+			return "cancelled"
+		}
+		send(SSEEvent{Type: "error", Data: err.Error()})
+		return "failed"
+	}
+
+	return "succeeded"
 }

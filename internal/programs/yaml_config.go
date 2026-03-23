@@ -20,8 +20,9 @@ type pulumiConfigField struct {
 }
 
 type pulumiMeta struct {
-	Groups []pulumiMetaGroup       `yaml:"groups"`
-	Fields map[string]pulumiMetaField `yaml:"fields"`
+	Groups      []pulumiMetaGroup          `yaml:"groups"`
+	Fields      map[string]pulumiMetaField `yaml:"fields"`
+	AgentAccess bool                       `yaml:"agentAccess"`
 }
 
 type pulumiMetaGroup struct {
@@ -235,6 +236,17 @@ func ApplyConfigDefaults(yamlBody string, config map[string]string) map[string]s
 		merged[k] = v
 	}
 	return merged
+}
+
+// ParseAgentAccess returns true if the YAML program declares agentAccess: true
+// in its meta: section.
+func ParseAgentAccess(yamlBody string) bool {
+	parseable := truncateAtResources(yamlBody)
+	var doc pulumiYAMLConfig
+	if err := yaml.Unmarshal([]byte(parseable), &doc); err != nil || doc.Meta == nil {
+		return false
+	}
+	return doc.Meta.AgentAccess
 }
 
 // stripMetaSection removes the `meta:` top-level block from a YAML body by

@@ -38,11 +38,13 @@ type ConfigField struct {
 ```go
 // ProgramMeta is the safe, serializable view of a Program (sent to the UI)
 type ProgramMeta struct {
-    Name         string        `json:"name"`
-    DisplayName  string        `json:"displayName"`
-    Description  string        `json:"description"`
-    ConfigFields []ConfigField `json:"configFields"`
-    IsCustom     bool          `json:"isCustom"` // true for user-defined YAML programs
+    Name         string           `json:"name"`
+    DisplayName  string           `json:"displayName"`
+    Description  string           `json:"description"`
+    ConfigFields []ConfigField    `json:"configFields"`
+    IsCustom     bool             `json:"isCustom"`               // true for user-defined YAML programs
+    Applications []ApplicationDef `json:"applications,omitempty"` // present when ApplicationProvider
+    AgentAccess  bool             `json:"agentAccess,omitempty"`  // true when agent networking auto-injected
 }
 
 // Program is the internal interface all Pulumi programs implement
@@ -227,14 +229,31 @@ All specs fit within the OCI Always Free quota of 4 OCPUs / 24 GB RAM total.
 //go:embed cloudinit.sh
 var cloudInitScript string
 
-func buildCloudInit(ocpus, memoryGb, nodeCount int, nomadVersion, consulVersion string) string {
-    // applies @@PLACEHOLDER@@ substitutions, gzip-compresses, and returns base64(gzip(script))
-}
+func buildCloudInit(
+    ocpus, memoryGb, nodeCount int,
+    nomadVersion, consulVersion string,
+    apps map[string]bool,
+    extraVars map[string]string,
+    agentBootstrap []byte,
+) string
 ```
 
-The `cloudinit.sh` file lives at `internal/programs/cloudinit.sh`. Using `//go:embed` avoids escaping issues entirely.
+The `cloudinit.sh` file lives at `internal/programs/cloudinit.sh` and is embedded via `//go:embed`. It uses Go `text/template` with conditional blocks (`{{ if .Apps.KEY }}`) for each application (Docker, Consul, Nomad). Runtime variables are passed through a `CloudInitData` struct with `Vars` (string map) and `Apps` (boolean map).
 
-The result is gzip-compressed before base64 encoding. OCI instance metadata has a 32 KB total limit; the uncompressed script is ~29 KB (~39 KB base64) which would exceed it. Gzipped it becomes ~8.5 KB (~11 KB base64). `cloud-init` detects gzip via magic bytes and decompresses transparently.
+When `agentBootstrap` is non-empty (provided by the engine for programs implementing `ApplicationProvider`), the result is a **multipart MIME message** composing the program's cloud-init script with the agent bootstrap script (Nebula + pulumi-ui agent). The agent bootstrap is rendered and injected automatically by the engine — programs do not manage it directly. See `internal/agentinject` for the composition logic.
+
+When `agentBootstrap` is nil, the result is a simple gzip+base64 encoded script. OCI instance metadata has a 32 KB total limit; the uncompressed script is ~29 KB (~39 KB base64) which would exceed it. Gzipped it becomes ~8.5 KB (~11 KB base64). `cloud-init` detects gzip via magic bytes and decompresses transparently.
+
+### Application catalog
+
+Programs can optionally implement the `ApplicationProvider` interface to expose an application catalog — a list of selectable applications deployed after infrastructure provisioning via the pulumi-ui agent. When a program implements this interface, the engine automatically injects the Nebula mesh + agent bootstrap into every compute resource's `user_data` via multipart MIME composition (see `internal/agentinject`). Nebula and the agent are **not** part of the program's application catalog; they are infrastructure plumbing managed by the engine.
+
+Separately, YAML programs can declare `meta.agentAccess: true` to opt into automatic agent connectivity. This causes the engine to:
+1. Inject the agent bootstrap into compute resource `user_data` (same as `ApplicationProvider`)
+2. Auto-add NSG security rules for the Nebula UDP port on detected NSG resources
+3. Auto-add NLB backend set + listener for the agent port on detected NLB resources
+
+See `docs/application-catalog-architecture.md` for the full architecture.
 
 ---
 
@@ -253,11 +272,18 @@ type YAMLProgram struct {
     description string
     yamlBody    string
     fields      []ConfigField  // parsed from the YAML config: section
+    agentAccess bool           // parsed from meta.agentAccess
 }
 
 // YAMLProgramProvider is checked via type assertion by the engine.
 type YAMLProgramProvider interface {
     YAMLBody() string
+}
+
+// AgentAccessProvider — YAMLProgram implements this when meta.agentAccess: true.
+// The engine injects user_data + networking resources automatically.
+type AgentAccessProvider interface {
+    AgentAccess() bool
 }
 ```
 
@@ -278,9 +304,10 @@ Type mapping:
 | key == `imageId` | `oci-image` (convention) |
 | key == `shape` | `oci-shape` (convention) |
 
-The optional `meta:` top-level section (stripped before execution) allows declaring field groups and explicit `ui_type` overrides:
+The optional `meta:` top-level section (stripped before execution) allows declaring field groups, explicit `ui_type` overrides, and agent connectivity:
 ```yaml
 meta:
+  agentAccess: true  # opt-in: auto-inject agent + networking resources
   groups:
     - key: network
       label: "Network"
@@ -289,6 +316,8 @@ meta:
     imageId:
       ui_type: oci-image
 ```
+
+When `agentAccess: true` is set, the YAML program implements `AgentAccessProvider` and the engine automatically injects agent bootstrap into compute `user_data` and adds NSG/NLB resources for agent connectivity (see `internal/agentinject/network.go`).
 
 ### `internal/programs/template.go`
 

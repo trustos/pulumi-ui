@@ -118,20 +118,34 @@ The agent is a **general-purpose command executor**. It doesn't know about Nomad
 | Install Nginx | `apt install -y nginx` |
 | Run custom script | Upload + `bash /tmp/custom.sh` |
 
-### 5. Programs Auto-Provision the Mesh
+### 5. Automatic Agent Bootstrap Injection
 
-The program template automatically creates the network path for Nebula:
+The Nebula mesh and pulumi-ui agent are **not** part of any program's application catalog. They are infrastructure plumbing injected automatically by the engine into every compute resource when the program implements `ApplicationProvider` or `AgentAccessProvider`.
 
-**Nomad cluster program:**
-- NSG rule: allow UDP on lighthouse port (default 41820)
-- NLB: UDP listener + backend set for lighthouse port
-- Cloud-init: install agent binary, inject Nebula CA + cert, start agent
+**How it works — `internal/agentinject/` package:**
 
-**Single VM program:**
-- Security list: allow UDP on lighthouse port
-- Cloud-init: same as above, lighthouse is the instance itself
+1. **Compute resource map** (`map.go`): A registry mapping Pulumi resource type tokens to their `user_data` property paths. Currently supports OCI (`oci:Core/instance:Instance`, `oci:Core/instanceConfiguration:InstanceConfiguration`). Adding a new provider means adding entries here.
 
-The user does not configure any of this. The program handles it.
+2. **Agent bootstrap script** (`agent_bootstrap.sh`): A standalone shell script containing only Nebula + agent installation. Uses `@@PLACEHOLDER@@` markers (not Go templates) that are replaced at injection time.
+
+3. **Multipart MIME composition** (`compose.go`): Wraps the program's cloud-init and the agent bootstrap into a `multipart/mixed` MIME message. cloud-init natively supports multipart MIME — each part runs as a separate script.
+
+4. **Two injection paths** (one per program type):
+   - **YAML programs** (`yaml.go`): Post-render YAML transformation. The engine parses the rendered Pulumi YAML, walks all resources, detects compute types via the map, and composes their `user_data` with the agent bootstrap.
+   - **Go programs** (`goprog.go` + engine): The engine renders the agent bootstrap and passes it to Go programs via a special config key (`__agentBootstrap`). `buildCloudInit()` accepts this and composes via multipart MIME.
+
+5. **Networking injection** (`network.go`): For programs implementing `AgentAccessProvider` (YAML programs with `meta.agentAccess: true`), the engine also auto-adds networking resources for agent connectivity:
+   - **NSG security rules** — adds UDP ingress on port 41820 to each detected `oci:Core/networkSecurityGroup:NetworkSecurityGroup`
+   - **NLB backend set + listener** — adds a backend set (UDP health check on 41820) and listener on port 41820 to each detected `oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer`
+   - **NLB backends** — links each detected compute instance to the NLB backend set
+   - All injected resources use a `__agent_` prefix to avoid naming collisions. If agent resources already exist, injection is skipped.
+
+**Injection gating:**
+- **`ApplicationProvider`** (built-in Go programs like `nomad-cluster`): User_data injection is automatic. Networking is managed by the program itself (the program provisions its own NSG rules and NLB configuration).
+- **`AgentAccessProvider`** (YAML programs with `meta.agentAccess: true`): Both user_data injection AND networking injection are automatic. The engine detects existing NSG/NLB resources and adds agent-specific rules.
+- Programs implementing neither interface are unaffected.
+
+**Provider extensibility:** Adding a new cloud provider (AWS, GCP) requires adding entries to the `ComputeResources` map in `internal/agentinject/map.go` and networking resource types in `network.go`. The multipart MIME composition and agent bootstrap script are provider-agnostic (cloud-init is a Linux guest standard).
 
 ### 6. Agent Binary Distribution
 
@@ -647,7 +661,8 @@ Order matters — each step unblocks the next.
 4. **Stack connection store** (`internal/db/stack_connections.go`): CRUD + `AllocateSubnet()`. Called by the stack creation handler.
 5. **Application interfaces** (`internal/programs/applications.go`): `ApplicationDef`, `ApplicationProvider`, `TargetMode` types.
 6. **Nomad cluster catalog** (`internal/programs/nomad_cluster.go`): implement `ApplicationProvider`, define the catalog table from this doc.
-7. **Cloud-init rewrite** (`internal/programs/cloudinit.sh`): template conditionals (`{{ if .Apps.consul }}`), Nebula cert injection, agent install with arch detection. Remove ZeroTier (already removed from docs). Update `buildCloudInit()` to use `template.Execute()`.
+7. **Cloud-init rewrite** (`internal/programs/cloudinit.sh`): template conditionals (`{{ if .Apps.consul }}`). Nebula + agent removed from `cloudinit.sh` — they are auto-injected by `internal/agentinject/` via multipart MIME composition. Update `buildCloudInit()` to use `template.Execute()` and accept optional agent bootstrap.
+7b. **Agent bootstrap auto-injection** (`internal/agentinject/`): standalone `agent_bootstrap.sh`, compute resource map, multipart MIME composition, YAML post-render injection, Go program cfg-based injection.
 8. **Infra changes** (`internal/programs/nomad_cluster.go`): add Nebula lighthouse UDP port (41820) to NSG + NLB. Output `nebulaLighthouseAddr`.
 9. **Application deployer** (`internal/applications/deployer.go`): Nebula connection management, agent HTTP client, Phase 2 registration wait, Phase 3 workload execution.
 10. **`Engine.DeployApps()`** (`internal/engine/engine.go`): reads stack outputs, calls deployer.
@@ -690,11 +705,12 @@ Order matters — each step unblocks the next.
 - `internal/applications/deployer.go` — Deployer service (Phase 2 mesh + Phase 3 workload execution)
 - `internal/db/migrations/011_nebula_connections.sql` — drops and recreates `stack_connections`; adds `nebula_subnet_counter`
 - `internal/db/stack_connections.go` — `StackConnectionStore` with `AllocateSubnet()`
+- `internal/agentinject/` — agent bootstrap auto-injection (map.go, bootstrap.go, compose.go, yaml.go, goprog.go, agent_bootstrap.sh)
 - `frontend/src/lib/components/ApplicationSelector.svelte` — Step 4 catalog UI
 
 **Files to modify (Phase 1):**
-- `internal/programs/cloudinit.go` — switch from `strings.ReplaceAll` to `template.Execute`; accept app selections and Nebula vars
-- `internal/programs/cloudinit.sh` — modular with Go template conditionals; Nebula + agent install; ZeroTier removed
+- `internal/programs/cloudinit.go` — switch from `strings.ReplaceAll` to `template.Execute`; accept optional agent bootstrap for multipart MIME composition
+- `internal/programs/cloudinit.sh` — modular with Go template conditionals; Nebula + agent removed (auto-injected by agentinject)
 - `internal/programs/nomad_cluster.go` — implement `ApplicationProvider`; add Nebula lighthouse NSG + NLB; output `nebulaLighthouseAddr`
 - `internal/stacks/schema.go` — add `Applications map[string]bool` + `AppConfig map[string]string`
 - `internal/api/stacks.go` — add `DeployApps` handler (`POST .../deploy-apps`); generate Nebula PKI at stack creation; return app selections in stack info

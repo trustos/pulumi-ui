@@ -144,6 +144,26 @@ meta:
 
 Fields not listed in any group appear at the bottom ungrouped.
 
+### Agent Access (meta.agentAccess)
+
+Set `agentAccess: true` in the `meta:` block to opt into automatic agent connectivity injection. You can also toggle this via the **Agent Connect** button in the program editor header (works in both visual and YAML modes):
+
+```yaml
+meta:
+  agentAccess: true
+  groups:
+    # ...
+```
+
+When enabled, an informational banner in the editor lists exactly what will be auto-injected. At deploy time, the engine automatically:
+1. Injects the Nebula mesh + pulumi-ui agent bootstrap into every compute resource's `user_data` (via multipart MIME)
+2. Adds NSG security rules for UDP port 41820 on detected `oci:Core/networkSecurityGroup:NetworkSecurityGroup` resources
+3. Adds NLB backend set, listener, and backends for port 41820 on detected `oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer` resources
+
+Injected resources use a `__agent_` prefix to avoid naming collisions. If agent networking resources already exist, injection is skipped.
+
+This is separate from the `ApplicationProvider` interface (which provides a full application catalog). A program can use `agentAccess: true` without implementing an application catalog.
+
 ---
 
 ## Loops
@@ -349,6 +369,8 @@ metadata:
 The output is suitable for OCI instance `metadata.user_data`. `cloud-init` detects gzip via magic bytes and decompresses transparently. OCI has a 32 KB metadata limit — gzip keeps the encoded script well under that.
 
 > **Limitation:** `cloudInit` runs at template render time, before Pulumi provisions any resources. `COMPARTMENT_OCID` and `SUBNET_OCID` are resolved at VM boot time via the OCI Instance Metadata Service (IMDS) inside `cloudinit.sh` — they are not injected at template render time. If your boot script needs a compartment or subnet OCID at render time, you must use a built-in Go program where `pulumi.All(...).ApplyT(...)` is available.
+
+> **Agent injection:** For YAML programs whose Go program implements `ApplicationProvider`, the engine automatically injects the Nebula mesh + pulumi-ui agent bootstrap into every compute resource's `user_data` **after** template rendering, via multipart MIME composition. This happens transparently — program authors do not need to include agent or Nebula setup in their `cloudInit` calls or `user_data` values. The engine detects compute resource types (e.g. `oci:Core/instance:Instance`, `oci:Core/instanceConfiguration:InstanceConfiguration`) from the `internal/agentinject` registry and composes the existing `user_data` with the agent bootstrap script. See `docs/application-catalog-architecture.md` for details.
 
 ### `groupRef`
 
@@ -685,8 +707,8 @@ Programs are validated on every save. Validation runs six levels sequentially:
 | 2 | Template render | Can it render with all defaults applied? |
 | 3 | YAML structure | Does the rendered output have `name`, `runtime: yaml`, and `resources`? |
 | 4 | Config section | Are field types valid? Do `meta:` group references exist in `config:`? Empty `config:` is allowed. |
-| 5 | Resource structure | Does each resource have a `type`? Are all required properties present (schema-validated)? |
-| 6 | Resource types | Does each resource use a known or well-formed provider type token? |
+| 5 | Resource structure | Does each resource have a `type` with a valid/well-formed provider token? Are all required properties present (schema-validated)? |
+| 6 | Variable references | Does every `${varName}` in resource properties reference a name defined in `variables:` or `resources:`? Provider config refs (containing `:`) are skipped. |
 
 A program that fails validation cannot be saved. Fix all errors shown in the editor panel before saving.
 
@@ -708,6 +730,9 @@ A program that fails validation cannot be saved. Fix all errors shown in the edi
 | Conditionals (`if`) | Yes | Yes (via Go template) |
 | `pulumi.All(...).ApplyT(...)` | Yes | No — cross-resource values available only at apply time |
 | Runtime OCIDs in cloud-init | Yes | No — `cloudInit()` uses static config values only |
+| Agent bootstrap injection | Yes (via cfg key, when `ApplicationProvider`) | Yes (via post-render YAML, when `ApplicationProvider` or `meta.agentAccess: true`) |
+| Agent networking injection | Manual (program provisions NSG/NLB rules) | Automatic when `meta.agentAccess: true` (NSG rules + NLB resources auto-added) |
+| Application catalog | Yes (implement `ApplicationProvider`) | Not yet supported for YAML programs |
 | Arbitrary Go logic | Yes | No |
 | No recompile needed | No | Yes |
 | Stored in database | No | Yes |

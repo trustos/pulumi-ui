@@ -27,11 +27,15 @@ export function yamlToGraph(yaml: string): ParseResult {
   const nameMatch = yaml.match(/^name:\s*(.+)$/m);
   const descMatch = yaml.match(/^description:\s*"?([^"\n]+)"?$/m);
 
+  const agentAccessMatch = yaml.match(/^meta:\s*\n(?:.*\n)*?\s+agentAccess:\s*(true|false)/m);
+  const agentAccess = agentAccessMatch ? agentAccessMatch[1] === 'true' : undefined;
+
   const graph: ProgramGraph = {
     metadata: {
       name: nameMatch ? nameMatch[1].trim() : 'unnamed',
       displayName: nameMatch ? nameMatch[1].trim() : 'Unnamed',
       description: descMatch ? descMatch[1].trim() : '',
+      ...(agentAccess !== undefined && { agentAccess }),
     },
     configFields: parseConfigFields(yaml),
     variables: parseVariables(yaml),

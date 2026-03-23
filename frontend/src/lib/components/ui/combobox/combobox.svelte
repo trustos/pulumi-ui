@@ -28,9 +28,7 @@
 
   const selectedLabel = $derived(items.find(i => i.value === value)?.label ?? '');
 
-  // inputValue is passed to ComboboxPrimitive.Root (bits-ui manages the DOM input internally).
-  // Initialise with the label so the input is pre-populated on mount.
-  let inputValue = $state(items.find(i => i.value === value)?.label ?? value ?? '');
+  let inputValue = $state(value ?? '');
 
   // Keep the input text in sync whenever the dropdown closes, the selected
   // value changes, or items arrive asynchronously after a default was set.
@@ -52,12 +50,14 @@
 <ComboboxPrimitive.Root
   type="single"
   bind:value
-  bind:open
-  bind:inputValue
+  {open}
+  onOpenChange={(v) => (open = v)}
+  {inputValue}
 >
   <div class={cn('relative', className)}>
     <ComboboxPrimitive.Input
       {placeholder}
+      oninput={(e: Event) => (inputValue = (e.currentTarget as HTMLInputElement).value)}
       class="flex h-9 w-full items-center rounded-md border border-input bg-transparent px-3 py-2 pr-9 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
     />
     <ComboboxPrimitive.Trigger

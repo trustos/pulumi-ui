@@ -5,6 +5,7 @@
   import ResourceCard from './ResourceCard.svelte';
   import ResourceCatalog from './ResourceCatalog.svelte';
   import { Input } from '$lib/components/ui/input';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   // Lazy import to break the LoopBlock ↔ ConditionalBlock circular dependency
   let LoopBlock = $state<any>(null);
@@ -78,13 +79,23 @@
 {#if conditional}
 <div class="border rounded-md border-purple-300 dark:border-purple-700 bg-purple-50/20 dark:bg-purple-950/20">
   <div class="flex items-center gap-2 px-3 py-2 border-b border-purple-200 dark:border-purple-800">
-    <span class="text-xs font-semibold text-purple-700 dark:text-purple-300">If</span>
-    <Input
-      value={conditional.condition}
-      oninput={(e) => { if (conditional) conditional = { ...conditional, condition: (e.currentTarget as HTMLInputElement).value }; }}
-      class="h-7 text-xs font-mono flex-1"
-      placeholder="$.Config.enabled"
-    />
+    <Tooltip.Root>
+      <Tooltip.Trigger class="cursor-default">
+        <span class="text-xs font-semibold text-purple-700 dark:text-purple-300">If</span>
+      </Tooltip.Trigger>
+      <Tooltip.Content>Conditionally include resources based on a Go template expression</Tooltip.Content>
+    </Tooltip.Root>
+    <Tooltip.Root>
+      <Tooltip.Trigger class="flex-1">
+        <Input
+          value={conditional.condition}
+          oninput={(e) => { if (conditional) conditional = { ...conditional, condition: (e.currentTarget as HTMLInputElement).value }; }}
+          class="h-7 text-xs font-mono w-full"
+          placeholder='e.g. ne .Config.skipDynamicGroup "true"'
+        />
+      </Tooltip.Trigger>
+      <Tooltip.Content>Go template condition — e.g. eq .Config.x "value", .Config.enabled, not .Config.disabled</Tooltip.Content>
+    </Tooltip.Root>
     {#if onMoveUp || onMoveDown}
       <div class="flex flex-col">
         <button class="text-muted-foreground hover:text-foreground text-[10px] leading-none disabled:opacity-30" onclick={onMoveUp} disabled={!onMoveUp} title="Move up">▲</button>
@@ -109,12 +120,13 @@
               onRemove={() => removeFromBranch(i, 'then')}
             />
           {:else if item.kind === 'loop'}
-            <svelte:component
-              this={LoopBlock}
+            {#if LoopBlock}
+            <LoopBlock
               bind:loop={conditional.items[i] as LoopItem}
               {configFields}
               onRemove={() => removeFromBranch(i, 'then')}
             />
+            {/if}
           {:else if item.kind === 'raw'}
             <div class="border rounded bg-amber-50 dark:bg-amber-950/20 border-amber-200 p-2">
               <p class="text-xs text-amber-700 dark:text-amber-300">Advanced YAML — edit in YAML mode</p>
@@ -153,12 +165,13 @@
                 onRemove={() => removeFromBranch(i, 'else')}
               />
             {:else if item.kind === 'loop'}
-              <svelte:component
-                this={LoopBlock}
+              {#if LoopBlock}
+              <LoopBlock
                 bind:loop={conditional.elseItems[i] as LoopItem}
                 {configFields}
                 onRemove={() => removeFromBranch(i, 'else')}
               />
+              {/if}
             {:else if item.kind === 'raw'}
               <div class="border rounded bg-amber-50 dark:bg-amber-950/20 border-amber-200 p-2">
                 <p class="text-xs text-amber-700 dark:text-amber-300">Advanced YAML — edit in YAML mode</p>
@@ -177,10 +190,13 @@
         </div>
       </div>
     {:else}
-      <button
-        class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
-        onclick={addElseBranch}
-      >+ Add Else Branch</button>
+      <Tooltip.Root>
+        <Tooltip.Trigger
+          class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+          onclick={addElseBranch}
+        >+ Add Else Branch</Tooltip.Trigger>
+        <Tooltip.Content>Add resources that are created only when the condition is false</Tooltip.Content>
+      </Tooltip.Root>
     {/if}
   </div>
 </div>

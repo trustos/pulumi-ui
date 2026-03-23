@@ -118,7 +118,8 @@ Built-in programs register via an explicit function in `main.go`, not via `init(
 registry := programs.NewProgramRegistry()
 programs.RegisterBuiltins(registry)
 // ... load custom programs from DB ...
-eng := engine.New(stateDir, registry)
+deployer := applications.NewDeployer()
+eng := engine.New(stateDir, registry, deployer, connStore)
 ```
 
 ```go
@@ -259,4 +260,8 @@ traefik-nlb-bs-{{ $port }}:
 - Services: unit-test with mock repositories.
 - Stores: integration-test against a real in-memory SQLite instance.
 - Engine: integration-test against a real Pulumi workspace (expensive; run in CI only).
-- Programs/validation: unit-test the 6-level validator with known good/bad YAML inputs.
+- Programs/validation: unit-test the 6-level validator (template syntax → template render → YAML structure → config section → resource structure → variable references) with known good/bad YAML inputs.
+- Agent injection: unit-test `internal/agentinject/` (MIME composition, YAML injection, networking injection).
+- Crypto: unit-test `internal/crypto/` (encrypt/decrypt round-trip).
+- Pipeline integration: test the full engine pipeline (template render → agent user_data injection → networking injection) in `internal/programs/pipeline_test.go`.
+- CI: GitHub Actions runs `go test ./internal/... -count=1 -race` and `npx svelte-check --threshold warning` on every push and PR.

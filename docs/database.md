@@ -95,16 +95,36 @@ CREATE TABLE IF NOT EXISTS oci_accounts (
 ALTER TABLE stacks ADD COLUMN oci_account_id TEXT REFERENCES oci_accounts(id);
 ```
 
-### `005_stack_connections.sql` — Post-deploy Nomad connectivity
+### `005_stack_connections.sql` — Initial stack connections (superseded by 011)
+
+Originally created with `nomad_addr` and `nomad_token` columns. This schema was replaced by migration 011 (Nebula mesh design). See 011 below.
+
+### `011_nebula_connections.sql` — Nebula mesh stack connections
+
+Drops and recreates `stack_connections` with Nebula PKI columns (the 005 schema was never populated in production):
 
 ```sql
 CREATE TABLE IF NOT EXISTS stack_connections (
-    stack_name   TEXT NOT NULL PRIMARY KEY REFERENCES stacks(name) ON DELETE CASCADE,
-    nomad_addr   TEXT NOT NULL,   -- e.g. http://10.0.1.5:4646
-    nomad_token  BLOB NOT NULL,   -- AES-256-GCM encrypted
-    connected_at INTEGER NOT NULL DEFAULT (unixepoch())
+    stack_name       TEXT NOT NULL PRIMARY KEY REFERENCES stacks(name) ON DELETE CASCADE,
+    nebula_ca_cert   BLOB NOT NULL,      -- Nebula CA certificate (PEM)
+    nebula_ca_key    BLOB NOT NULL,      -- Nebula CA private key (AES-GCM encrypted)
+    nebula_ui_cert   BLOB NOT NULL,      -- pulumi-ui's Nebula cert (PEM)
+    nebula_ui_key    BLOB NOT NULL,      -- pulumi-ui's Nebula private key (AES-GCM encrypted)
+    nebula_subnet    TEXT NOT NULL,       -- assigned /24, e.g. "10.42.7.0/24"
+    lighthouse_addr  TEXT,               -- "nlb-ip:41820"; NULL until deploy-apps completes
+    agent_nebula_ip  TEXT,               -- agent's Nebula virtual IP; NULL until connected
+    connected_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+    last_seen_at     INTEGER,
+    cluster_info     TEXT                 -- JSON: nomad version, node count, etc.
+);
+
+CREATE TABLE IF NOT EXISTS nebula_subnet_counter (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
+    next  INTEGER NOT NULL DEFAULT 1           -- next /24 index (1 → 10.42.1.0/24, etc.)
 );
 ```
+
+Each stack gets a unique `/24` subnet from the `10.42.0.0/16` range, allocated atomically via `nebula_subnet_counter`. The CA key and UI key are AES-GCM encrypted at rest; all other fields are plaintext.
 
 ### `006_passphrases.sql` — Named Pulumi passphrases
 
@@ -192,6 +212,7 @@ On startup, `OperationStore.MarkStaleRunning()` is also called to mark any opera
 | `PassphraseStore` | `passphrases.go` | `Create`, `List`, `GetValue`, `Rename`, `Delete` (protected), `HasAny` |
 | `SSHKeyStore` | `ssh_keys.go` | `Create`, `List`, `GetByID`, `GetPublicKey`, `GetPrivateKey`, `Delete` (protected) |
 | `CustomProgramStore` | `custom_programs.go` | `Create`, `Get`, `List`, `Update`, `Delete` |
+| `StackConnectionStore` | `stack_connections.go` | `Create`, `Get`, `UpdateLighthouse`, `UpdateAgentConnected`, `UpdateLastSeen`, `Delete`, `AllocateSubnet` |
 
 ---
 

@@ -4,6 +4,7 @@
     import { Input } from "$lib/components/ui/input";
     import * as Select from "$lib/components/ui/select";
     import ConfigForm from "./ConfigForm.svelte";
+    import ApplicationSelector from "./ApplicationSelector.svelte";
     import { putStack, createPassphrase } from "$lib/api";
     import { navigate } from "$lib/router";
     import type { ProgramMeta, OciAccount, Passphrase, SshKey } from "$lib/types";
@@ -22,7 +23,7 @@
         sshKeys: SshKey[];
     } = $props();
 
-    let step = $state<1 | 2>(1);
+    let step = $state<1 | 2 | 3>(1);
     let stackName = $state("");
     let selectedProgramName = $state("");
     let selectedAccountId = $state("");
@@ -47,6 +48,12 @@
     );
     let isSaving = $state(false);
     let saveError = $state("");
+    let selectedApps = $state<Record<string, boolean>>({});
+    let pendingConfig = $state<Record<string, string>>({});
+
+    const hasCatalog = $derived(
+        (selectedProgram?.applications?.length ?? 0) > 0,
+    );
 
     // Inline passphrase creation (Option B — shown when no passphrases exist)
     let inlineName = $state("");
@@ -85,7 +92,19 @@
         if (canProceed()) step = 2;
     }
 
-    async function handleSave(config: Record<string, string>) {
+    function handleConfigNext(config: Record<string, string>) {
+        pendingConfig = config;
+        if (hasCatalog) {
+            step = 3;
+        } else {
+            doSave(config, {});
+        }
+    }
+
+    async function doSave(
+        config: Record<string, string>,
+        apps: Record<string, boolean>,
+    ) {
         if (
             !selectedProgram ||
             !stackName ||
@@ -104,6 +123,7 @@
                 selectedAccountId,
                 selectedPassphraseId,
                 selectedSshKeyId || undefined,
+                Object.keys(apps).length > 0 ? apps : undefined,
             );
             open = false;
             navigate(`/stacks/${encodeURIComponent(stackName)}`);
@@ -125,6 +145,8 @@
         inlineName = "";
         inlineValue = "";
         inlineError = "";
+        selectedApps = {};
+        pendingConfig = {};
     }
 </script>
 
@@ -139,12 +161,16 @@
             <Dialog.Title>
                 {step === 1
                     ? "New Stack"
-                    : `Configure ${selectedProgram?.displayName}`}
+                    : step === 2
+                      ? `Configure ${selectedProgram?.displayName}`
+                      : "Select Applications"}
             </Dialog.Title>
             <Dialog.Description>
                 {step === 1
                     ? "Name your stack and choose a program."
-                    : "Fill in the configuration for your stack."}
+                    : step === 2
+                      ? "Fill in the configuration for your stack."
+                      : "Choose which applications to deploy."}
             </Dialog.Description>
         </Dialog.Header>
 
@@ -402,8 +428,12 @@
                 <ConfigForm
                     fields={selectedProgram.configFields}
                     accountId={selectedAccountId}
-                    onSubmit={handleSave}
-                    submitLabel={isSaving ? "Saving..." : "Save & Configure"}
+                    onSubmit={handleConfigNext}
+                    submitLabel={hasCatalog
+                        ? "Next: Applications"
+                        : isSaving
+                          ? "Saving..."
+                          : "Save & Configure"}
                 />
             </div>
             <Dialog.Footer>
@@ -413,6 +443,31 @@
                         step = 1;
                     }}>Back</Button
                 >
+            </Dialog.Footer>
+        {:else if step === 3 && selectedProgram?.applications}
+            <div class="max-h-[60vh] overflow-y-auto py-4 pr-1">
+                {#if saveError}
+                    <div
+                        class="mb-4 p-3 bg-destructive/10 text-destructive text-sm rounded"
+                    >
+                        {saveError}
+                    </div>
+                {/if}
+                <ApplicationSelector
+                    applications={selectedProgram.applications}
+                    bind:selected={selectedApps}
+                />
+            </div>
+            <Dialog.Footer>
+                <Button variant="outline" onclick={() => (step = 2)}
+                    >Back</Button
+                >
+                <Button
+                    onclick={() => doSave(pendingConfig, selectedApps)}
+                    disabled={isSaving}
+                >
+                    {isSaving ? "Saving..." : "Save & Configure"}
+                </Button>
             </Dialog.Footer>
         {/if}
     </Dialog.Content>

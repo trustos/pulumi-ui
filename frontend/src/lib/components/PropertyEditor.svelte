@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { PropertyEntry, ConfigFieldDef } from '$lib/types/program-graph';
   import { Input } from '$lib/components/ui/input';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   type PropertyKeyItem = { value: string; type: string; required: boolean; description?: string };
 
@@ -241,12 +242,13 @@
             <span class="text-blue-500 text-[10px] shrink-0 font-sans">config</span>
             <span class="text-foreground truncate flex-1">{getConfigRef(prop.value)}</span>
             {#if !readonly}
-              <button
-                class="text-muted-foreground hover:text-destructive leading-none shrink-0"
-                onclick={() => clearConfigRef(i)}
-                title="Remove config field link"
-                type="button"
-              >×</button>
+              <Tooltip.Root>
+                <Tooltip.Trigger
+                  class="text-muted-foreground hover:text-destructive leading-none shrink-0"
+                  onclick={() => clearConfigRef(i)}
+                >×</Tooltip.Trigger>
+                <Tooltip.Content>Remove config field link</Tooltip.Content>
+              </Tooltip.Root>
             {/if}
           </div>
         {:else if /^\$\{[^}]+\}$/.test(prop.value)}
@@ -257,12 +259,13 @@
             <span class="text-[10px] shrink-0 font-sans {isVar ? 'text-purple-500' : 'text-green-600 dark:text-green-400'}">{isVar ? 'var' : 'ref'}</span>
             <span class="text-foreground truncate flex-1">{refContent}</span>
             {#if !readonly}
-              <button
-                class="text-muted-foreground hover:text-destructive leading-none shrink-0"
-                onclick={() => clearConfigRef(i)}
-                title="Remove reference"
-                type="button"
-              >×</button>
+              <Tooltip.Root>
+                <Tooltip.Trigger
+                  class="text-muted-foreground hover:text-destructive leading-none shrink-0"
+                  onclick={() => clearConfigRef(i)}
+                >×</Tooltip.Trigger>
+                <Tooltip.Content>Remove reference</Tooltip.Content>
+              </Tooltip.Root>
             {/if}
           </div>
         {:else if getPropertySchemaType(prop.key) === 'object'}
@@ -289,13 +292,13 @@
             />
             <!-- Unified source picker button -->
             {#if !readonly && hasAnySources}
-              <button
-                class="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-muted-foreground hover:text-foreground rounded hover:bg-muted text-sm leading-none"
-                onclick={() => { sourcePicker = sourcePicker === i ? null : i; sourceFilter = ''; }}
-                tabindex="0"
-                title="Insert value from config, variable, or resource"
-                type="button"
-              >⊕</button>
+              <Tooltip.Root>
+                <Tooltip.Trigger
+                  class="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-muted-foreground hover:text-foreground rounded hover:bg-muted text-sm leading-none"
+                  onclick={() => { sourcePicker = sourcePicker === i ? null : i; sourceFilter = ''; }}
+                >⊕</Tooltip.Trigger>
+                <Tooltip.Content>Insert a config field, variable, or resource reference</Tooltip.Content>
+              </Tooltip.Root>
               {#if sourcePicker === i}
                 <div class="absolute right-0 top-full z-50 mt-0.5 bg-popover border rounded-md shadow-md py-1 w-64 max-h-64 flex flex-col">
                   <!-- Filter input -->
@@ -359,29 +362,31 @@
           </div>
           <!-- Quick-action chips for empty required properties -->
           {#if showConfigChip(prop)}
-            <button
-              class="text-[10px] text-muted-foreground/70 hover:text-primary mt-0.5 block leading-none"
-              title="Create a config field for this property — user fills it in at stack creation"
-              type="button"
-              onclick={(e) => {
-                (e.currentTarget as HTMLElement).dispatchEvent(new CustomEvent('promote-to-config', {
-                  bubbles: true,
-                  detail: { key: prop.key, schemaType: getPropertySchemaType(prop.key), resourceName, propIndex: i },
-                }));
-              }}
-            >→ config</button>
+            <Tooltip.Root>
+              <Tooltip.Trigger
+                class="text-[10px] text-muted-foreground/70 hover:text-primary mt-0.5 block leading-none"
+                onclick={(e) => {
+                  (e.currentTarget as HTMLElement).dispatchEvent(new CustomEvent('promote-to-config', {
+                    bubbles: true,
+                    detail: { key: prop.key, schemaType: getPropertySchemaType(prop.key), resourceName, propIndex: i },
+                  }));
+                }}
+              >→ config</Tooltip.Trigger>
+              <Tooltip.Content>Create a config field for this property — the user fills it in at stack creation</Tooltip.Content>
+            </Tooltip.Root>
           {:else if showVariableChip(prop)}
-            <button
-              class="text-[10px] text-muted-foreground/70 hover:text-primary mt-0.5 block leading-none"
-              title="availabilityDomain is resolved at deploy time via oci:identity:getAvailabilityDomains — add a variables block in YAML mode"
-              type="button"
-              onclick={(e) => {
-                (e.currentTarget as HTMLElement).dispatchEvent(new CustomEvent('promote-to-variable', {
-                  bubbles: true,
-                  detail: { key: prop.key, resourceName, propIndex: i },
-                }));
-              }}
-            >→ variable</button>
+            <Tooltip.Root>
+              <Tooltip.Trigger
+                class="text-[10px] text-muted-foreground/70 hover:text-primary mt-0.5 block leading-none"
+                onclick={(e) => {
+                  (e.currentTarget as HTMLElement).dispatchEvent(new CustomEvent('promote-to-variable', {
+                    bubbles: true,
+                    detail: { key: prop.key, resourceName, propIndex: i },
+                  }));
+                }}
+              >→ variable</Tooltip.Trigger>
+              <Tooltip.Content>Resolved at deploy time via oci:identity:getAvailabilityDomains — adds a variables: block</Tooltip.Content>
+            </Tooltip.Root>
           {/if}
         {/if}
       </div>

@@ -37,13 +37,17 @@ func (h *Handler) GetProgram(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "program not found", http.StatusNotFound)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(programs.ProgramMeta{
+	meta := programs.ProgramMeta{
 		Name:         prog.Name(),
 		DisplayName:  prog.DisplayName(),
 		Description:  prog.Description(),
 		ConfigFields: prog.ConfigFields(),
-	})
+	}
+	if ap, ok := prog.(programs.ApplicationProvider); ok {
+		meta.Applications = ap.Applications()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(meta)
 }
 
 type createProgramRequest struct {

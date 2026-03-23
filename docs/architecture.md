@@ -121,6 +121,11 @@ getOrCreateYAMLStack()                                                │
   │   text/template + Sprig + custom OCI helpers                       │
   │   {{ range $i := until nodeCount }} → static YAML                 │
   ├─ programs.SanitizeYAML()  — strips fn::readFile                    │
+  ├─ agentinject.InjectIntoYAML()  — if ApplicationProvider or          │
+  │   AgentAccessProvider: walks resources, composes user_data          │
+  │   with agent bootstrap via multipart MIME                           │
+  ├─ agentinject.InjectNetworkingIntoYAML() — if AgentAccessProvider:   │
+  │   auto-adds NSG rules + NLB backend set/listener for agent port     │
   ├─ os.MkdirTemp() + WriteFile("Pulumi.yaml", rendered)               │
   ├─ auto.UpsertStackLocalSource(ctx, stackName, tempDir)              │
   ├─ stack.SetConfig("oci:tenancyOcid", ...)  — inject OCI creds       │
@@ -143,12 +148,16 @@ Key difference from built-in programs: OCI credentials are passed as Pulumi prov
 | Package | Path | Responsibility |
 |---|---|---|
 | `main` | `cmd/server/` | HTTP server bootstrap, `go:embed` directives, graceful shutdown |
+| `main` | `cmd/agent/` | Standalone agent binary: Nebula mesh + management HTTP API |
 | `api` | `internal/api/` | HTTP handlers, request parsing, SSE response writing, credential resolution |
 | `auth` | `internal/auth/` | Session middleware, user context extraction |
-| `engine` | `internal/engine/` | Pulumi Automation API: up/destroy/refresh/preview/cancel/unlock; accepts `Credentials` struct |
-| `programs` | `internal/programs/` | Program interface, registry, built-in Go `PulumiFn` implementations, YAML program type, Go template renderer (Sprig + custom OCI helpers), YAML config field parser |
+| `engine` | `internal/engine/` | Pulumi Automation API: up/destroy/refresh/preview/cancel/unlock; agent bootstrap injection orchestration |
+| `programs` | `internal/programs/` | Program interface, registry, built-in Go `PulumiFn` implementations, YAML program type, Go template renderer (Sprig + custom OCI helpers), YAML config field parser, application catalog types |
+| `agentinject` | `internal/agentinject/` | Universal agent bootstrap injection: compute resource map, multipart MIME composition, YAML post-render transformation (user_data + networking), Go program config key |
+| `applications` | `internal/applications/` | Application catalog deployment orchestration via agent |
+| `nebula` | `internal/nebula/` | Nebula PKI generation (per-stack CA + host certificates) |
 | `stacks` | `internal/stacks/` | YAML `StackConfig` schema, validation, config field metadata |
-| `db` | `internal/db/` | SQLite connection, migrations, all CRUD stores |
+| `db` | `internal/db/` | SQLite connection, migrations, all CRUD stores (including `StackConnectionStore` for Nebula mesh state) |
 | `oci` | `internal/oci/` | OCI HTTP signature client: credential verification, shapes, images |
 | `oci/configparser` | `internal/oci/configparser/` | Parses OCI SDK config files (INI format) for account import |
 | `crypto` | `internal/crypto/` | AES-256-GCM encrypt/decrypt, key derivation |
@@ -157,8 +166,11 @@ Key difference from built-in programs: OCI credentials are passed as Pulumi prov
 **Import rules:**
 - `api` imports `engine`, `db`, `auth`, `stacks`, `programs` — but not `crypto` directly
 - `auth` imports `db` only (reads users/sessions)
-- `engine` imports `programs` and `db` (for the `OCICredentials` and `Credentials` types) — but not `api`
-- `programs` imports `github.com/Masterminds/sprig/v3` (template functions) and `gopkg.in/yaml.v3` (config parser) — no other internal packages
+- `engine` imports `programs`, `db`, `agentinject`, `applications` — but not `api`
+- `agentinject` imports `gopkg.in/yaml.v3` — no other internal packages
+- `applications` does not import `engine` (uses a `LogFunc` callback to avoid cycles)
+- `programs` imports `agentinject` (for `ComposeAndEncode`, `GzipBase64`, `CfgKeyAgentBootstrap`), `github.com/Masterminds/sprig/v3` (template functions), `gopkg.in/yaml.v3` (config parser) — no other internal packages
+- `nebula` imports `github.com/slackhq/nebula` — no internal packages
 - `oci` has no internal imports (standalone HTTP client used by `api/accounts.go`)
 - `crypto` has no internal imports (pure stdlib crypto)
 - `keystore` has no internal imports (only stdlib `net/http` and `os`); imported only by `main`
@@ -204,7 +216,7 @@ RUN pulumi plugin install resource oci 4.3.1
 
 The OCI provider is pinned to **v4.3.1** throughout the codebase — `engine.go` injects a `plugins:` section into every YAML program to force this exact version, and the engine calls `InstallPlugin` with the same pin. Do not change this version without auditing all resource type tokens (v4 uses the canonical `oci:Module/subtype:Resource` format).
 
-The engine also unconditionally sets `PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING=true` in every workspace. This is required because the OCI v4 provider schema contains `ArrayType`/`MapType` objects with nil `ElementType`, which causes a SIGSEGV in `pulumi-yaml`. The engine's own Level 5/6 schema validation covers the same concern safely.
+The engine also unconditionally sets `PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING=true` in every workspace. This is required because the OCI v4 provider schema contains `ArrayType`/`MapType` objects with nil `ElementType`, which causes a SIGSEGV in `pulumi-yaml`. The engine's own Level 5 (resource structure / schema) and Level 6 (variable reference integrity) validations cover these concerns safely.
 
 ---
 

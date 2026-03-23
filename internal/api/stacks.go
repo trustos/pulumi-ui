@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
+	nebulaPKI "github.com/trustos/pulumi-ui/internal/nebula"
+	"github.com/trustos/pulumi-ui/internal/programs"
 	"github.com/trustos/pulumi-ui/internal/stacks"
 )
 
@@ -114,6 +117,8 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		OciAccountID *string           `json:"ociAccountId"`
 		PassphraseID *string           `json:"passphraseId"`
 		SshKeyID     *string           `json:"sshKeyId"`
+		Applications map[string]bool   `json:"applications,omitempty"`
+		AppConfig    map[string]string `json:"appConfig,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -123,7 +128,8 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "program is required", http.StatusBadRequest)
 		return
 	}
-	if _, ok := h.Registry.Get(body.Program); !ok {
+	prog, ok := h.Registry.Get(body.Program)
+	if !ok {
 		http.Error(w, "unknown program: "+body.Program, http.StatusBadRequest)
 		return
 	}
@@ -136,7 +142,9 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 			Program:     body.Program,
 			Description: body.Description,
 		},
-		Config: body.Config,
+		Config:       body.Config,
+		Applications: body.Applications,
+		AppConfig:    body.AppConfig,
 	}
 	if err := cfg.Validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -152,6 +160,16 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Generate Nebula PKI for programs that support ApplicationProvider (first time only)
+	if _, isAppProvider := prog.(programs.ApplicationProvider); isAppProvider && h.ConnStore != nil {
+		if existing, _ := h.ConnStore.Get(stackName); existing == nil {
+			if err := h.generateNebulaPKI(stackName); err != nil {
+				log.Printf("[stacks] Warning: failed to generate Nebula PKI for %s: %v", stackName, err)
+			}
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -171,6 +189,13 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	type MeshStatus struct {
+		Connected      bool    `json:"connected"`
+		LighthouseAddr *string `json:"lighthouseAddr,omitempty"`
+		AgentNebulaIP  *string `json:"agentNebulaIp,omitempty"`
+		LastSeenAt     *int64  `json:"lastSeenAt,omitempty"`
+	}
+
 	type StackInfo struct {
 		Name         string                 `json:"name"`
 		Program      string                 `json:"program"`
@@ -178,11 +203,14 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		PassphraseID *string                `json:"passphraseId"`
 		SshKeyID     *string                `json:"sshKeyId"`
 		Config       map[string]string      `json:"config"`
+		Applications map[string]bool        `json:"applications,omitempty"`
+		AppConfig    map[string]string      `json:"appConfig,omitempty"`
 		Outputs      map[string]interface{} `json:"outputs"`
 		Resources    int                    `json:"resources"`
 		LastUpdated  *string                `json:"lastUpdated"`
 		Status       string                 `json:"status"`
 		Running      bool                   `json:"running"`
+		Mesh         *MeshStatus            `json:"mesh,omitempty"`
 	}
 
 	info := StackInfo{
@@ -192,6 +220,8 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		PassphraseID: row.PassphraseID,
 		SshKeyID:     row.SshKeyID,
 		Config:       cfg.Config,
+		Applications: cfg.Applications,
+		AppConfig:    cfg.AppConfig,
 		Outputs:      map[string]interface{}{},
 		Status:       "not deployed",
 		Running:      h.Engine.IsRunning(stackName),
@@ -213,6 +243,19 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 					info.Outputs[k] = v.Value
 				}
 			}
+		}
+	}
+
+	// Mesh status from stack_connections
+	if h.ConnStore != nil {
+		if conn, err := h.ConnStore.Get(stackName); err == nil && conn != nil {
+			mesh := &MeshStatus{
+				Connected:      conn.AgentNebulaIP != nil,
+				LighthouseAddr: conn.LighthouseAddr,
+				AgentNebulaIP:  conn.AgentNebulaIP,
+				LastSeenAt:     conn.LastSeenAt,
+			}
+			info.Mesh = mesh
 		}
 	}
 
@@ -368,6 +411,51 @@ func (h *Handler) StackUnlock(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// StackDeployApps runs Phase 2+3: mesh connectivity + application deployment.
+func (h *Handler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
+	stackName := chi.URLParam(r, "name")
+
+	cfg, row, err := h.loadStackConfig(stackName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var ociAccountID, passphraseID, sshKeyID *string
+	if row != nil {
+		ociAccountID = row.OciAccountID
+		passphraseID = row.PassphraseID
+		sshKeyID = row.SshKeyID
+	}
+
+	creds, err := h.resolveCredentials(ociAccountID, passphraseID, sshKeyID)
+	if err != nil {
+		http.Error(w, "credentials not configured: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	send, ok := engine.SSEResponseWriter(w)
+	if !ok {
+		return
+	}
+
+	opID := uuid.New().String()
+	h.Ops.Create(opID, stackName, "deploy-apps")
+
+	logSend := func(event engine.SSEEvent) {
+		send(event)
+		if event.Type == "output" || event.Type == "error" {
+			h.Ops.AppendLog(opID, event.Data)
+		}
+	}
+
+	opCtx := context.Background()
+	status := h.Engine.DeployApps(opCtx, stackName, cfg.Metadata.Program, cfg.Config, cfg.Applications, creds, logSend)
+
+	h.Ops.Finish(opID, status)
+	send(engine.SSEEvent{Type: "done", Data: status})
+}
+
 // GetStackLogs returns the log history for a stack (last 20 operations, oldest first).
 func (h *Handler) GetStackLogs(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
@@ -403,4 +491,37 @@ func (h *Handler) GetStackLogs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+// generateNebulaPKI creates the Nebula CA + pulumi-ui node cert for a new stack.
+func (h *Handler) generateNebulaPKI(stackName string) error {
+	subnet, err := h.ConnStore.AllocateSubnet()
+	if err != nil {
+		return fmt.Errorf("allocate subnet: %w", err)
+	}
+
+	ca, err := nebulaPKI.GenerateCA(stackName+"-ca", 365*24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("generate CA: %w", err)
+	}
+
+	uiIP, err := nebulaPKI.UIAddress(subnet)
+	if err != nil {
+		return fmt.Errorf("compute UI address: %w", err)
+	}
+
+	uiCert, err := nebulaPKI.IssueCert(ca.CertPEM, ca.KeyPEM, "pulumi-ui", uiIP, []string{"server"}, 365*24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("issue UI cert: %w", err)
+	}
+
+	conn := &db.StackConnection{
+		StackName:    stackName,
+		NebulaCACert: ca.CertPEM,
+		NebulaCAKey:  ca.KeyPEM,
+		NebulaUICert: uiCert.CertPEM,
+		NebulaUIKey:  uiCert.KeyPEM,
+		NebulaSubnet: subnet,
+	}
+	return h.ConnStore.Create(conn)
 }

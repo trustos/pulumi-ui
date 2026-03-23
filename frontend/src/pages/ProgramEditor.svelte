@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { navigate } from '$lib/router';
   import { getProgram, createProgram, updateProgram, validateProgram, forkProgram } from '$lib/api';
   import { getOciSchema } from '$lib/schema';
   import { graphToYaml } from '$lib/program-graph/serializer';
   import { yamlToGraph } from '$lib/program-graph/parser';
+  import { insertAgentAccess, removeAgentAccess } from '$lib/program-graph/agent-access';
   import type { ProgramGraph, ProgramSection } from '$lib/types/program-graph';
   import type { ValidationError } from '$lib/types';
   import EditorModeBar from '$lib/components/EditorModeBar.svelte';
@@ -16,6 +17,7 @@
   import ProgramTemplateGallery from '$lib/components/ProgramTemplateGallery.svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   let {
     name = '',
@@ -25,16 +27,17 @@
     fork?: boolean;
   } = $props();
 
-  const isNew = !name || name === '__new__';
+  const isNew = $derived(!name || name === '__new__');
 
   // ── State ─────────────────────────────────────────────────────────────────
   let mode = $state<'visual' | 'yaml'>('visual');
   let syncStatus = $state<'synced' | 'yaml-edited' | 'partial'>('synced');
-  let showGallery = $state(isNew);
+  let showGallery = $state(untrack(() => isNew));
 
   let programName = $state('');
   let displayName = $state('');
   let description = $state('');
+  let agentAccess = $state(false);
 
   let graph = $state<ProgramGraph>({
     metadata: { name: '', displayName: '', description: '' },
@@ -50,7 +53,7 @@
   let validationErrors = $state<ValidationError[]>([]);
   let saving = $state(false);
   let saveError = $state('');
-  let loading = $state(!isNew);
+  let loading = $state(untrack(() => !isNew));
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const activeSectionIdx = $derived(
@@ -157,9 +160,28 @@
     graph = updatePropertyValue(graph, resName, propIndex, `{{ .Config.${key} }}`);
   }
 
+  const KNOWN_VARIABLE_TEMPLATES: Record<string, { varName: string; yaml: string; ref: string }> = {
+    availabilityDomain: {
+      varName: 'availabilityDomains',
+      yaml: '    fn::invoke:\n      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains\n      arguments:\n        compartmentId: ${oci:tenancyOcid}\n      return: availabilityDomains',
+      ref: '${availabilityDomains[0].name}',
+    },
+  };
+
   function handlePromoteToVariable(e: CustomEvent) {
-    const { resourceName: resName, propIndex } = e.detail as { resourceName: string; propIndex: number };
-    graph = updatePropertyValue(graph, resName, propIndex, '${availabilityDomain}');
+    const { key, resourceName: resName, propIndex } = e.detail as { key: string; resourceName: string; propIndex: number };
+    const template = KNOWN_VARIABLE_TEMPLATES[key];
+    if (template) {
+      if (!graph.variables.some(v => v.name === template.varName)) {
+        graph = {
+          ...graph,
+          variables: [...graph.variables, { name: template.varName, yaml: template.yaml }],
+        };
+      }
+      graph = updatePropertyValue(graph, resName, propIndex, template.ref);
+    } else {
+      graph = updatePropertyValue(graph, resName, propIndex, `\${${key}}`);
+    }
   }
 
   // Attach custom event listeners to the visual editor container
@@ -192,6 +214,7 @@
         graph = parsed.graph;
         displayName = graph.metadata.displayName || name;
         description = graph.metadata.description;
+        agentAccess = graph.metadata.agentAccess ?? false;
         yamlText = yaml;
         if (parsed.degraded) syncStatus = 'partial';
       } else {
@@ -204,6 +227,7 @@
           yamlText = yaml;
           const parsed = yamlToGraph(yaml);
           graph = parsed.graph;
+          agentAccess = graph.metadata.agentAccess ?? false;
           if (parsed.degraded) syncStatus = 'partial';
           activeSectionId = graph.sections[0]?.id ?? 'main';
         }
@@ -219,7 +243,7 @@
   function switchToYaml() {
     yamlText = graphToYaml({
       ...graph,
-      metadata: { name: programName || graph.metadata.name, displayName, description },
+      metadata: { name: programName || graph.metadata.name, displayName, description, agentAccess: agentAccess || undefined },
     });
     syncStatus = 'synced';
     mode = 'yaml';
@@ -237,6 +261,7 @@
     programName = programName || result.graph.metadata.name;
     displayName = displayName || result.graph.metadata.displayName;
     description = description || result.graph.metadata.description;
+    agentAccess = result.graph.metadata.agentAccess ?? agentAccess;
     syncStatus = result.degraded ? 'partial' : 'synced';
     activeSectionId = graph.sections[0]?.id ?? 'main';
     mode = 'visual';
@@ -249,6 +274,14 @@
     } else {
       switchToVisual();
     }
+  }
+
+  function toggleAgentAccess() {
+    agentAccess = !agentAccess;
+    if (mode !== 'yaml') return;
+    yamlText = agentAccess ? insertAgentAccess(yamlText) : removeAgentAccess(yamlText);
+    syncStatus = 'yaml-edited';
+    scheduleValidation();
   }
 
   // ── Validation (debounced, YAML mode only) ────────────────────────────────
@@ -293,6 +326,7 @@
     programName = template.metadata.name;
     displayName = template.metadata.displayName;
     description = template.metadata.description;
+    agentAccess = template.metadata.agentAccess ?? false;
     activeSectionId = template.sections[0]?.id ?? 'main';
     yamlText = graphToYaml(graph);
     syncStatus = 'synced';
@@ -310,6 +344,7 @@
     programName = '';
     displayName = '';
     description = '';
+    agentAccess = false;
     yamlText = '';
     syncStatus = 'synced';
     showGallery = false;
@@ -318,40 +353,69 @@
   // ── Visual-mode pre-save validation ───────────────────────────────────────
   type LocalError = { message: string };
 
+  function collectAllResourceNames(items: import('$lib/types/program-graph').ProgramItem[]): string[] {
+    const names: string[] = [];
+    for (const item of items) {
+      if (item.kind === 'resource') names.push(item.name);
+      else if (item.kind === 'loop') names.push(...collectAllResourceNames(item.items));
+      else if (item.kind === 'conditional') {
+        names.push(...collectAllResourceNames(item.items));
+        names.push(...collectAllResourceNames(item.elseItems ?? []));
+      }
+    }
+    return names;
+  }
+
   function collectVisualErrors(
     items: import('$lib/types/program-graph').ProgramItem[],
     path: string,
     requiredByType: Record<string, string[]>,
   ): LocalError[] {
+    const varNames = new Set(graph.variables.map(v => v.name));
+    const allNames = new Set(graph.sections.flatMap(s => collectAllResourceNames(s.items)));
+    const pulumiRefRe = /^\$\{([^.[}]+)/;
+
     const errors: LocalError[] = [];
-    for (const item of items) {
-      if (item.kind === 'resource') {
-        if (!item.name.trim()) errors.push({ message: `${path}: resource has no name` });
-        if (!item.resourceType.trim()) {
-          errors.push({ message: `${path} "${item.name || '(unnamed)'}": resource has no type` });
-        } else {
-          const required = requiredByType[item.resourceType];
-          if (required) {
-            const presentKeys = new Set(item.properties.map(p => p.key));
-            for (const prop of required) {
-              if (!presentKeys.has(prop)) {
-                errors.push({ message: `"${item.name || item.resourceType}": missing required property '${prop}'` });
+    function check(items: import('$lib/types/program-graph').ProgramItem[], path: string) {
+      for (const item of items) {
+        if (item.kind === 'resource') {
+          if (!item.name.trim()) errors.push({ message: `${path}: resource has no name` });
+          if (!item.resourceType.trim()) {
+            errors.push({ message: `${path} "${item.name || '(unnamed)'}": resource has no type` });
+          } else {
+            const required = requiredByType[item.resourceType];
+            if (required) {
+              const presentKeys = new Set(item.properties.map(p => p.key));
+              for (const prop of required) {
+                if (!presentKeys.has(prop)) {
+                  errors.push({ message: `"${item.name || item.resourceType}": missing required property '${prop}'` });
+                }
               }
             }
           }
+          for (const prop of item.properties) {
+            const m = pulumiRefRe.exec(prop.value);
+            if (m) {
+              const refName = m[1];
+              if (!varNames.has(refName) && !allNames.has(refName) && !refName.includes(':')) {
+                errors.push({ message: `"${item.name}": property '${prop.key}' references undefined variable '\${${refName}}' — add it in the Variables panel or YAML mode` });
+              }
+            }
+          }
+        } else if (item.kind === 'loop') {
+          if (!item.variable.trim()) errors.push({ message: `${path}: loop has no variable` });
+          if (item.source.type === 'until-config' && !item.source.configKey) {
+            errors.push({ message: `${path}: loop has no config field selected` });
+          }
+          check(item.items, `${path}[loop]`);
+        } else if (item.kind === 'conditional') {
+          if (!item.condition.trim()) errors.push({ message: `${path}: if-block has no condition` });
+          check(item.items, `${path}[if]`);
+          check(item.elseItems ?? [], `${path}[else]`);
         }
-      } else if (item.kind === 'loop') {
-        if (!item.variable.trim()) errors.push({ message: `${path}: loop has no variable` });
-        if (item.source.type === 'until-config' && !item.source.configKey) {
-          errors.push({ message: `${path}: loop has no config field selected` });
-        }
-        errors.push(...collectVisualErrors(item.items, `${path}[loop]`, requiredByType));
-      } else if (item.kind === 'conditional') {
-        if (!item.condition.trim()) errors.push({ message: `${path}: if-block has no condition` });
-        errors.push(...collectVisualErrors(item.items, `${path}[if]`, requiredByType));
-        errors.push(...collectVisualErrors(item.elseItems ?? [], `${path}[else]`, requiredByType));
       }
     }
+    check(items, path);
     return errors;
   }
 
@@ -382,7 +446,7 @@
         localErrors.push(...collectVisualErrors(section.items, section.label, requiredByType));
       }
       if (localErrors.length > 0) {
-        validationErrors = localErrors.map(e => ({ message: e.message }));
+        validationErrors = localErrors.map(e => ({ level: 5 as const, message: e.message }));
         saveError = 'Fix the errors highlighted below before saving.';
         return;
       }
@@ -391,7 +455,7 @@
     // Get current YAML — serialize from graph if in visual mode
     let yaml = mode === 'yaml' ? yamlText : graphToYaml({
       ...graph,
-      metadata: { name: programName, displayName, description },
+      metadata: { name: programName, displayName, description, agentAccess: agentAccess || undefined },
     });
 
     if (!yaml.trim()) {
@@ -445,26 +509,60 @@
       class="text-sm text-muted-foreground hover:text-foreground shrink-0"
       onclick={() => navigate('/programs')}
     >← Programs</button>
-    <Input
-      bind:value={programName}
-      placeholder="program-name"
-      class="h-8 text-sm font-mono w-44 shrink-0"
-      disabled={!isNew && !fork}
-    />
-    <Input
-      bind:value={displayName}
-      placeholder="Display Name"
-      class="h-8 text-sm w-44 shrink-0"
-    />
-    <Input
-      bind:value={description}
-      placeholder="Description (optional)"
-      class="h-8 text-sm w-64 shrink-0"
-    />
+    <Tooltip.Root>
+      <Tooltip.Trigger>
+        <Input
+          bind:value={programName}
+          placeholder="program-name"
+          class="h-8 text-sm font-mono w-44 shrink-0"
+          disabled={!isNew && !fork}
+        />
+      </Tooltip.Trigger>
+      <Tooltip.Content>Unique identifier (lowercase, hyphens OK). Used in API URLs and stack references.</Tooltip.Content>
+    </Tooltip.Root>
+    <Tooltip.Root>
+      <Tooltip.Trigger>
+        <Input
+          bind:value={displayName}
+          placeholder="Display Name"
+          class="h-8 text-sm w-44 shrink-0"
+        />
+      </Tooltip.Trigger>
+      <Tooltip.Content>Human-readable name shown in the Programs list and New Stack dialog</Tooltip.Content>
+    </Tooltip.Root>
+    <Tooltip.Root>
+      <Tooltip.Trigger>
+        <Input
+          bind:value={description}
+          placeholder="Description (optional)"
+          class="h-8 text-sm w-64 shrink-0"
+        />
+      </Tooltip.Trigger>
+      <Tooltip.Content>Brief description of what this program provisions</Tooltip.Content>
+    </Tooltip.Root>
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        class="h-8 px-3 text-xs rounded border shrink-0 inline-flex items-center gap-1.5 {agentAccess ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-input hover:text-foreground'}"
+        onclick={toggleAgentAccess}
+      ><span class="inline-block w-1.5 h-1.5 rounded-full {agentAccess ? 'bg-primary-foreground' : 'bg-muted-foreground/50'}"></span>Agent Connect</Tooltip.Trigger>
+      <Tooltip.Content>Toggle automatic agent bootstrap + networking injection. When ON, the engine injects Nebula mesh, agent, NSG rules, and NLB resources at deploy time.</Tooltip.Content>
+    </Tooltip.Root>
     <div class="flex items-center gap-2 shrink-0">
       {#if saveError}
-        <span class="text-xs text-destructive max-w-xs truncate" title={saveError}>{saveError}</span>
+        <Tooltip.Root>
+          <Tooltip.Trigger class="cursor-default">
+            <span class="text-xs text-destructive max-w-xs truncate">{saveError}</span>
+          </Tooltip.Trigger>
+          <Tooltip.Content>{saveError}</Tooltip.Content>
+        </Tooltip.Root>
       {/if}
+      <Tooltip.Root>
+        <Tooltip.Trigger
+          class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+          onclick={() => navigate('/programs/docs')}
+        >Docs</Tooltip.Trigger>
+        <Tooltip.Content>Open the YAML Program Reference</Tooltip.Content>
+      </Tooltip.Root>
       <Button variant="outline" onclick={() => navigate('/programs')}>Cancel</Button>
       <Button onclick={save} disabled={saving}>{saving ? 'Saving...' : 'Save Program'}</Button>
     </div>
@@ -491,6 +589,25 @@
           <span>{err.message}</span>
         </div>
       {/each}
+    </div>
+  {/if}
+
+  <!-- Agent access info banner -->
+  {#if agentAccess}
+    <div class="bg-primary/5 border-b border-primary/20 px-4 py-2 text-xs text-primary/80">
+      <div class="flex items-start gap-2">
+        <span class="font-medium shrink-0">Agent Access ON</span>
+        <span class="text-muted-foreground">—</span>
+        <span>At deploy time, the engine will automatically inject the following into the final Pulumi YAML:</span>
+      </div>
+      <div class="mt-1 ml-0 grid grid-cols-2 gap-x-6 gap-y-0.5 text-[11px] text-muted-foreground">
+        <div><span class="font-mono text-primary/70">user_data</span> — Nebula mesh + agent bootstrap on each compute instance</div>
+        <div><span class="font-mono text-primary/70">NSG rule</span> — UDP ingress on port 41820 (adds to existing NSG, or creates one from VCN)</div>
+        <div><span class="font-mono text-primary/70">NLB</span> — creates a Network Load Balancer if none exists (uses first subnet)</div>
+        <div><span class="font-mono text-primary/70">NLB backend set</span> — agent health check on each NLB</div>
+        <div><span class="font-mono text-primary/70">NLB listener + backends</span> — UDP:41820 forwarding to each compute instance</div>
+        <div class="text-primary/60 italic">Injected resources use <span class="font-mono">__agent_</span> prefix — no manual setup needed</div>
+      </div>
     </div>
   {/if}
 

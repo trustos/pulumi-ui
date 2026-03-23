@@ -39,6 +39,20 @@ func (e *Encryptor) Encrypt(plaintext string) ([]byte, error) {
 	return ciphertext, nil
 }
 
+// EncryptBytes encrypts arbitrary binary data.
+func (e *Encryptor) EncryptBytes(plaintext []byte) ([]byte, error) {
+	return e.Encrypt(string(plaintext))
+}
+
+// DecryptBytes decrypts data and returns raw bytes instead of a string.
+func (e *Encryptor) DecryptBytes(data []byte) ([]byte, error) {
+	s, err := e.Decrypt(data)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(s), nil
+}
+
 // Decrypt expects: nonce (12 bytes) || ciphertext
 func (e *Encryptor) Decrypt(data []byte) (string, error) {
 	block, err := aes.NewCipher(e.key)

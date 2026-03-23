@@ -10,10 +10,12 @@ import (
 
 // StackConfig is the parsed form of a stack YAML file.
 type StackConfig struct {
-	APIVersion string            `yaml:"apiVersion"`
-	Kind       string            `yaml:"kind"`
-	Metadata   StackMetadata     `yaml:"metadata"`
-	Config     map[string]string `yaml:"config"`
+	APIVersion   string            `yaml:"apiVersion"`
+	Kind         string            `yaml:"kind"`
+	Metadata     StackMetadata     `yaml:"metadata"`
+	Config       map[string]string `yaml:"config"`
+	Applications map[string]bool   `yaml:"applications,omitempty"` // app key → enabled (user overrides only)
+	AppConfig    map[string]string `yaml:"appConfig,omitempty"`    // "app.key" → value (per-app config)
 }
 
 type StackMetadata struct {

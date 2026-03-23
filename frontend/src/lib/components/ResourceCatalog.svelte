@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getOciSchema, refreshOciSchema, getResourceTypes, type OciSchema } from '$lib/schema';
+  import { rankSearch, type RankedResult } from '$lib/search-ranking';
   import { Input } from '$lib/components/ui/input';
   import { Button } from '$lib/components/ui/button';
   import type { ResourceItem } from '$lib/types/program-graph';
@@ -66,18 +67,23 @@
       : []
   );
 
-  const filteredCategories = $derived(
-    !searchQuery
-      ? categories
-      : (() => {
-          const q = searchQuery.toLowerCase();
-          return categories
-            .map(c => ({ ...c, types: c.types.filter(t => t.toLowerCase().includes(q)) }))
-            .filter(c => c.types.length > 0);
-        })()
+  const allTypes = $derived(schema ? getResourceTypes(schema) : []);
+
+  const rankedResults = $derived<RankedResult[] | null>(
+    rankSearch(allTypes, searchQuery)
   );
 
-  const totalVisible = $derived(filteredCategories.reduce((n, c) => n + c.types.length, 0));
+  const filteredCategories = $derived(
+    rankedResults !== null
+      ? [] // not used when ranked results are active
+      : categories
+  );
+
+  const totalVisible = $derived(
+    rankedResults !== null
+      ? rankedResults.length
+      : filteredCategories.reduce((n, c) => n + c.types.length, 0)
+  );
 
   function selectType(type: string) {
     selectedType = type;
@@ -159,28 +165,48 @@
       <div class="flex flex-1 overflow-hidden">
         <!-- Category list -->
         <div class="w-52 border-r overflow-y-auto shrink-0">
-          {#each filteredCategories as cat}
+          {#if rankedResults !== null}
+            <!-- Ranked search results -->
             <div class="px-3 py-2">
-              <p class="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">
-                {cat.ns}
-                <span class="text-[10px] font-normal normal-case ml-1">({cat.types.length})</span>
-              </p>
-              {#each cat.types as type}
+              {#each rankedResults as result}
                 <button
                   class="w-full text-left text-xs py-1 px-2 rounded truncate transition-colors"
-                  class:bg-accent={selectedType === type}
-                  class:text-accent-foreground={selectedType === type}
-                  class:text-muted-foreground={selectedType !== type}
-                  onclick={() => selectType(type)}
-                  title={type}
+                  class:bg-accent={selectedType === result.type}
+                  class:text-accent-foreground={selectedType === result.type}
+                  class:text-muted-foreground={selectedType !== result.type}
+                  onclick={() => selectType(result.type)}
+                  title={result.type}
                 >
-                  {type.split(':').pop() ?? type}
+                  {result.shortName}
+                  <span class="text-[10px] text-muted-foreground/60 ml-1">{result.namespace}</span>
                 </button>
               {/each}
             </div>
-          {/each}
-          {#if filteredCategories.length === 0 && searchQuery}
-            <p class="text-xs text-muted-foreground px-3 py-4">No types match "{searchQuery}"</p>
+            {#if rankedResults.length === 0}
+              <p class="text-xs text-muted-foreground px-3 py-4">No types match "{searchQuery}"</p>
+            {/if}
+          {:else}
+            <!-- Default category view -->
+            {#each filteredCategories as cat}
+              <div class="px-3 py-2">
+                <p class="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                  {cat.ns}
+                  <span class="text-[10px] font-normal normal-case ml-1">({cat.types.length})</span>
+                </p>
+                {#each cat.types as type}
+                  <button
+                    class="w-full text-left text-xs py-1 px-2 rounded truncate transition-colors"
+                    class:bg-accent={selectedType === type}
+                    class:text-accent-foreground={selectedType === type}
+                    class:text-muted-foreground={selectedType !== type}
+                    onclick={() => selectType(type)}
+                    title={type}
+                  >
+                    {type.split(':').pop() ?? type}
+                  </button>
+                {/each}
+              </div>
+            {/each}
           {/if}
         </div>
 

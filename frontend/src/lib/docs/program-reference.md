@@ -97,7 +97,15 @@ Your template (stored in DB)
         ▼  text/template.Execute()
         │  with stack config values + Sprig + OCI helpers
         ▼
-Plain Pulumi YAML (written to temp dir)
+Plain Pulumi YAML
+        │
+        ▼  Agent bootstrap injection (if ApplicationProvider or agentAccess)
+        │  Detects compute resources, composes multipart MIME user_data
+        ▼
+        ▼  Networking injection (if agentAccess)
+        │  Auto-adds NSG rules + NLB resources for agent port
+        ▼
+Final Pulumi YAML (written to temp dir)
         │
         ▼  pulumi up / preview / destroy / refresh
         │
@@ -243,6 +251,23 @@ meta:
 
 Fields not listed in any group appear at the bottom ungrouped.
 
+`meta:` also supports a top-level `agentAccess` flag:
+
+```yaml
+meta:
+  agentAccess: true
+```
+
+When `agentAccess: true`, the engine automatically injects the Nebula mesh + agent bootstrap into compute resources and adds NSG/NLB networking rules for agent connectivity. See the [Agent Bootstrap Injection](#agent-bootstrap-injection) section for details.
+
+**You can toggle this from the editor UI** — the **Agent Connect** button in the program editor header works in both visual and YAML modes. When enabled, an informational banner lists exactly what will be auto-injected at deploy time:
+- `user_data` — Nebula mesh + agent bootstrap on each compute instance
+- NSG security rules — UDP ingress on port 41820
+- NLB backend set + listener — UDP health check and listener on port 41820
+- NLB backends — links each compute instance to the backend set
+
+Injected resources use the `__agent_` prefix to avoid naming collisions with your resources.
+
 The visual editor writes `meta:` automatically when you add groups or descriptions to config fields via the Config Fields panel.
 
 ---
@@ -276,6 +301,8 @@ Common required properties:
 | `oci:Core/securityList:SecurityList` | `compartmentId`, `vcnId` |
 | `oci:Identity/compartment:Compartment` | `compartmentId`, `name`, `description` |
 | `oci:Identity/policy:Policy` | `compartmentId`, `name`, `description`, `statements` |
+| `oci:Core/instanceConfiguration:InstanceConfiguration` | `compartmentId`, `instanceDetails` |
+| `oci:Core/instancePool:InstancePool` | `compartmentId`, `instanceConfigurationId`, `size`, `placementConfigurations` |
 | `oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer` | `compartmentId`, `displayName`, `subnetId` |
 | `oci:NetworkLoadBalancer/backendSet:BackendSet` | `networkLoadBalancerId`, `name`, `policy`, `healthChecker` |
 | `oci:NetworkLoadBalancer/backend:Backend` | `networkLoadBalancerId`, `backendSetName`, `port`, `ipAddress` |
@@ -491,7 +518,7 @@ memoryInGbs: {{ instanceMemoryGb $i (atoi $.Config.nodeCount) }}
 cloudInit(nodeIndex int, config map[string]string) string
 ```
 
-Renders the Nomad/Consul cluster cloud-init script, gzip-compresses it, and returns it base64-encoded. Uses config values such as `nodeCount`, `nomadVersion`, `consulVersion`. If `ocpusPerNode` and `memoryGbPerNode` are present they take precedence over the per-node distribution logic.
+Renders the program-specific cloud-init script using Go `text/template`, gzip-compresses it, and returns it base64-encoded. The script conditionally installs applications (Docker, Consul, Nomad) based on which applications the program declares. Uses config values such as `nodeCount`, `nomadVersion`, `consulVersion`. If `ocpusPerNode` and `memoryGbPerNode` are present they take precedence over the per-node distribution logic.
 
 ```yaml
 metadata:
@@ -499,6 +526,8 @@ metadata:
 ```
 
 The output is suitable for OCI instance `metadata.user_data`. `cloud-init` detects gzip via magic bytes and decompresses transparently. OCI has a 32 KB metadata limit — gzip keeps the encoded script well under that.
+
+> **Note:** The management agent (Nebula mesh + pulumi-ui-agent) is **not** included in the `cloudInit` output. Agent injection is handled automatically by the engine for all compute resources — see [Agent Bootstrap Injection](#agent-bootstrap-injection) below.
 
 > **Limitation:** `COMPARTMENT_OCID` and `SUBNET_OCID` are resolved at VM boot time via the OCI Instance Metadata Service (IMDS) inside `cloudinit.sh` — they are not injected at template render time.
 
@@ -686,6 +715,49 @@ my-instance:
       ssh_authorized_keys: {{ .Config.sshPublicKey }}
       user_data: {{ cloudInit 0 $.Config }}
 
+# Instance Configuration (for InstancePool-based clusters)
+my-ic:
+  type: oci:Core/instanceConfiguration:InstanceConfiguration
+  properties:
+    compartmentId: ${my-compartment.id}
+    displayName: my-ic
+    instanceDetails:
+      instanceType: compute
+      launchDetails:
+        compartmentId: ${my-compartment.id}
+        availabilityDomain: ${availabilityDomains[0].name}
+        shape: {{ .Config.shape | quote }}
+        shapeConfig:
+          ocpus: {{ .Config.ocpusPerNode }}
+          memoryInGbs: {{ .Config.memoryGbPerNode }}
+        sourceDetails:
+          sourceType: image
+          imageId: {{ .Config.imageId | quote }}
+          bootVolumeSizeInGbs: {{ .Config.bootVolSizeGb | quote }}
+        createVnicDetails:
+          subnetId: ${my-subnet.id}
+          assignPublicIp: false
+          nsgIds:
+            - ${my-nsg.id}
+        metadata:
+          ssh_authorized_keys: {{ .Config.sshPublicKey | quote }}
+          user_data: {{ cloudInit 0 .Config }}
+
+# Instance Pool (homogeneous cluster)
+my-pool:
+  type: oci:Core/instancePool:InstancePool
+  options:
+    dependsOn:
+      - ${my-ic}
+  properties:
+    compartmentId: ${my-compartment.id}
+    instanceConfigurationId: ${my-ic.id}
+    size: {{ .Config.nodeCount }}
+    displayName: my-pool
+    placementConfigurations:
+      - availabilityDomain: ${availabilityDomains[0].name}
+        primarySubnetId: ${my-subnet.id}
+
 # Block Volume
 my-volume:
   type: oci:Core/volume:Volume
@@ -775,6 +847,35 @@ compartmentId: ${oci:tenancyOcid}
 
 ---
 
+## Agent Bootstrap Injection
+
+When a stack is deployed, the engine **automatically** injects a management agent into every compute resource's `user_data`. You do not need to add this yourself — it happens transparently after your template renders.
+
+### What gets injected
+
+- **Nebula mesh** — a lightweight overlay network (UDP port 41820) that allows pulumi-ui to communicate securely with each instance over a private encrypted tunnel, even if the instances are in private subnets with no public IP.
+- **pulumi-ui-agent** — a small HTTP agent that exposes `/exec`, `/upload`, `/health`, and `/services` endpoints over the Nebula tunnel. This enables post-deploy application management.
+
+### Which resources are affected
+
+The engine detects compute resource types that accept `user_data` metadata:
+
+| Resource type | user_data path |
+|---|---|
+| `oci:Core/instance:Instance` | `metadata.user_data` |
+| `oci:Core/instanceConfiguration:InstanceConfiguration` | `instanceDetails.launchDetails.metadata.user_data` |
+
+If your program already sets `user_data` (e.g. via `cloudInit`), the engine wraps both scripts in a multipart MIME message so `cloud-init` executes them in order.
+
+### What you need to know
+
+- **Not automatic for all programs** — agent injection is active only when a program implements `ApplicationProvider` (built-in Go programs with an application catalog) or declares `meta.agentAccess: true` (YAML programs opting into agent connectivity). Programs without either are unaffected.
+- **Networking auto-injection** — for YAML programs with `meta.agentAccess: true`, the engine also auto-adds NSG security rules (UDP 41820) and NLB backend set/listener for the agent port. Built-in Go programs manage their own networking.
+- **Per-stack PKI** — each stack gets its own certificate authority. The agent authenticates to pulumi-ui using per-stack Nebula certificates.
+- **Do not hardcode agent/Nebula setup** in your `cloudinit.sh` or YAML templates. The engine handles it when enabled.
+
+---
+
 ## Outputs
 
 Declare stack outputs to expose values after a successful `pulumi up`:
@@ -793,7 +894,7 @@ Outputs appear in the Stack detail view and can be referenced by other stacks or
 
 ## Validation
 
-Programs are validated on every save (and checked live as you type in the YAML editor). Validation runs five levels sequentially:
+Programs are validated on every save (and checked live as you type in the YAML editor). Validation runs six levels sequentially:
 
 | Level | Name | What it checks |
 |---|---|---|
@@ -801,9 +902,10 @@ Programs are validated on every save (and checked live as you type in the YAML e
 | 2 | Template render | Can it render with all defaults applied? |
 | 3 | YAML structure | Does the rendered output have `name`, `runtime: yaml`, and `resources`? |
 | 4 | Config section | Are field types valid? Do `meta:` group references exist in `config:`? |
-| 5 | Resource structure | Does each resource have a valid type? Are all required properties present? |
+| 5 | Resource structure | Does each resource have a valid type token? Are all required properties present (schema-validated)? |
+| 6 | Variable references | Does every `${varName}` in resource properties reference a name defined in `variables:` or `resources:`? Provider config refs (containing `:`) are skipped. |
 
-A program that fails any level cannot be saved. The visual editor shows errors inline before even calling the backend.
+A program that fails any level cannot be saved. The visual editor shows errors inline before even calling the backend. In visual mode, `collectVisualErrors()` additionally checks for undefined `${varName}` references client-side.
 
 ---
 
@@ -826,8 +928,10 @@ A program that fails any level cannot be saved. The visual editor shows errors i
 | No server restart needed | No | Yes |
 | Editable via visual editor | No | Yes |
 | Stored in database | No | Yes |
+| Agent bootstrap injection | Automatic (when `ApplicationProvider`) | Automatic (when `ApplicationProvider` or `meta.agentAccess: true`) |
+| Agent networking injection | Manual (program provisions NSG/NLB) | Automatic when `meta.agentAccess: true` |
 
-If your program needs to pass a runtime-resolved OCID (e.g. a subnet ID) into a cloud-init script, you must implement it as a built-in Go program.
+Agent bootstrap injection requires the program to implement `ApplicationProvider` (built-in Go) or declare `meta.agentAccess: true` (YAML). YAML programs with `agentAccess` also get automatic NSG rules and NLB resources for the agent port. If your program needs to pass a runtime-resolved OCID (e.g. a subnet ID) into a cloud-init script, you must implement it as a built-in Go program.
 
 ---
 

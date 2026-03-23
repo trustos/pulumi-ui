@@ -27,6 +27,7 @@ type Handler struct {
 	CustomPrograms *db.CustomProgramStore
 	Engine         *engine.Engine
 	Registry       *programs.ProgramRegistry
+	ConnStore      *db.StackConnectionStore
 }
 
 func NewHandler(
@@ -42,6 +43,7 @@ func NewHandler(
 	customPrograms *db.CustomProgramStore,
 	eng *engine.Engine,
 	registry *programs.ProgramRegistry,
+	connStore *db.StackConnectionStore,
 ) *Handler {
 	return &Handler{
 		DB:             sqlDB,
@@ -56,6 +58,7 @@ func NewHandler(
 		CustomPrograms: customPrograms,
 		Engine:         eng,
 		Registry:       registry,
+		ConnStore:      connStore,
 	}
 }
 
@@ -118,6 +121,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Post("/stacks/{name}/preview", h.StackPreview)
 			r.Post("/stacks/{name}/cancel", h.StackCancel)
 			r.Post("/stacks/{name}/unlock", h.StackUnlock)
+			r.Post("/stacks/{name}/deploy-apps", h.StackDeployApps)
 			r.Get("/stacks/{name}/logs", h.GetStackLogs)
 
 			// Passphrases

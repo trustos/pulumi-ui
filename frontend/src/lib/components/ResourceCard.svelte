@@ -4,6 +4,7 @@
   import PropertyEditor from './PropertyEditor.svelte';
   import { Input } from '$lib/components/ui/input';
   import { getOciSchema } from '$lib/schema';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   let {
     resource = $bindable<ResourceItem>({
@@ -122,7 +123,12 @@
   {#if expanded}
     <div class="p-3 space-y-3">
       <div class="space-y-1">
-        <p class="text-xs font-medium text-muted-foreground">Type</p>
+        <Tooltip.Root>
+          <Tooltip.Trigger class="cursor-default">
+            <p class="text-xs font-medium text-muted-foreground">Type</p>
+          </Tooltip.Trigger>
+          <Tooltip.Content>Pulumi resource type — e.g. oci:Core/vcn:Vcn. Required properties are auto-added on blur.</Tooltip.Content>
+        </Tooltip.Root>
         <Input
           bind:value={resource.resourceType}
           class="h-7 text-xs font-mono"
@@ -131,12 +137,22 @@
         />
       </div>
       <div class="space-y-1">
-        <p class="text-xs font-medium text-muted-foreground">Properties</p>
+        <Tooltip.Root>
+          <Tooltip.Trigger class="cursor-default">
+            <p class="text-xs font-medium text-muted-foreground">Properties</p>
+          </Tooltip.Trigger>
+          <Tooltip.Content>Key-value pairs passed to the resource. Use the ⊕ button to insert config fields or resource references.</Tooltip.Content>
+        </Tooltip.Root>
         <PropertyEditor bind:properties={resource.properties} {configFields} {propertyKeyItems} {allResourceNames} {allResourceRefs} {variableNames} resourceName={resource.name} />
       </div>
       {#if allResourceNames.length > 0}
         <div class="space-y-1">
-          <p class="text-xs font-medium text-muted-foreground">Depends on</p>
+          <Tooltip.Root>
+            <Tooltip.Trigger class="cursor-default">
+              <p class="text-xs font-medium text-muted-foreground">Depends on</p>
+            </Tooltip.Trigger>
+            <Tooltip.Content>Force this resource to be created after the selected ones. Required when resources share mutable state (e.g. NLB ports).</Tooltip.Content>
+          </Tooltip.Root>
           <div class="flex flex-wrap gap-1">
             {#each allResourceNames.filter(n => n !== resource.name) as name}
               <label class="flex items-center gap-1 text-xs">

@@ -2,6 +2,7 @@
   import type { OutputDef } from '$lib/types/program-graph';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   let {
     outputs = $bindable<OutputDef[]>([]),
@@ -56,8 +57,16 @@
 
 <div class="flex flex-col h-full">
   <div class="px-3 py-2 flex items-center justify-between border-b">
-    <p class="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Outputs</p>
-    <button class="text-xs text-muted-foreground hover:text-foreground" onclick={startAdd}>+ Add</button>
+    <Tooltip.Root>
+      <Tooltip.Trigger class="cursor-default">
+        <p class="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Outputs</p>
+      </Tooltip.Trigger>
+      <Tooltip.Content>Values exposed after a successful deploy — shown in the Stack detail view</Tooltip.Content>
+    </Tooltip.Root>
+    <Tooltip.Root>
+      <Tooltip.Trigger class="text-xs text-muted-foreground hover:text-foreground" onclick={startAdd}>+ Add</Tooltip.Trigger>
+      <Tooltip.Content>Add a custom output</Tooltip.Content>
+    </Tooltip.Root>
   </div>
 
   <div class="flex-1 overflow-y-auto">
@@ -86,12 +95,13 @@
         <p class="text-[10px] text-muted-foreground uppercase tracking-wide mb-1.5">From resources</p>
         <div class="flex flex-wrap gap-1">
           {#each suggestions as name}
-            <button
-              class="text-[11px] font-mono px-1.5 py-0.5 rounded border border-dashed border-muted-foreground/40 text-muted-foreground hover:border-primary hover:text-primary transition-colors"
-              onclick={() => addSuggestion(name)}
-              title="Add {name}.id as output"
-              type="button"
-            >+ {name}.id</button>
+            <Tooltip.Root>
+              <Tooltip.Trigger
+                class="text-[11px] font-mono px-1.5 py-0.5 rounded border border-dashed border-muted-foreground/40 text-muted-foreground hover:border-primary hover:text-primary transition-colors"
+                onclick={() => addSuggestion(name)}
+              >+ {name}.id</Tooltip.Trigger>
+              <Tooltip.Content>Expose ${'{'}${name}.id{'}'} as a stack output</Tooltip.Content>
+            </Tooltip.Root>
           {/each}
         </div>
       </div>

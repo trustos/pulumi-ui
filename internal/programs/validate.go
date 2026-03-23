@@ -34,7 +34,7 @@ type ValidationError struct {
 var templateLineRe = regexp.MustCompile(`program:(\d+)`)
 var missingKeyRe = regexp.MustCompile(`map has no entry for key "([^"]+)"`)
 
-// ValidateProgram runs all five validation levels and returns every error
+// ValidateProgram runs all six validation levels and returns every error
 // found. Levels run sequentially; rendering-dependent levels are skipped if
 // the template cannot be parsed or rendered.
 func ValidateProgram(yamlBody string) []ValidationError {
@@ -62,6 +62,9 @@ func ValidateProgram(yamlBody string) []ValidationError {
 
 	// Level 5 — resource type structure (needs rendered body).
 	errs = append(errs, validateResourceStructure(rendered)...)
+
+	// Level 6 — variable reference integrity (needs rendered body).
+	errs = append(errs, validateVariableReferences(rendered)...)
 
 	return errs
 }
@@ -286,6 +289,62 @@ func validateResourceStructure(rendered string) []ValidationError {
 		}
 	}
 	return errs
+}
+
+// --- Level 6: variable reference integrity (rendered YAML) ------------------
+
+const LevelVariableReference ValidationLevel = 6
+
+var pulumiVarRefRe = regexp.MustCompile(`\$\{([^.[}]+)`)
+
+func validateVariableReferences(rendered string) []ValidationError {
+	var doc struct {
+		Variables map[string]interface{} `yaml:"variables"`
+		Resources map[string]struct {
+			Type       string                 `yaml:"type"`
+			Properties map[string]interface{} `yaml:"properties"`
+		} `yaml:"resources"`
+	}
+	if err := yaml.Unmarshal([]byte(rendered), &doc); err != nil {
+		return nil
+	}
+
+	defined := make(map[string]bool, len(doc.Variables)+len(doc.Resources))
+	for k := range doc.Variables {
+		defined[k] = true
+	}
+	for k := range doc.Resources {
+		defined[k] = true
+	}
+
+	var errs []ValidationError
+	for resName, res := range doc.Resources {
+		checkRefValues(res.Properties, resName, defined, &errs)
+	}
+	return errs
+}
+
+func checkRefValues(props map[string]interface{}, resName string, defined map[string]bool, errs *[]ValidationError) {
+	for propKey, propVal := range props {
+		switch v := propVal.(type) {
+		case string:
+			for _, m := range pulumiVarRefRe.FindAllStringSubmatch(v, -1) {
+				ref := m[1]
+				if strings.Contains(ref, ":") {
+					continue // provider config ref like oci:tenancyOcid
+				}
+				if !defined[ref] {
+					*errs = append(*errs, ValidationError{
+						Level:   LevelVariableReference,
+						Field:   resName,
+						Message: "resource '" + resName + "' property '" + propKey + "' references '${" + ref + "}' which is not defined in variables: or resources:",
+					})
+				}
+			}
+		case map[string]interface{}:
+			checkRefValues(v, resName, defined, errs)
+		}
+	}
 }
 
 // --- helpers ----------------------------------------------------------------

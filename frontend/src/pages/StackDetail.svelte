@@ -9,8 +9,8 @@
   import { ScrollArea } from '$lib/components/ui/scroll-area';
   import * as Tooltip from '$lib/components/ui/tooltip';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, listSSHKeys } from '$lib/api';
-  import type { StackInfo, OciAccount, ProgramMeta, SshKey } from '$lib/types';
+  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, listSSHKeys, streamDeployApps } from '$lib/api';
+  import type { StackInfo, OciAccount, ProgramMeta, SshKey, ApplicationDef } from '$lib/types';
   import EditStackDialog from '$lib/components/EditStackDialog.svelte';
 
   let { name }: { name: string } = $props();
@@ -33,6 +33,9 @@
   let cancelConfirmOpen = $state(false);
   let removeConfirmOpen = $state(false);
   let activeTab = $state('logs');
+  let isDeployingApps = $state(false);
+  let deployAppLines = $state<Array<{ type: string; data: string; timestamp: string }>>([]);
+  let deployAppCancelFn = $state<(() => void) | null>(null);
 
   const linkedAccount = $derived(
     info?.ociAccountId ? accounts.find((a) => a.id === info!.ociAccountId) ?? null : null
@@ -42,6 +45,12 @@
 
   let passphraseOk = $derived(info === null ? null : info.passphraseId != null);
   let notDeployed = $derived(info?.status === 'not deployed');
+
+  const appCatalog = $derived<ApplicationDef[]>(currentProgram?.applications ?? []);
+  const hasApps = $derived(appCatalog.length > 0);
+  const selectedApps = $derived<Record<string, boolean>>(info?.applications ?? {});
+  const bootstrapApps = $derived(appCatalog.filter(a => a.tier === 'bootstrap' && selectedApps[a.key]));
+  const workloadApps = $derived(appCatalog.filter(a => a.tier === 'workload' && selectedApps[a.key]));
 
   function timeAgo(iso: string | null): string {
     if (!iso) return 'Never';
@@ -226,6 +235,29 @@
     navigate('/');
   }
 
+  function startDeployApps() {
+    if (isDeployingApps || isRunning) return;
+    isDeployingApps = true;
+    deployAppLines = [{ type: 'separator', data: '─── Deploy Applications ───', timestamp: new Date().toISOString() }];
+    activeTab = 'applications';
+
+    const cancel = streamDeployApps(
+      name,
+      (event) => { deployAppLines = [...deployAppLines, event]; },
+      (status) => {
+        isDeployingApps = false;
+        deployAppCancelFn = null;
+        deployAppLines = [...deployAppLines, {
+          type: 'done',
+          data: `─── ${status} ───`,
+          timestamp: new Date().toISOString(),
+        }];
+        loadInfo();
+      }
+    );
+    deployAppCancelFn = cancel;
+  }
+
   function lineColor(event: { type: string; data: string }): string {
     if (event.type === 'error') return 'text-red-400';
     if (event.type === 'separator') return 'text-zinc-500 font-medium';
@@ -380,6 +412,9 @@
   <Tabs.Root bind:value={activeTab} class="flex-1 flex flex-col min-h-0">
     <Tabs.List class="shrink-0">
       <Tabs.Trigger value="logs">Logs</Tabs.Trigger>
+      {#if hasApps}
+        <Tabs.Trigger value="applications">Applications</Tabs.Trigger>
+      {/if}
       <Tabs.Trigger value="details">Details</Tabs.Trigger>
       <Tabs.Trigger value="outputs">Outputs</Tabs.Trigger>
       <Tabs.Trigger value="config">Configuration</Tabs.Trigger>
@@ -430,6 +465,132 @@
         </div>
       </div>
     </Tabs.Content>
+
+    <!-- Applications tab -->
+    {#if hasApps}
+      <Tabs.Content value="applications" class="flex-1 flex flex-col min-h-0">
+        <div class="mt-2 space-y-4 max-w-3xl">
+          <!-- Mesh status -->
+          <Card.Root>
+            <Card.Header class="pb-3">
+              <Card.Title class="text-base flex items-center gap-2">
+                Mesh Connectivity
+                {#if info?.mesh?.connected}
+                  <span class="h-2 w-2 rounded-full bg-green-500 inline-block"></span>
+                {:else}
+                  <span class="h-2 w-2 rounded-full bg-zinc-500 inline-block"></span>
+                {/if}
+              </Card.Title>
+            </Card.Header>
+            <Card.Content class="space-y-2 text-sm">
+              <div class="flex justify-between">
+                <span class="text-muted-foreground">Status</span>
+                <span>{info?.mesh?.connected ? 'Connected' : 'Not connected'}</span>
+              </div>
+              {#if info?.mesh?.lighthouseAddr}
+                <div class="flex justify-between">
+                  <span class="text-muted-foreground">Lighthouse</span>
+                  <span class="font-mono text-xs">{info.mesh.lighthouseAddr}</span>
+                </div>
+              {/if}
+              {#if info?.mesh?.agentNebulaIp}
+                <div class="flex justify-between">
+                  <span class="text-muted-foreground">Agent IP</span>
+                  <span class="font-mono text-xs">{info.mesh.agentNebulaIp}</span>
+                </div>
+              {/if}
+              {#if info?.mesh?.lastSeenAt}
+                <div class="flex justify-between">
+                  <span class="text-muted-foreground">Last seen</span>
+                  <span>{new Date(info.mesh.lastSeenAt * 1000).toLocaleString()}</span>
+                </div>
+              {/if}
+            </Card.Content>
+          </Card.Root>
+
+          <!-- Selected applications -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {#if bootstrapApps.length > 0}
+              <Card.Root>
+                <Card.Header class="pb-3">
+                  <Card.Title class="text-base">Bootstrap</Card.Title>
+                  <p class="text-xs text-muted-foreground">Installed at boot via cloud-init</p>
+                </Card.Header>
+                <Card.Content class="space-y-2">
+                  {#each bootstrapApps as app}
+                    <div class="flex items-center gap-2 text-sm">
+                      <span class="h-1.5 w-1.5 rounded-full bg-green-500 shrink-0"></span>
+                      <span class="font-medium">{app.name}</span>
+                      <span class="text-xs text-muted-foreground ml-auto">{app.target}</span>
+                    </div>
+                  {/each}
+                </Card.Content>
+              </Card.Root>
+            {/if}
+            {#if workloadApps.length > 0}
+              <Card.Root>
+                <Card.Header class="pb-3">
+                  <Card.Title class="text-base">Workloads</Card.Title>
+                  <p class="text-xs text-muted-foreground">Deployed via agent after infrastructure is ready</p>
+                </Card.Header>
+                <Card.Content class="space-y-2">
+                  {#each workloadApps as app}
+                    <div class="flex items-center gap-2 text-sm">
+                      <span class="h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0"></span>
+                      <span class="font-medium">{app.name}</span>
+                      {#if app.dependsOn && app.dependsOn.length > 0}
+                        <span class="text-xs text-muted-foreground">({app.dependsOn.join(', ')})</span>
+                      {/if}
+                      <span class="text-xs text-muted-foreground ml-auto">{app.target}</span>
+                    </div>
+                  {/each}
+                </Card.Content>
+              </Card.Root>
+            {/if}
+          </div>
+
+          <!-- Deploy button -->
+          <div class="flex items-center gap-3">
+            <Tooltip.Root>
+              <Tooltip.Trigger>
+                <Button
+                  size="sm"
+                  onclick={startDeployApps}
+                  disabled={isDeployingApps || isRunning || notDeployed || workloadApps.length === 0}
+                >
+                  {isDeployingApps ? 'Deploying...' : 'Deploy Applications'}
+                </Button>
+              </Tooltip.Trigger>
+              <Tooltip.Content>
+                {#if notDeployed}
+                  Deploy infrastructure first
+                {:else if workloadApps.length === 0}
+                  No workload applications selected
+                {:else}
+                  Connect to the Nebula mesh and deploy workload applications via the agent
+                {/if}
+              </Tooltip.Content>
+            </Tooltip.Root>
+            {#if isDeployingApps}
+              <Button variant="outline" size="sm" onclick={() => { deployAppCancelFn?.(); }}>Cancel</Button>
+            {/if}
+          </div>
+        </div>
+
+        <!-- Deploy apps log -->
+        {#if deployAppLines.length > 0}
+          <div class="mt-4 flex-1 bg-zinc-950 rounded-lg border border-zinc-800 overflow-y-auto max-w-3xl">
+            <div class="p-4 font-mono text-xs leading-relaxed">
+              {#each deployAppLines as event}
+                <div class="{lineColor(event)}" style="overflow-wrap: anywhere;">
+                  {event.data}
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </Tabs.Content>
+    {/if}
 
     <!-- Details tab -->
     <Tabs.Content value="details" class="overflow-y-auto">

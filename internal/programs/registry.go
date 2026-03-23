@@ -21,11 +21,13 @@ type ConfigField struct {
 
 // ProgramMeta is the safe, serialisable view of a Program (sent to the UI).
 type ProgramMeta struct {
-	Name         string        `json:"name"`
-	DisplayName  string        `json:"displayName"`
-	Description  string        `json:"description"`
-	ConfigFields []ConfigField `json:"configFields"`
-	IsCustom     bool          `json:"isCustom"` // true for user-defined YAML programs
+	Name         string           `json:"name"`
+	DisplayName  string           `json:"displayName"`
+	Description  string           `json:"description"`
+	ConfigFields []ConfigField    `json:"configFields"`
+	IsCustom     bool             `json:"isCustom"`                // true for user-defined YAML programs
+	Applications []ApplicationDef `json:"applications,omitempty"`  // nil for programs without a catalog
+	AgentAccess  bool             `json:"agentAccess,omitempty"`   // true if agent networking is auto-injected
 }
 
 // Program is the internal interface all Pulumi programs implement.
@@ -98,13 +100,20 @@ func (r *ProgramRegistry) List() []ProgramMeta {
 	metas := make([]ProgramMeta, 0, len(r.programs))
 	for _, p := range r.programs {
 		_, isCustom := p.(YAMLProgramProvider)
-		metas = append(metas, ProgramMeta{
+		meta := ProgramMeta{
 			Name:         p.Name(),
 			DisplayName:  p.DisplayName(),
 			Description:  p.Description(),
 			ConfigFields: p.ConfigFields(),
 			IsCustom:     isCustom,
-		})
+		}
+		if ap, ok := p.(ApplicationProvider); ok {
+			meta.Applications = ap.Applications()
+		}
+		if aap, ok := p.(AgentAccessProvider); ok {
+			meta.AgentAccess = aap.AgentAccess()
+		}
+		metas = append(metas, meta)
 	}
 	return metas
 }

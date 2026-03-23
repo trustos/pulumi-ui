@@ -2,6 +2,7 @@
 pulumi-ui
 cmd/server/frontend/dist/
 server
+agent
 
 # ── Go ────────────────────────────────────────────────────────────────────────
 *.test
@@ -22,3 +23,4 @@ dev-data/
 .DS_Store
 Thumbs.db
 .claude
+.history/

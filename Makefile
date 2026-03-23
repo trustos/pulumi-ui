@@ -2,8 +2,8 @@ BINARY   := pulumi-ui
 DATA_DIR := ./dev-data
 ADDR     := :8080
 
-.PHONY: all build frontend backend backend-static dev run watch-frontend dev-watch \
-        docker docker-push deploy clean clean-all help
+.PHONY: all build frontend backend backend-static build-agent dev run watch-frontend dev-watch \
+        docker docker-push deploy clean clean-all help test lint
 
 # ── Default ───────────────────────────────────────────────────────────────────
 
@@ -25,6 +25,12 @@ backend:
 ## backend-static: Compile a fully static binary (CGO_ENABLED=0, for Linux)
 backend-static:
 	CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o $(BINARY) ./cmd/server
+
+## build-agent: Cross-compile agent for Linux arm64 + amd64
+build-agent:
+	@mkdir -p dist
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/agent_linux_arm64 ./cmd/agent
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/agent_linux_amd64 ./cmd/agent
 
 # ── Dev ───────────────────────────────────────────────────────────────────────
 #
@@ -62,6 +68,16 @@ dev-watch: backend
 # Internal guards
 _require-binary:
 	@[ -f ./$(BINARY) ] || (echo "Binary not found — run 'make build' first." && exit 1)
+
+# ── Test & Lint ───────────────────────────────────────────────────────────────
+
+## test: Run all Go tests
+test:
+	go test ./internal/... -count=1
+
+## lint: Run svelte-check on the frontend
+lint:
+	cd frontend && npx svelte-check --threshold warning
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 

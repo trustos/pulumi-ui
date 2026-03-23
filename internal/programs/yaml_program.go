@@ -12,8 +12,9 @@ type YAMLProgram struct {
 	name        string
 	displayName string
 	description string
-	yamlBody    string       // raw template body as stored in DB
+	yamlBody    string        // raw template body as stored in DB
 	fields      []ConfigField // derived from the YAML config: section
+	agentAccess bool          // parsed from meta.agentAccess
 }
 
 // NewYAMLProgram parses a raw Pulumi YAML template body and returns a
@@ -30,6 +31,7 @@ func NewYAMLProgram(name, displayName, description, yamlBody string) (*YAMLProgr
 		description: description,
 		yamlBody:    yamlBody,
 		fields:      fields,
+		agentAccess: ParseAgentAccess(yamlBody),
 	}, nil
 }
 
@@ -40,6 +42,13 @@ func (p *YAMLProgram) ConfigFields() []ConfigField { return p.fields }
 
 // YAMLBody returns the raw Go-template / Pulumi YAML body.
 func (p *YAMLProgram) YAMLBody() string { return p.yamlBody }
+
+// AgentAccess returns true if the program opted into automatic agent
+// connectivity injection via meta.agentAccess: true.
+func (p *YAMLProgram) AgentAccess() bool { return p.agentAccess }
+
+// Compile-time check that YAMLProgram implements AgentAccessProvider.
+var _ AgentAccessProvider = (*YAMLProgram)(nil)
 
 // Run returns nil — this signals the engine to use the YAML execution path.
 func (p *YAMLProgram) Run(_ map[string]string) pulumi.RunFunc { return nil }

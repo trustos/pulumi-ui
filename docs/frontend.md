@@ -28,6 +28,7 @@ The frontend is a pure Svelte 5 SPA built with Vite, embedded in the Go binary v
 | `frontend/src/lib/components/EditStackDialog.svelte` | Edit an existing stack's config fields (same form as New, pre-filled) |
 | `frontend/src/lib/components/ConfigForm.svelte` | Dynamic form from `ProgramMeta.configFields` |
 | `frontend/src/lib/components/OciImportDialog.svelte` | Multi-step OCI config import wizard (file upload or ZIP) |
+| `frontend/src/lib/components/ApplicationSelector.svelte` | Application catalog selector for stack creation (ApplicationProvider programs) |
 | `frontend/src/lib/components/StackCard.svelte` | Card shown on Dashboard for each stack |
 | `frontend/src/lib/components/ui/` | shadcn-svelte component library (Button, Input, Select, Dialog, Tabs, Badge, Combobox, etc.) |
 
@@ -98,7 +99,7 @@ ConfigForm renders these pickers when it encounters the corresponding `field.typ
 
 ## Stack Creation Wizard (NewStackDialog)
 
-The wizard has **3 steps**, each with a single semantic purpose:
+The wizard has **3 or 4 steps**, depending on the selected program. Programs implementing `ApplicationProvider` show an additional application selection step.
 
 ### Step 1 — Name & Program
 Fields: stack name, program selection.
@@ -115,6 +116,9 @@ Purpose: define who can access the stack and how state is protected.
 Renders ConfigForm for the selected program's config fields.
 Fields are rendered in layer order: infrastructure → compute → bootstrap.
 Derived fields are shown read-only with a computed-from tooltip.
+
+### Step 3b — Applications (conditional)
+Shown only for programs with an `applications` catalog. Renders `ApplicationSelector.svelte` which lists available applications from the program's catalog. Required applications are shown as always-on (cannot be deselected). Optional applications can be toggled on/off. Dependencies are enforced (e.g., selecting Traefik auto-selects Nomad if it depends on it). The selected applications are stored in the stack config and determine which apps the deployer installs post-infrastructure.
 
 `PUT /api/stacks/{name}` body:
 ```json
@@ -214,6 +218,35 @@ ConfigForm runs `onBlur` validation using `field.validationHint`:
 | `"semver"` | Regex: `^\d+\.\d+\.\d+` |
 
 Show error messages inline beneath the field. Block step navigation and form submission until all required fields with hints pass validation. Never suppress errors silently.
+
+---
+
+## Program Editor Validation
+
+`ProgramEditor.svelte` runs client-side validation before save and live during editing:
+
+### Backend validation (on save)
+The backend `ValidateProgram` pipeline runs six levels (see `docs/yaml-programs.md`). Errors are shown in the validation panel below the mode bar.
+
+### Visual mode validation (`collectVisualErrors`)
+Before saving in visual mode, `collectVisualErrors()` checks:
+- Every resource has a name and a type.
+- Required properties (from the schema) are all present and non-empty.
+- Loop variables start with `$`.
+- **Undefined variable references**: any `${varName}` in a property value is checked against the graph's defined variables and resource names. References containing `:` (e.g., `${oci:tenancyOcid}`) are skipped as provider config refs. Undefined references are flagged as errors.
+
+### Agent Connect Toggle
+The program editor header contains an **Agent Connect** toggle visible in both visual and YAML modes. When toggled:
+- **Visual mode**: sets `graph.metadata.agentAccess` which the serializer emits as `meta.agentAccess: true`.
+- **YAML mode**: patches the YAML text directly — inserts/removes `agentAccess: true` in the `meta:` block.
+- An informational banner below the mode bar lists all resources auto-injected at deploy time (user_data on compute instances, NSG rules, NLB backend sets/listeners/backends).
+- State syncs on visual↔YAML mode switches, template selection, fork, and load.
+
+### Promote to Variable
+`PropertyEditor` offers two promotion actions for empty required property values:
+
+- **`→ config`** — adds a `ConfigField` and sets the value to `{{ .Config.<key> }}`. Auto-detects `oci-shape`, `oci-image`, `ssh-public-key` types.
+- **`→ variable`** — for keys with known OCI patterns (e.g. `availabilityDomain`), auto-scaffolds a `variables:` entry with the correct `fn::invoke` call and sets the property to the Pulumi interpolation (e.g. `${availabilityDomains[0].name}`). Uses `KNOWN_VARIABLE_TEMPLATES` in `ProgramEditor.svelte`. For unknown keys, sets value to `${key}`.
 
 ---
 
@@ -501,11 +534,14 @@ interface StackInfo {
   passphraseId: string | null;
   sshKeyId: string | null;
   config: Record<string, string>;
+  applications?: Record<string, boolean>;  // selected apps (ApplicationProvider programs)
+  appConfig?: Record<string, string>;      // app-specific config
   outputs: Record<string, unknown>;
   resources: number;
   lastUpdated: string | null;
   status: string;
   running: boolean;
+  mesh?: MeshStatus;  // Nebula mesh connection state
 }
 
 interface ConfigField {
@@ -522,12 +558,36 @@ interface ConfigField {
   validationHint?: string;  // 'cidr' | 'ocid' | 'semver' | 'url'
 }
 
+type ApplicationTier = 'bootstrap' | 'workload';
+type TargetMode = 'all' | 'first' | 'any';
+
+interface ApplicationDef {
+  key: string;
+  name: string;
+  description?: string;
+  tier: ApplicationTier;
+  target: TargetMode;
+  required: boolean;
+  defaultOn: boolean;
+  dependsOn?: string[];
+  configFields?: ConfigField[];
+}
+
+interface MeshStatus {
+  connected: boolean;
+  lighthouseAddr?: string;
+  agentNebulaIp?: string;
+  lastSeenAt?: number;
+}
+
 interface ProgramMeta {
   name: string;
   displayName: string;
   description: string;
   configFields: ConfigField[];
   isCustom: boolean;  // false for built-in Go programs, true for user-defined YAML programs
+  applications?: ApplicationDef[];  // present when program implements ApplicationProvider
+  agentAccess?: boolean;  // true when agent networking auto-injected (meta.agentAccess)
 }
 
 interface OciAccount {

@@ -35,11 +35,15 @@ export function graphToYaml(graph: ProgramGraph): string {
   }
   lines.push('');
 
-  // meta: block — groups and field descriptions/labels (parsed by backend)
+  // meta: block — groups, field descriptions, and agentAccess (parsed by backend)
   const hasGroups = graph.configFields.some(f => f.group);
   const hasDescriptions = graph.configFields.some(f => f.description);
-  if (hasGroups || hasDescriptions) {
+  const hasAgentAccess = graph.metadata.agentAccess === true;
+  if (hasGroups || hasDescriptions || hasAgentAccess) {
     lines.push('meta:');
+    if (hasAgentAccess) {
+      lines.push('  agentAccess: true');
+    }
     if (hasGroups) {
       // Build ordered group list
       const groupOrder: string[] = [];

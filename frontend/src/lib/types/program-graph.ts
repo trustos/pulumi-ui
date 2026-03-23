@@ -3,6 +3,7 @@ export interface ProgramGraph {
     name: string;
     displayName: string;
     description: string;
+    agentAccess?: boolean;
   };
   configFields: ConfigFieldDef[];
   variables: VariableDef[];

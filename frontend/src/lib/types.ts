@@ -22,12 +22,28 @@ export interface ConfigField {
   groupLabel?: string;
 }
 
+export type ApplicationTier = 'bootstrap' | 'workload';
+export type TargetMode = 'all' | 'first' | 'any';
+
+export interface ApplicationDef {
+  key: string;
+  name: string;
+  description?: string;
+  tier: ApplicationTier;
+  target: TargetMode;
+  required: boolean;
+  defaultOn: boolean;
+  dependsOn?: string[];
+  configFields?: ConfigField[];
+}
+
 export interface ProgramMeta {
   name: string;
   displayName: string;
   description: string;
   configFields: ConfigField[];
   isCustom: boolean;
+  applications?: ApplicationDef[];
 }
 
 export interface ValidationError {
@@ -59,6 +75,13 @@ export interface StackSummary {
   resourceCount: number;
 }
 
+export interface MeshStatus {
+  connected: boolean;
+  lighthouseAddr?: string;
+  agentNebulaIp?: string;
+  lastSeenAt?: number;
+}
+
 export interface StackInfo {
   name: string;
   program: string;
@@ -66,11 +89,14 @@ export interface StackInfo {
   passphraseId: string | null;
   sshKeyId: string | null;
   config: Record<string, string>;
+  applications?: Record<string, boolean>;
+  appConfig?: Record<string, string>;
   outputs: Record<string, unknown>;
   resources: number;
   lastUpdated: string | null;
   status: string;
   running: boolean;
+  mesh?: MeshStatus;
 }
 
 export interface SshKey {

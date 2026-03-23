@@ -2,8 +2,6 @@ package programs
 
 import (
 	"bytes"
-	"compress/gzip"
-	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
@@ -91,13 +89,17 @@ func templateInstanceMemoryGb(nodeIndex, nodeCount int) int {
 }
 
 // templateCloudInit renders and base64-encodes the cloud-init script for a
-// single node. COMPARTMENT_OCID and SUBNET_OCID are resolved at boot time via
-// the OCI Instance Metadata Service (IMDS) inside cloudinit.sh — they are no
-// longer injected at template-render time.
+// single node. Uses Go template rendering (same as buildCloudInit in
+// cloudinit.go). COMPARTMENT_OCID and SUBNET_OCID are resolved at boot time
+// via the OCI Instance Metadata Service (IMDS) inside cloudinit.sh.
 //
 // If config["ocpusPerNode"] and config["memoryGbPerNode"] are set (homogeneous
 // InstancePool programs), those values take precedence over the per-node
 // distribution logic used by the built-in Go program.
+//
+// Note: for YAML programs, the agent bootstrap is NOT composed here. The engine
+// injects it via post-render YAML transformation (InjectIntoYAML). This
+// function produces only the program-specific cloud-init.
 func templateCloudInit(nodeIndex int, config map[string]string) string {
 	nodeCount, _ := strconv.Atoi(config["nodeCount"])
 	ocpus := templateInstanceOcpus(nodeIndex, nodeCount)
@@ -109,26 +111,7 @@ func templateCloudInit(nodeIndex int, config map[string]string) string {
 		memGb = v
 	}
 
-	replacements := map[string]string{
-		"NOMAD_CLIENT_CPU":       strconv.Itoa(ocpus * 3000),
-		"NOMAD_CLIENT_MEMORY":    strconv.Itoa(memGb*1024 - 512),
-		"NOMAD_BOOTSTRAP_EXPECT": config["nodeCount"],
-		"NOMAD_VERSION":          config["nomadVersion"],
-		"CONSUL_VERSION":         config["consulVersion"],
-	}
-
-	result := cloudInitScript
-	for k, v := range replacements {
-		result = strings.ReplaceAll(result, "@@"+k+"@@", v)
-	}
-	// Gzip before base64: OCI metadata limit is 32 KB total; the uncompressed
-	// script is ~29 KB (~39 KB base64). Gzipped it is ~8.5 KB (~11 KB base64).
-	// cloud-init detects gzip via magic bytes and decompresses transparently.
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	gz.Write([]byte(result))
-	gz.Close()
-	return base64.StdEncoding.EncodeToString(buf.Bytes())
+	return buildCloudInit(ocpus, memGb, nodeCount, config["nomadVersion"], config["consulVersion"], nil, nil, nil)
 }
 
 // templateGroupRef formats a Pulumi OCI IAM policy statement that references

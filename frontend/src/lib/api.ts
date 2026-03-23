@@ -19,7 +19,9 @@ export async function putStack(
   description = '',
   ociAccountId?: string,
   passphraseId?: string,
-  sshKeyId?: string
+  sshKeyId?: string,
+  applications?: Record<string, boolean>,
+  appConfig?: Record<string, string>
 ): Promise<void> {
   const res = await fetch(`/api/stacks/${encodeURIComponent(name)}`, {
     method: 'PUT',
@@ -31,6 +33,8 @@ export async function putStack(
       ociAccountId: ociAccountId ?? null,
       passphraseId: passphraseId ?? null,
       sshKeyId: sshKeyId ?? null,
+      applications,
+      appConfig,
     }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -186,6 +190,60 @@ export function streamOperation(
     cancelled = true;
     controller.abort();
   };
+}
+
+export function streamDeployApps(
+  name: string,
+  onEvent: (event: { type: string; data: string; timestamp: string }) => void,
+  onDone: (status: string) => void
+): () => void {
+  let cancelled = false;
+  const controller = new AbortController();
+
+  (async () => {
+    try {
+      const res = await fetch(`/api/stacks/${encodeURIComponent(name)}/deploy-apps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => 'unknown error');
+        onEvent({ type: 'error', data: text.trim(), timestamp: new Date().toISOString() });
+        onDone('failed');
+        return;
+      }
+      if (!res.body) { onDone('failed'); return; }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (!cancelled) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(line.slice(6));
+              if (event.type === 'done') { onDone(event.data ?? 'succeeded'); return; }
+              onEvent(event);
+            } catch { /* ignore parse errors */ }
+          }
+        }
+      }
+      onDone('succeeded');
+    } catch (err) {
+      if (!cancelled) onDone('failed');
+    }
+  })();
+
+  return () => { cancelled = true; controller.abort(); };
 }
 
 export async function cancelOperation(name: string): Promise<void> {

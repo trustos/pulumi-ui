@@ -172,7 +172,7 @@ For required non-object property rows with an empty value, a `→ config` chip i
 1. Adds a config field for that key (with `oci-shape`, `oci-image`, or `ssh-public-key` ui_type as appropriate for `shape`, `imageId`, `sshPublicKey`)
 2. Sets the property value to `{{ .Config.<key> }}`
 
-Exception: `availabilityDomain` shows a `→ variable` chip instead — clicking it sets the value to `${availabilityDomain}` and shows a tooltip explaining the user must add a `variables:` block in YAML mode with `fn::invoke: oci:identity:getAvailabilityDomains`.
+**Promote to Variable** — For certain well-known keys (e.g. `availabilityDomain`), a `→ variable` chip is shown instead. Clicking it auto-scaffolds the full `fn::invoke` variable definition in the graph's `variables:` and sets the property value to the correct Pulumi interpolation (e.g. `${availabilityDomains[0].name}`). This is driven by `KNOWN_VARIABLE_TEMPLATES` in `ProgramEditor.svelte`. For unknown keys, it sets the value to `${key}` and the user completes the variable definition manually.
 
 ### Object Property Placeholders
 Textarea fields for object-type properties show contextual placeholder text:
@@ -190,6 +190,13 @@ When a resource type loses focus in `ResourceCard.onTypeBlur()`, any required pr
 ### Section Management
 Sections can be renamed via double-click on the label in `SectionNavigator`. The last section cannot be deleted. Deleting a section shows a confirmation. Sections can be added via the `+ Section` button.
 
+### Agent Connect Toggle
+The program editor header contains an **Agent Connect** toggle button (visible in both visual and YAML modes). When enabled:
+- The serializer emits `meta.agentAccess: true` in the YAML `meta:` block.
+- In YAML mode, toggling ON inserts `agentAccess: true` into the existing `meta:` block (or creates one); toggling OFF removes it.
+- An informational banner appears below the mode bar listing all resources that will be auto-injected at deploy time (user_data, NSG rules, NLB backend sets/listeners/backends).
+- The toggle state round-trips correctly between visual and YAML modes.
+
 ### Outputs Panel
 `OutputsPanel.svelte` in the right sidebar (below `ConfigFieldPanel`) allows adding, editing, and removing `outputs: OutputDef[]` entries. Changes are preserved through visual/YAML round-trips.
 
@@ -198,6 +205,8 @@ Before saving in visual mode, `collectVisualErrors()` checks:
 - Every resource has a name and a type.
 - Required properties (from the schema) are all present and non-empty.
 - Loop variables start with `$`.
+- **Undefined variable references**: any `${varName}` in property values is checked against defined variables and resource names. References containing `:` (e.g. `${oci:tenancyOcid}`) are treated as provider config and skipped.
+
 Errors are shown in the validation panel below the mode bar.
 
 ---
@@ -247,9 +256,9 @@ Issues are ordered **P1 → P3** (P1 = must fix before usable; P3 = polish). G1 
 
 `single-instance.ts`, `n-node-cluster.ts`, and `nlb-app.ts` templates omit required OCI instance properties: `subnetId`, `sourceDetails`, and `metadata.ssh_authorized_keys`. All three templates need networking sections (subnet, IGW) and completed instance property sets added.
 
-**P1-3 · No UI for program outputs**
+**P1-3 · No UI for program outputs** ✓ FIXED
 
-`ProgramGraph.outputs` is parsed and serialized correctly but `ProgramEditor.svelte` has no `OutputsPanel`. A user editing in visual mode cannot set outputs. Fix: create `OutputsPanel.svelte` and mount it in the right sidebar below `ConfigFieldPanel`.
+`OutputsPanel.svelte` is implemented in the right sidebar below `ConfigFieldPanel`. Users can add, edit, and remove output entries. Changes are preserved through visual/YAML round-trips.
 
 ### P2 — MVP Quality
 

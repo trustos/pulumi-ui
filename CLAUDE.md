@@ -40,12 +40,15 @@ internal/api/        HTTP handlers (one file per domain)
   import.go          Bulk OCI account import
   export.go          Bulk OCI account export
 
+cmd/agent/           Standalone agent binary (Nebula mesh + management HTTP API)
+
 internal/engine/     Pulumi Automation API wrapper
   engine.go          Up / Destroy / Refresh / Preview / Cancel / Unlock
   stream.go          SSE helpers
 
 internal/programs/   Program registry + program implementations
   registry.go        Global program slice + ConfigField / ProgramMeta types
+  applications.go    ApplicationDef, ApplicationProvider, AgentAccessProvider interfaces, tier/target types
   nomad_cluster.go   Built-in Nomad + Consul cluster (Go program)
   test_vcn.go        Built-in minimal VCN (Go program, for testing)
   yaml_program.go    User-defined YAML program wrapper
@@ -53,7 +56,23 @@ internal/programs/   Program registry + program implementations
   validate.go        6-level YAML program validation pipeline
   template.go        Go template rendering + cloudInit / instanceOcpus helpers
   cloudinit.go       Embeds and renders cloudinit.sh for Go programs
-  cloudinit.sh       Shell script installed on each OCI instance at boot
+  cloudinit.sh       Shell script for program-specific bootstrap (Docker, Consul, Nomad)
+
+internal/agentinject/ Universal agent bootstrap injection (Nebula + pulumi-ui agent)
+  map.go             ComputeResources registry (OCI instance types, extensible)
+  bootstrap.go       Embeds agent_bootstrap.sh, renders @@PLACEHOLDER@@ markers
+  agent_bootstrap.sh Standalone Nebula + agent installer script
+  compose.go         Multipart MIME composition + gzip/base64 helpers
+  yaml.go            InjectIntoYAML — post-render user_data transformation for YAML programs
+  network.go         InjectNetworkingIntoYAML — auto-adds NSG rules + NLB resources for agent port
+  goprog.go          CfgKeyAgentBootstrap constant for Go program injection
+
+internal/applications/ Application catalog deployment orchestration
+  deployer.go        Deploys selected applications via agent after infrastructure is ready
+
+internal/nebula/     Nebula PKI generation (per-stack CA + host certificates)
+  pki.go             Certificate generation using slackhq/nebula library
+  subnet.go          Subnet allocation helpers
 
 internal/db/         SQLite stores (one file per domain)
   db.go              Open + Migrate (runs SQL migration files)
@@ -64,9 +83,10 @@ internal/db/         SQLite stores (one file per domain)
   passphrases.go     Named passphrase store
   ssh_keys.go        SSH key pair store
   custom_programs.go User-defined YAML program persistence
+  stack_connections.go Nebula mesh state per stack (PKI, subnet, lighthouse)
   users.go           User accounts
   sessions.go        Session tokens
-  migrations/        Numbered SQL migration files
+  migrations/        Numbered SQL migration files (001–011)
 
 internal/stacks/     Stack YAML envelope (StackConfig struct)
 internal/auth/       Session middleware
@@ -95,6 +115,8 @@ Browser
                  ├─ DB Stores  (internal/db/*.go)  — persistence
                  └─ Engine  (internal/engine/engine.go)  — Pulumi orchestration
                       ├─ Programs  (internal/programs/)  — what to deploy
+                      ├─ AgentInject (internal/agentinject/) — auto-injects Nebula + agent into compute user_data
+                      ├─ Deployer  (internal/applications/) — post-infra app deployment via agent
                       └─ Pulumi Automation API  — subprocess management
                            └─ OCI Terraform provider v4.3.1
 ```
@@ -130,7 +152,8 @@ os.Setenv("PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING", "true")
 Set in `main.go` and in `getOrCreateYAMLStack`. The OCI v4 provider schema contains
 `ArrayType` / `MapType` objects with nil `ElementType`, causing a nil-pointer SIGSEGV in
 `DisplayTypeWithAdhock` inside pulumi-yaml. Our own Level 6 schema validation covers the
-same concern safely. Do not remove this env var.
+same concern safely. Our own Level 5 (resource structure / schema) and Level 6 (variable
+reference integrity) validations cover the same concerns. Do not remove this env var.
 
 ### Cloud-init — always gzip before base64
 ```go
@@ -142,6 +165,13 @@ return base64.StdEncoding.EncodeToString(buf.Bytes())
 OCI instance metadata has a 32 KB total limit. The uncompressed cloud-init script is ~29 KB
 (~39 KB base64). Gzipped it is ~8.5 KB (~11 KB base64). cloud-init detects gzip via magic
 bytes and decompresses transparently.
+
+When agent bootstrap injection is active (programs implementing `ApplicationProvider` or
+`AgentAccessProvider` with `meta.agentAccess: true`), the engine produces a multipart MIME
+message composing the program's cloud-init with the agent bootstrap script, then gzip+base64
+encodes the combined payload. Programs with `AgentAccessProvider` also get automatic networking
+injection (NSG rules + NLB backend sets for the agent port). The `internal/agentinject`
+package handles this — see `ComposeAndEncode()`, `InjectNetworkingIntoYAML()`.
 
 ### OCI NLB — always serialize port operations
 OCI Network Load Balancer rejects concurrent mutations with `409 Conflict`. All NLB
@@ -217,8 +247,8 @@ Full detail: `docs/roadmap.md`
 | `docs/yaml-programs.md` | YAML program format, template functions, full OCI resource reference |
 | `docs/coding-principles.md` | SOLID principles for this codebase |
 | `docs/visual-editor.md` | Visual editor design, Program Graph model, known bugs + fix plan |
-| `docs/roadmap.md` | Architecture improvement roadmap + cloud-init redesign plan |
-| `docs/application-catalog-architecture.md` | Application catalog, Nebula mesh, agent binary, two-phase deploy pipeline |
+| `docs/roadmap.md` | Architecture improvement roadmap |
+| `docs/application-catalog-architecture.md` | Application catalog, Nebula mesh, agent binary, auto-injection, two-phase deploy |
 
 ---
 
@@ -237,6 +267,10 @@ go run ./cmd/oci-debug -tenancy <ocid> -user <ocid> -fingerprint <fp> -key <pem>
 
 # Build everything
 make build           # or: cd frontend && npm run build && go build ./cmd/server
+
+# Run tests
+make test            # Go unit + integration tests
+make lint            # Svelte-check (warnings threshold)
 ```
 
 Environment variables:

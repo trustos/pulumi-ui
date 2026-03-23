@@ -1,0 +1,155 @@
+package agentinject
+
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
+
+// InjectIntoYAML parses a rendered Pulumi YAML body, walks all resources,
+// detects compute resource types via ComputeResources, and composes their
+// user_data with the agent bootstrap via multipart MIME.
+//
+// Resources that already contain the agent bootstrap marker are skipped.
+// Resources without any existing user_data get the agent bootstrap as their
+// sole user_data. The modified YAML string is returned.
+func InjectIntoYAML(yamlBody string, agentVars AgentVars) (string, error) {
+	agentScript := RenderAgentBootstrap(agentVars)
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(yamlBody), &doc); err != nil {
+		return yamlBody, fmt.Errorf("agentinject: parse YAML: %w", err)
+	}
+
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return yamlBody, nil
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return yamlBody, nil
+	}
+
+	resourcesNode := findMapValue(root, "resources")
+	if resourcesNode == nil || resourcesNode.Kind != yaml.MappingNode {
+		return yamlBody, nil
+	}
+
+	modified := false
+	for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
+		valueNode := resourcesNode.Content[i+1]
+		if valueNode.Kind != yaml.MappingNode {
+			continue
+		}
+
+		typeNode := findMapValue(valueNode, "type")
+		if typeNode == nil {
+			continue
+		}
+
+		udPath, ok := ComputeResources[typeNode.Value]
+		if !ok {
+			continue
+		}
+
+		propsNode := findMapValue(valueNode, "properties")
+		if propsNode == nil || propsNode.Kind != yaml.MappingNode {
+			continue
+		}
+
+		if injectUserData(propsNode, udPath.PropertyPath, agentScript) {
+			modified = true
+		}
+	}
+
+	if !modified {
+		return yamlBody, nil
+	}
+
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return yamlBody, fmt.Errorf("agentinject: marshal YAML: %w", err)
+	}
+	return string(out), nil
+}
+
+// injectUserData navigates a YAML node tree along the given property path
+// and composes or creates the user_data value with the agent bootstrap.
+// Returns true if the YAML was modified.
+func injectUserData(node *yaml.Node, path []string, agentScript []byte) bool {
+	if len(path) == 0 || node == nil {
+		return false
+	}
+
+	current := node
+	// Navigate to the parent of the leaf, creating intermediate maps as needed.
+	for _, key := range path[:len(path)-1] {
+		child := findMapValue(current, key)
+		if child == nil {
+			newMap := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			current.Content = append(current.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Value: key},
+				newMap,
+			)
+			current = newMap
+		} else if child.Kind != yaml.MappingNode {
+			return false
+		} else {
+			current = child
+		}
+	}
+
+	leafKey := path[len(path)-1]
+	existing := findMapValue(current, leafKey)
+
+	if existing != nil && existing.Kind == yaml.ScalarNode {
+		decoded, ok := DecodeUserData(existing.Value)
+		if ok && HasAgentBootstrap(decoded) {
+			return false
+		}
+
+		var programScript []byte
+		if ok {
+			programScript = decoded
+		} else {
+			programScript = []byte(existing.Value)
+		}
+		composed := ComposeAndEncode(programScript, agentScript)
+		existing.Value = composed
+		existing.Style = 0
+		return true
+	}
+
+	// No existing user_data — inject agent bootstrap as the sole value.
+	encoded := GzipBase64(agentScript)
+	setMapValue(current, leafKey, encoded)
+	return true
+}
+
+// findMapValue returns the value node for a key in a YAML mapping node.
+func findMapValue(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(mapping.Content)-1; i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// setMapValue sets or creates a key-value pair in a YAML mapping node.
+func setMapValue(mapping *yaml.Node, key, value string) {
+	for i := 0; i < len(mapping.Content)-1; i += 2 {
+		if mapping.Content[i].Value == key {
+			mapping.Content[i+1].Value = value
+			mapping.Content[i+1].Kind = yaml.ScalarNode
+			mapping.Content[i+1].Style = 0
+			return
+		}
+	}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Value: value},
+	)
+}

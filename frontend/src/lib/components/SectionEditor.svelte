@@ -4,6 +4,7 @@
   import ResourceCatalog from './ResourceCatalog.svelte';
   import LoopBlock from './LoopBlock.svelte';
   import ConditionalBlock from './ConditionalBlock.svelte';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   let {
     section = $bindable<ProgramSection>({
@@ -98,20 +99,27 @@
   <div class="flex items-center justify-between">
     <h3 class="text-sm font-semibold">{section.label || section.id}</h3>
     <div class="flex gap-2">
-      <button
-        class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
-        onclick={addLoop}
-        title="Add a loop block (range)"
-      >+ Loop</button>
-      <button
-        class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
-        onclick={addConditional}
-        title="Add a conditional block (if)"
-      >+ If</button>
-      <button
-        class="text-sm text-muted-foreground hover:text-foreground border rounded px-2 py-1"
-        onclick={() => showCatalog = true}
-      >+ Resource</button>
+      <Tooltip.Root>
+        <Tooltip.Trigger
+          class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+          onclick={addLoop}
+        >+ Loop</Tooltip.Trigger>
+        <Tooltip.Content>Repeat resources for each iteration — use for clusters, per-port NLB rules, etc.</Tooltip.Content>
+      </Tooltip.Root>
+      <Tooltip.Root>
+        <Tooltip.Trigger
+          class="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+          onclick={addConditional}
+        >+ If</Tooltip.Trigger>
+        <Tooltip.Content>Conditionally include resources based on a config value</Tooltip.Content>
+      </Tooltip.Root>
+      <Tooltip.Root>
+        <Tooltip.Trigger
+          class="text-sm text-muted-foreground hover:text-foreground border rounded px-2 py-1"
+          onclick={() => showCatalog = true}
+        >+ Resource</Tooltip.Trigger>
+        <Tooltip.Content>Add an OCI resource from the catalog — required properties are auto-populated</Tooltip.Content>
+      </Tooltip.Root>
     </div>
   </div>
 

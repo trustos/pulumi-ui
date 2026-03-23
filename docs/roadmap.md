@@ -272,84 +272,42 @@ Use `ValidationHint` from Part 0 to drive `onBlur` validators in ConfigForm. Inl
 
 ---
 
-## Cloud-Init Redesign
+## Cloud-Init Redesign ✓ PARTIALLY DONE
 
 ### Current Implementation
 
-The Nomad cluster program embeds `cloudinit.sh` (~29 KB) via `//go:embed`. `buildCloudInit()` substitutes `@@PLACEHOLDER@@` strings, gzip-compresses, and base64-encodes. The `{{ cloudInit nodeIndex $.Config }}` YAML template function does the same but leaves `COMPARTMENT_OCID` and `SUBNET_OCID` empty (not available at template render time — only Go programs can use `pulumi.All(...).ApplyT(...)` to fill runtime values).
+The Nomad cluster program embeds `cloudinit.sh` via `//go:embed`. `buildCloudInit()` renders it as a Go template with `CloudInitData` (containing `Vars` and `Apps` maps), gzip-compresses, and base64-encodes. The `{{ cloudInit nodeIndex $.Config }}` YAML template function does the same but leaves `COMPARTMENT_OCID` and `SUBNET_OCID` empty (not available at template render time — only Go programs can use `pulumi.All(...).ApplyT(...)` to fill runtime values).
 
-**Problem — functional gaps:**
-1. No custom cloud-init for YAML programs. Users cannot provide a boot script without hardcoding base64.
-2. `{{ cloudInit }}` is tightly coupled to Nomad — any non-Nomad program calling it gets Nomad installed.
-3. No visual editor support — there is no way to declare a cloud-init config field from the ConfigFieldPanel.
+`cloudinit.sh` uses conditional blocks (`{{ if .Apps.KEY }}`) for each application (Docker, Consul, Nomad). Nebula mesh and the pulumi-ui agent are **not** in `cloudinit.sh` — they are automatically injected by the engine via `internal/agentinject/` using multipart MIME composition (see below).
 
-### Proposed Design
+### What's been implemented
 
-**Backend — new `internal/cloudinit/` package:**
+**Agent bootstrap auto-injection (`internal/agentinject/`):**
 
-```go
-// renderer.go
-type Renderer interface {
-    Render(script string, vars map[string]string) (base64gzip string, err error)
-}
-// DefaultRenderer: substitute @@KEY@@ → gzip → base64
+Programs implementing `ApplicationProvider` or `AgentAccessProvider` (with `AgentAccess() == true`) automatically get Nebula mesh + pulumi-ui agent injected into every compute resource's `user_data`:
 
-// nomad.go
-func NomadVars(ocpus, memGb, nodeCount int, compartmentID, subnetID, nomadVersion, consulVersion string) map[string]string
-func NomadScript() string  // returns embedded nomad.sh
+- **`map.go`** — `ComputeResources` registry mapping Pulumi resource type tokens (e.g. `oci:Core/instance:Instance`) to their `user_data` property paths. Extensible for AWS, GCP, etc.
+- **`agent_bootstrap.sh`** — standalone Nebula + agent installer with `@@PLACEHOLDER@@` markers.
+- **`bootstrap.go`** — embeds the script and renders placeholders with `AgentVars`.
+- **`compose.go`** — multipart MIME composition (`ComposeAndEncode`), gzip/base64 helpers (`GzipBase64`).
+- **`yaml.go`** — `InjectIntoYAML()` post-render YAML transformation: walks resources, detects compute types, composes `user_data` with agent bootstrap.
+- **`network.go`** — `InjectNetworkingIntoYAML()` post-render YAML transformation: detects existing NSG and NLB resources, auto-adds NSG security rules (UDP 41820) and NLB backend set/listener/backends for agent connectivity. Uses `__agent_` prefix to avoid naming collisions.
+- **`goprog.go`** — `CfgKeyAgentBootstrap` constant. Go programs receive the rendered agent script via cfg map and pass it to `buildCloudInit()`.
 
-// user.go
-func ValidateUserScript(script string) error  // checks shebang/cloud-config prefix
-```
+**Injection gating:**
+- `ApplicationProvider` — full application catalog programs (Go built-ins). Agent bootstrap injected; networking is managed by the program itself.
+- `AgentAccessProvider` (YAML `meta.agentAccess: true`) — agent bootstrap injected AND networking resources auto-added. Programs without either interface are unaffected.
 
-Move `internal/programs/cloudinit.sh` → `internal/cloudinit/nomad.sh`. Update embed path.
+**Go template rendering in `cloudinit.sh`:**
 
-**New template function `{{ userInit .Config.cloudInitScript }}`:**
+The old `@@PLACEHOLDER@@` string substitution was replaced with Go `text/template` rendering. `CloudInitData` provides `Vars` (runtime variables) and `Apps` (per-app conditionals). Each application section is wrapped in `{{ if .Apps.KEY }}` blocks.
 
-```go
-// Encodes a user-provided cloud-init script from a config field.
-// Returns base64-gzip or empty string if blank.
-func templateUserInit(script string) string
-```
+### Remaining work
 
-Usage in a YAML program:
-```yaml
-config:
-  cloudInitScript:
-    type: string
-    default: "#!/bin/bash\nset -e\napt-get update"
+**User-provided cloud-init scripts:** Users still cannot provide a custom boot script for YAML programs without hardcoding base64. A `{{ userInit .Config.cloudInitScript }}` template function would address this. The `cloudinit` config field type for the visual editor is also pending.
 
-resources:
-  my-instance:
-    type: oci:Core/instance:Instance
-    properties:
-      metadata:
-        ssh_authorized_keys: "{{ .Config.sshPublicKey }}"
-        user_data: "{{ userInit .Config.cloudInitScript }}"
-```
-
-**Frontend — `cloudinit` config field type:**
-
-Add `'cloudinit'` to `ConfigFieldDef.type`. In `ConfigFieldPanel.svelte`, render a textarea for the default value. In `serializer.ts`, emit as `type: string` with a YAML literal block scalar for multi-line defaults. In `parser.ts`, detect `cloudinit` by convention (keys matching `/cloudInit|userData/`).
-
-**Limitations that remain after this redesign:**
+**Limitations:**
 - `{{ cloudInit }}` and `{{ userInit }}` run at template render time, before Pulumi provisions resources. They cannot reference `${resource.id}` outputs. If the boot script needs a compartment or subnet OCID, use a built-in Go program where `pulumi.All(...).ApplyT(...)` is available.
-- Only single-part scripts (`#!/bin/bash` or `#cloud-config`) are supported. MIME multipart cloud-init is not.
-
-### Implementation Order
-
-```
-Step 1  Create internal/cloudinit/ package (renderer.go, nomad.go, user.go)
-        Move programs/cloudinit.sh → cloudinit/nomad.sh
-Step 2  Update programs/cloudinit.go (thin adapter)
-        Update programs/template.go (templateCloudInit delegates; add templateUserInit)
-Step 3  Add ValidateUserScript check to programs.go validate handler
-Step 4  Add 'cloudinit' to ConfigFieldDef type union
-        Update ConfigFieldPanel.svelte (textarea, new type option)
-        Update serializer.ts (literal block scalar for cloudinit)
-        Update parser.ts (convention-based cloudinit detection)
-Step 5  Test end-to-end
-```
 
 ---
 
@@ -367,7 +325,7 @@ Step 5  Test end-to-end
 | 8 | BE-4 — Handler decomposition | Large | BE-3 | pending |
 | 9 | BE-5 — Thread-safe registry | Medium | — | **done** |
 | 10 | FE-4 — Client-side validation | Medium | Part 0 | pending |
-| 11 | Cloud-init redesign | Medium | — | pending |
+| 11 | Cloud-init redesign | Medium | — | **partial** (agent injection done, user scripts pending) |
 
 See `docs/visual-editor.md` for the visual program editor fix plan (G1 + P1/P2/P3 bugs).
 
