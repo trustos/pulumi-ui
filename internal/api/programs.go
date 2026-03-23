@@ -14,7 +14,7 @@ import (
 // ListPrograms returns all programs (built-in + custom) without YAML bodies.
 func (h *Handler) ListPrograms(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(programs.List())
+	json.NewEncoder(w).Encode(h.Registry.List())
 }
 
 // GetProgram returns a single program. For custom programs the full YAML body
@@ -32,7 +32,7 @@ func (h *Handler) GetProgram(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fall back to built-in programs (no YAML body).
-	prog, ok := programs.Get(name)
+	prog, ok := h.Registry.Get(name)
 	if !ok {
 		http.Error(w, "program not found", http.StatusNotFound)
 		return
@@ -93,7 +93,7 @@ func (h *Handler) CreateProgram(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(errs)
 		return
 	}
-	if _, ok := programs.Get(req.Name); ok {
+	if _, ok := h.Registry.Get(req.Name); ok {
 		http.Error(w, "a program with that name already exists", http.StatusConflict)
 		return
 	}
@@ -110,7 +110,7 @@ func (h *Handler) CreateProgram(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Register in memory so it's available immediately without restart.
-	programs.RegisterYAML(req.Name, req.DisplayName, req.Description, req.ProgramYAML)
+	programs.RegisterYAML(h.Registry, req.Name, req.DisplayName, req.Description, req.ProgramYAML)
 	log.Printf("[programs] registered custom program %q", req.Name)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -129,7 +129,7 @@ func (h *Handler) UpdateProgram(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Block updates to built-in programs.
-	if prog, ok := programs.Get(name); ok {
+	if prog, ok := h.Registry.Get(name); ok {
 		if _, isYAML := prog.(programs.YAMLProgramProvider); !isYAML {
 			http.Error(w, "built-in programs cannot be modified", http.StatusMethodNotAllowed)
 			return
@@ -169,8 +169,8 @@ func (h *Handler) UpdateProgram(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Re-register with updated body (replaces old entry).
-	programs.Deregister(name)
-	programs.RegisterYAML(name, displayName, req.Description, req.ProgramYAML)
+	h.Registry.Deregister(name)
+	programs.RegisterYAML(h.Registry, name, displayName, req.Description, req.ProgramYAML)
 	log.Printf("[programs] updated custom program %q", name)
 
 	updated, _ := h.CustomPrograms.Get(name)
@@ -181,7 +181,7 @@ func (h *Handler) UpdateProgram(w http.ResponseWriter, r *http.Request) {
 // ForkProgram generates a starter YAML from a built-in program's config fields.
 func (h *Handler) ForkProgram(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	prog, ok := programs.Get(name)
+	prog, ok := h.Registry.Get(name)
 	if !ok {
 		http.Error(w, "program not found", http.StatusNotFound)
 		return
@@ -230,7 +230,7 @@ func (h *Handler) DeleteProgram(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Block deletes of built-in programs.
-	if prog, ok := programs.Get(name); ok {
+	if prog, ok := h.Registry.Get(name); ok {
 		if _, isYAML := prog.(programs.YAMLProgramProvider); !isYAML {
 			http.Error(w, "built-in programs cannot be deleted", http.StatusMethodNotAllowed)
 			return
@@ -254,7 +254,7 @@ func (h *Handler) DeleteProgram(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "program not found", http.StatusNotFound)
 		return
 	}
-	programs.Deregister(name)
+	h.Registry.Deregister(name)
 	log.Printf("[programs] deleted custom program %q", name)
 
 	w.WriteHeader(http.StatusNoContent)

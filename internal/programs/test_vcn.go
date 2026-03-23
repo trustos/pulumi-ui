@@ -10,8 +10,6 @@ import (
 
 type TestVcnProgram struct{}
 
-func init() { Register(&TestVcnProgram{}) }
-
 func (p *TestVcnProgram) Name() string       { return "test-vcn" }
 func (p *TestVcnProgram) DisplayName() string { return "Test VCN" }
 func (p *TestVcnProgram) Description() string {

@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
-	"github.com/trustos/pulumi-ui/internal/programs"
 	"github.com/trustos/pulumi-ui/internal/stacks"
 )
 
@@ -124,7 +123,7 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "program is required", http.StatusBadRequest)
 		return
 	}
-	if _, ok := programs.Get(body.Program); !ok {
+	if _, ok := h.Registry.Get(body.Program); !ok {
 		http.Error(w, "unknown program: "+body.Program, http.StatusBadRequest)
 		return
 	}

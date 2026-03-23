@@ -12,6 +12,7 @@
   import ProgramEditor from './pages/ProgramEditor.svelte';
   import Login from '$lib/pages/Login.svelte';
   import Register from '$lib/pages/Register.svelte';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   let path = $derived($router);
   let user = $derived($currentUser);
@@ -79,6 +80,7 @@
   });
 </script>
 
+<Tooltip.Provider>
 {#if initializing}
   <div class="min-h-screen flex items-center justify-center">
     <p class="text-muted-foreground text-sm">Loading...</p>
@@ -115,3 +117,4 @@
     </main>
   </div>
 {/if}
+</Tooltip.Provider>

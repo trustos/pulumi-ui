@@ -6,25 +6,24 @@
 
   let { stack }: { stack: StackSummary } = $props();
 
-  function statusColor(status: string): string {
-    if (status === 'succeeded') return 'bg-green-500';
-    if (status === 'failed') return 'bg-red-500';
-    if (status === 'not deployed') return 'bg-gray-300';
-    return 'bg-yellow-400'; // running / cancelled / other
+  function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+    if (status === 'succeeded') return 'default';
+    if (status === 'failed') return 'destructive';
+    return 'secondary';
   }
 
   function statusLabel(status: string): string {
     if (status === 'not deployed') return 'Not deployed';
-    if (status === 'succeeded') return 'Succeeded';
-    if (status === 'failed') return 'Failed';
-    if (status === 'running') return 'Running';
-    if (status === 'cancelled') return 'Cancelled';
-    return status;
+    return status.charAt(0).toUpperCase() + status.slice(1);
   }
 
-  function formatDate(date: string | null): string {
+  function timeAgo(date: string | null): string {
     if (!date) return 'Never';
-    return new Date(date).toLocaleString();
+    const seconds = Math.floor((Date.now() - new Date(date).getTime()) / 1000);
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return `${Math.floor(seconds / 86400)}d ago`;
   }
 </script>
 
@@ -36,17 +35,17 @@
     <Card.Header class="pb-2">
       <div class="flex items-center justify-between">
         <Card.Title class="text-base">{stack.name}</Card.Title>
-        <div class="flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full {statusColor(stack.status)}"></span>
-          <Badge variant="secondary">{stack.program}</Badge>
-        </div>
+        <Badge variant="secondary">{stack.program}</Badge>
       </div>
     </Card.Header>
     <Card.Content>
-      <div class="text-sm text-muted-foreground space-y-1">
-        <div>Resources: {stack.resourceCount}</div>
-        <div>Last operation: {formatDate(stack.lastOperation)}</div>
-        <div>Status: {statusLabel(stack.status)}</div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <Badge variant={statusVariant(stack.status)} class={stack.status === 'succeeded' ? 'bg-green-600 text-white border-green-600' : ''}>
+          {statusLabel(stack.status)}
+        </Badge>
+        <span class="text-sm text-muted-foreground">
+          · Updated {timeAgo(stack.lastOperation)}
+        </span>
       </div>
     </Card.Content>
   </Card.Root>

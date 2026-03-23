@@ -10,6 +10,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
 	"github.com/trustos/pulumi-ui/internal/oci"
+	"github.com/trustos/pulumi-ui/internal/programs"
 )
 
 // Handler holds all dependencies wired in main.go.
@@ -25,6 +26,7 @@ type Handler struct {
 	SSHKeys        *db.SSHKeyStore
 	CustomPrograms *db.CustomProgramStore
 	Engine         *engine.Engine
+	Registry       *programs.ProgramRegistry
 }
 
 func NewHandler(
@@ -39,6 +41,7 @@ func NewHandler(
 	sshKeys *db.SSHKeyStore,
 	customPrograms *db.CustomProgramStore,
 	eng *engine.Engine,
+	registry *programs.ProgramRegistry,
 ) *Handler {
 	return &Handler{
 		DB:             sqlDB,
@@ -52,6 +55,7 @@ func NewHandler(
 		SSHKeys:        sshKeys,
 		CustomPrograms: customPrograms,
 		Engine:         eng,
+		Registry:       registry,
 	}
 }
 

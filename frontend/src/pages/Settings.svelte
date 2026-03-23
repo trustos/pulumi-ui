@@ -4,6 +4,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
+  import * as Tooltip from '$lib/components/ui/tooltip';
   import { navigate } from '$lib/router';
   import { getHealth, listPassphrases, createPassphrase, deletePassphrase, renamePassphrase } from '$lib/api';
   import type { Passphrase } from '$lib/types';
@@ -168,14 +169,24 @@
                         onclick={() => startRename(p)}
                       >Rename</button>
                     {/if}
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      class="h-7 px-2 text-xs"
-                      disabled={p.stackCount > 0}
-                      title={p.stackCount > 0 ? 'Remove all associated stacks first' : undefined}
-                      onclick={() => handleDelete(p.id)}
-                    >Delete</Button>
+                    <Tooltip.Root>
+                      <Tooltip.Trigger>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          class="h-7 px-2 text-xs"
+                          disabled={p.stackCount > 0}
+                          onclick={() => handleDelete(p.id)}
+                        >Delete</Button>
+                      </Tooltip.Trigger>
+                      <Tooltip.Content>
+                        {#if p.stackCount > 0}
+                          Cannot delete — remove all {p.stackCount} associated stack{p.stackCount !== 1 ? 's' : ''} first
+                        {:else}
+                          Permanently delete this passphrase
+                        {/if}
+                      </Tooltip.Content>
+                    </Tooltip.Root>
                   </div>
                 </div>
               {/each}
@@ -264,7 +275,10 @@
             <div class="space-y-3">
               <div class="flex items-center justify-between p-3 border rounded">
                 <div>
-                  <p class="font-medium text-sm">Encryption Key</p>
+                  <Tooltip.Root>
+                    <Tooltip.Trigger class="font-medium text-sm cursor-default">Encryption Key</Tooltip.Trigger>
+                    <Tooltip.Content>AES-256 key used to encrypt credentials and secrets at rest</Tooltip.Content>
+                  </Tooltip.Root>
                   {#if health.encryptionKey.info}
                     <p class="text-xs text-muted-foreground">{health.encryptionKey.info}</p>
                   {/if}
@@ -275,7 +289,10 @@
               </div>
               <div class="flex items-center justify-between p-3 border rounded">
                 <div>
-                  <p class="font-medium text-sm">Database</p>
+                  <Tooltip.Root>
+                    <Tooltip.Trigger class="font-medium text-sm cursor-default">Database</Tooltip.Trigger>
+                    <Tooltip.Content>SQLite database storing accounts, stacks, and operation history</Tooltip.Content>
+                  </Tooltip.Root>
                   {#if health.db.error}
                     <p class="text-xs text-destructive">{health.db.error}</p>
                   {/if}
@@ -286,7 +303,10 @@
               </div>
               <div class="flex items-center justify-between p-3 border rounded">
                 <div>
-                  <p class="font-medium text-sm">OCI Accounts</p>
+                  <Tooltip.Root>
+                    <Tooltip.Trigger class="font-medium text-sm cursor-default">OCI Accounts</Tooltip.Trigger>
+                    <Tooltip.Content>Oracle Cloud credentials for provisioning infrastructure</Tooltip.Content>
+                  </Tooltip.Root>
                   {#if health.oci.info}
                     <p class="text-xs text-muted-foreground">{health.oci.info}</p>
                   {/if}
@@ -308,7 +328,10 @@
               </div>
               <div class="flex items-center justify-between p-3 border rounded">
                 <div>
-                  <p class="font-medium text-sm">Pulumi State Backend</p>
+                  <Tooltip.Root>
+                    <Tooltip.Trigger class="font-medium text-sm cursor-default">Pulumi State Backend</Tooltip.Trigger>
+                    <Tooltip.Content>Where Pulumi stores resource state and deployment history</Tooltip.Content>
+                  </Tooltip.Root>
                   {#if health.backend.info}
                     <p class="text-xs text-muted-foreground">{health.backend.info}</p>
                   {/if}
@@ -322,7 +345,10 @@
               </div>
               <div class="flex items-center justify-between p-3 border rounded">
                 <div>
-                  <p class="font-medium text-sm">Passphrases</p>
+                  <Tooltip.Root>
+                    <Tooltip.Trigger class="font-medium text-sm cursor-default">Passphrases</Tooltip.Trigger>
+                    <Tooltip.Content>Named passphrases that encrypt Pulumi state for each stack</Tooltip.Content>
+                  </Tooltip.Root>
                   {#if !health.passphrase?.ok}
                     <p class="text-xs text-destructive">
                       {health.passphrase?.error ?? 'Create a passphrase in the Passphrases tab above'}

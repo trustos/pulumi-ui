@@ -5,7 +5,9 @@
   import { Input } from '$lib/components/ui/input';
   import { Textarea } from '$lib/components/ui/textarea';
   import { Badge } from '$lib/components/ui/badge';
+  import { Alert, AlertDescription } from '$lib/components/ui/alert';
   import * as Dialog from '$lib/components/ui/dialog';
+  import * as Tooltip from '$lib/components/ui/tooltip';
   import OciImportDialog from '$lib/components/OciImportDialog.svelte';
 
   let accounts = $state<OciAccount[]>([]);
@@ -35,6 +37,8 @@
   let verifyErrors = $state<Record<string, string>>({});
   let expandedErrors = $state<Record<string, boolean>>({});
   let deleteErrors = $state<Record<string, string>>({});
+  let deleteConfirmOpen = $state(false);
+  let deleteTargetId = $state('');
 
   async function load() {
     loading = true;
@@ -166,8 +170,14 @@
   }
 
   // ── Delete ───────────────────────────────────────────────────────────────────
-  async function handleDelete(id: string) {
-    if (!confirm('Delete this OCI account?')) return;
+  function confirmDeleteAccount(id: string) {
+    deleteTargetId = id;
+    deleteConfirmOpen = true;
+  }
+
+  async function doDeleteAccount() {
+    const id = deleteTargetId;
+    deleteConfirmOpen = false;
     const { [id]: _, ...rest } = deleteErrors;
     deleteErrors = rest;
     try {
@@ -196,20 +206,32 @@
       <p class="text-sm text-muted-foreground">Manage Oracle Cloud credentials for provisioning</p>
     </div>
     <div class="flex items-center gap-2">
-      <a
-        href={exportAccountsUrl()}
-        download
-        class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
-      >
-        Export config
-      </a>
-      <Button variant="outline" onclick={() => { importDialogOpen = true; }}>Import from config</Button>
+      <Tooltip.Root>
+        <Tooltip.Trigger>
+          <a
+            href={exportAccountsUrl()}
+            download
+            class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
+          >
+            Export config
+          </a>
+        </Tooltip.Trigger>
+        <Tooltip.Content>Download all accounts as an OCI-compatible config ZIP</Tooltip.Content>
+      </Tooltip.Root>
+      <Tooltip.Root>
+        <Tooltip.Trigger>
+          <Button variant="outline" onclick={() => { importDialogOpen = true; }}>Import from config</Button>
+        </Tooltip.Trigger>
+        <Tooltip.Content>Import accounts from an OCI config file or ZIP</Tooltip.Content>
+      </Tooltip.Root>
       <Button onclick={openAdd}>Add Account</Button>
     </div>
   </div>
 
   {#if error}
-    <div class="p-3 bg-destructive/10 text-destructive text-sm rounded">{error}</div>
+    <Alert variant="destructive">
+      <AlertDescription>{error}</AlertDescription>
+    </Alert>
   {/if}
 
   {#if loading}
@@ -260,11 +282,16 @@
             {/if}
           </div>
           <div class="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={verifying === account.id} onclick={() => handleVerify(account.id)}>
-              {verifying === account.id ? 'Testing...' : 'Test credentials'}
-            </Button>
+            <Tooltip.Root>
+              <Tooltip.Trigger>
+                <Button variant="outline" size="sm" disabled={verifying === account.id} onclick={() => handleVerify(account.id)}>
+                  {verifying === account.id ? 'Testing...' : 'Test credentials'}
+                </Button>
+              </Tooltip.Trigger>
+              <Tooltip.Content>Verify these credentials can authenticate with OCI</Tooltip.Content>
+            </Tooltip.Root>
             <Button variant="outline" size="sm" onclick={() => openEdit(account)}>Edit</Button>
-            <Button variant="ghost" size="sm" class="text-destructive" onclick={() => handleDelete(account.id)}>Delete</Button>
+            <Button variant="ghost" size="sm" class="text-destructive" onclick={() => confirmDeleteAccount(account.id)}>Delete</Button>
           </div>
         </div>
       {/each}
@@ -304,9 +331,14 @@
       <div class="space-y-1">
         <div class="flex items-center justify-between">
           <span class="text-sm font-medium">API Key</span>
-          <Button type="button" variant="outline" size="sm" disabled={addGenerating} onclick={handleAddGenerate}>
-            {addGenerating ? 'Generating...' : 'Generate new key pair'}
-          </Button>
+          <Tooltip.Root>
+            <Tooltip.Trigger>
+              <Button type="button" variant="outline" size="sm" disabled={addGenerating} onclick={handleAddGenerate}>
+                {addGenerating ? 'Generating...' : 'Generate new key pair'}
+              </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content>Generate a new RSA key pair — you'll need to upload the public key to OCI</Tooltip.Content>
+          </Tooltip.Root>
         </div>
         <p class="text-xs text-muted-foreground">Only use this if you want to create brand-new OCI API keys. You must then upload the generated public key to OCI Console → Identity → API Keys. If you already have keys, paste them directly below.</p>
       </div>
@@ -407,3 +439,19 @@
 </Dialog.Root>
 
 <OciImportDialog bind:open={importDialogOpen} onImported={load} />
+
+<!-- Delete account confirmation -->
+<Dialog.Root bind:open={deleteConfirmOpen}>
+  <Dialog.Content class="max-w-sm">
+    <Dialog.Header>
+      <Dialog.Title>Delete account</Dialog.Title>
+      <Dialog.Description>
+        Are you sure you want to delete this OCI account? Stacks using it will lose their credential link.
+      </Dialog.Description>
+    </Dialog.Header>
+    <Dialog.Footer>
+      <Button variant="outline" onclick={() => { deleteConfirmOpen = false; }}>Cancel</Button>
+      <Button variant="destructive" onclick={doDeleteAccount}>Delete</Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>

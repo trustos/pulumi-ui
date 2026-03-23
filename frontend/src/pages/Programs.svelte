@@ -8,6 +8,7 @@
   import { Textarea } from '$lib/components/ui/textarea';
   import * as Card from '$lib/components/ui/card';
   import * as Dialog from '$lib/components/ui/dialog';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   let programs = $state<ProgramMeta[]>([]);
   let loading = $state(true);
@@ -283,9 +284,19 @@ outputs:
                 <p class="text-xs text-muted-foreground font-mono mt-0.5">{prog.name}</p>
               </div>
               {#if !prog.isCustom}
-                <span class="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full shrink-0">Built-in</span>
+                <Tooltip.Root>
+                  <Tooltip.Trigger>
+                    <span class="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full shrink-0">Built-in</span>
+                  </Tooltip.Trigger>
+                  <Tooltip.Content>Shipped with the application — read-only, can be forked</Tooltip.Content>
+                </Tooltip.Root>
               {:else}
-                <span class="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full shrink-0">Custom</span>
+                <Tooltip.Root>
+                  <Tooltip.Trigger>
+                    <span class="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full shrink-0">Custom</span>
+                  </Tooltip.Trigger>
+                  <Tooltip.Content>User-defined YAML program — fully editable</Tooltip.Content>
+                </Tooltip.Root>
               {/if}
             </div>
           </Card.Header>
@@ -299,13 +310,23 @@ outputs:
               </p>
               {#if prog.isCustom}
                 {#if cardValidation[prog.name] === 'valid'}
-                  <span class="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
-                    <span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span>Valid
-                  </span>
+                  <Tooltip.Root>
+                    <Tooltip.Trigger>
+                      <span class="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                        <span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span>Valid
+                      </span>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>YAML passed all validation checks</Tooltip.Content>
+                  </Tooltip.Root>
                 {:else if cardValidation[prog.name] === 'invalid'}
-                  <span class="flex items-center gap-1 text-xs text-destructive">
-                    <span class="w-1.5 h-1.5 rounded-full bg-destructive inline-block"></span>Has errors
-                  </span>
+                  <Tooltip.Root>
+                    <Tooltip.Trigger>
+                      <span class="flex items-center gap-1 text-xs text-destructive">
+                        <span class="w-1.5 h-1.5 rounded-full bg-destructive inline-block"></span>Has errors
+                      </span>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>YAML has validation errors — edit to see details</Tooltip.Content>
+                  </Tooltip.Root>
                 {:else if cardValidation[prog.name] === 'pending'}
                   <span class="flex items-center gap-1 text-xs text-muted-foreground">
                     <span class="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 inline-block animate-pulse"></span>Checking
@@ -323,7 +344,12 @@ outputs:
             </Card.Footer>
           {:else}
             <Card.Footer class="pt-0 gap-2">
-              <Button variant="outline" size="sm" onclick={() => navigate(`/programs/${prog.name}/fork`)}>Fork</Button>
+              <Tooltip.Root>
+                <Tooltip.Trigger>
+                  <Button variant="outline" size="sm" onclick={() => navigate(`/programs/${prog.name}/fork`)}>Fork</Button>
+                </Tooltip.Trigger>
+                <Tooltip.Content>Create an editable copy of this built-in program</Tooltip.Content>
+              </Tooltip.Root>
             </Card.Footer>
           {/if}
         </Card.Root>

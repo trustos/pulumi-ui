@@ -44,12 +44,11 @@ func (p *YAMLProgram) YAMLBody() string { return p.yamlBody }
 // Run returns nil — this signals the engine to use the YAML execution path.
 func (p *YAMLProgram) Run(_ map[string]string) pulumi.RunFunc { return nil }
 
-// RegisterYAML creates a YAMLProgram from a db.CustomProgram row and adds it
-// to the global registry. Errors are silently ignored (bad YAML is logged at
-// startup but doesn't prevent other programs from loading).
-func RegisterYAML(name, displayName, description, yamlBody string) {
+// RegisterYAML creates a YAMLProgram and adds it to r. Errors in YAML parsing
+// are silently ignored so a single bad program doesn't block the others.
+func RegisterYAML(r *ProgramRegistry, name, displayName, description, yamlBody string) {
 	p, _ := NewYAMLProgram(name, displayName, description, yamlBody)
-	Register(p)
+	r.Register(p)
 }
 
 // YAMLProgramProvider is a capability interface the engine checks via type

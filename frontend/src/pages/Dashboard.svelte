@@ -1,5 +1,7 @@
 <script lang="ts">
   import { Button } from '$lib/components/ui/button';
+  import { Alert, AlertDescription } from '$lib/components/ui/alert';
+  import * as Tooltip from '$lib/components/ui/tooltip';
   import StackCard from '$lib/components/StackCard.svelte';
   import NewStackDialog from '$lib/components/NewStackDialog.svelte';
   import { listStacks, listPrograms, listAccounts, listPassphrases, listSSHKeys } from '$lib/api';
@@ -53,22 +55,35 @@
       <h1 class="text-2xl font-bold">Stacks</h1>
       <p class="text-muted-foreground text-sm">Manage your Pulumi infrastructure stacks</p>
     </div>
-    <Button onclick={openNewStack} disabled={loadingPrograms || !hasAccounts} title={!hasAccounts ? 'Add an OCI account first' : undefined}>
-      {loadingPrograms ? 'Loading...' : 'New Stack'}
-    </Button>
+    <Tooltip.Root>
+      <Tooltip.Trigger>
+        <Button onclick={openNewStack} disabled={loadingPrograms || !hasAccounts}>
+          {loadingPrograms ? 'Loading...' : 'New Stack'}
+        </Button>
+      </Tooltip.Trigger>
+      <Tooltip.Content>
+        {#if !hasAccounts}
+          Add an OCI account before creating a stack
+        {:else}
+          Create a new infrastructure stack from a program template
+        {/if}
+      </Tooltip.Content>
+    </Tooltip.Root>
   </div>
 
   {#if !loadingAccounts && accounts.length === 0}
-    <div class="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30 p-4 text-sm mb-6 flex items-center justify-between">
-      <span class="text-amber-800 dark:text-amber-200">No OCI accounts configured. You need at least one account to provision infrastructure.</span>
-      <Button variant="outline" size="sm" onclick={() => navigate('/accounts')}>Add Account</Button>
-    </div>
+    <Alert class="mb-6">
+      <AlertDescription class="flex items-center justify-between gap-3">
+        <span>No OCI accounts configured. You need at least one account to provision infrastructure.</span>
+        <Button variant="outline" size="sm" onclick={() => navigate('/accounts')}>Add Account</Button>
+      </AlertDescription>
+    </Alert>
   {/if}
 
   {#if error}
-    <div class="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive mb-4">
-      Error loading stacks: {error}
-    </div>
+    <Alert variant="destructive" class="mb-4">
+      <AlertDescription>Error loading stacks: {error}</AlertDescription>
+    </Alert>
   {/if}
 
   {#if loading}

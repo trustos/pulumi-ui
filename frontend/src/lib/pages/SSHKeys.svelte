@@ -6,11 +6,15 @@
   import { Textarea } from '$lib/components/ui/textarea';
   import * as Dialog from '$lib/components/ui/dialog';
   import { Badge } from '$lib/components/ui/badge';
+  import { Alert, AlertDescription } from '$lib/components/ui/alert';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   let keys = $state<SshKey[]>([]);
   let loading = $state(true);
   let error = $state('');
   let deleteErrors = $state<Record<string, string>>({});
+  let deleteConfirmOpen = $state(false);
+  let deleteTargetId = $state('');
 
   // ── Add dialog ──────────────────────────────────────────────────────────────
   let addDialogOpen = $state(false);
@@ -79,8 +83,14 @@
     generatedKey = null;
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm('Delete this SSH key?')) return;
+  function confirmDeleteKey(id: string) {
+    deleteTargetId = id;
+    deleteConfirmOpen = true;
+  }
+
+  async function doDeleteKey() {
+    const id = deleteTargetId;
+    deleteConfirmOpen = false;
     const { [id]: _, ...rest } = deleteErrors;
     deleteErrors = rest;
     try {
@@ -110,7 +120,9 @@
   </div>
 
   {#if error}
-    <div class="p-3 bg-destructive/10 text-destructive text-sm rounded">{error}</div>
+    <Alert variant="destructive">
+      <AlertDescription>{error}</AlertDescription>
+    </Alert>
   {/if}
 
   {#if loading}
@@ -129,9 +141,19 @@
             <div class="flex items-center gap-2">
               <span class="font-medium">{key.name}</span>
               {#if key.hasPrivateKey}
-                <Badge variant="secondary">Private key stored</Badge>
+                <Tooltip.Root>
+                  <Tooltip.Trigger>
+                    <Badge variant="secondary">Private key stored</Badge>
+                  </Tooltip.Trigger>
+                  <Tooltip.Content>Both public and private keys are stored (encrypted) — private key is available for download</Tooltip.Content>
+                </Tooltip.Root>
               {:else}
-                <Badge variant="outline">Public key only</Badge>
+                <Tooltip.Root>
+                  <Tooltip.Trigger>
+                    <Badge variant="outline">Public key only</Badge>
+                  </Tooltip.Trigger>
+                  <Tooltip.Content>Only the public key is stored — private key must be managed externally</Tooltip.Content>
+                </Tooltip.Root>
               {/if}
               {#if key.stackCount > 0}
                 <span class="text-xs text-muted-foreground">{key.stackCount} stack{key.stackCount !== 1 ? 's' : ''}</span>
@@ -144,17 +166,27 @@
             {/if}
           </div>
           <div class="flex items-center gap-2 shrink-0">
-            <Button variant="outline" size="sm" onclick={() => copy(key.publicKey)}>Copy public key</Button>
+            <Tooltip.Root>
+              <Tooltip.Trigger>
+                <Button variant="outline" size="sm" onclick={() => copy(key.publicKey)}>Copy public key</Button>
+              </Tooltip.Trigger>
+              <Tooltip.Content>Copy the public key to clipboard for use in authorized_keys</Tooltip.Content>
+            </Tooltip.Root>
             {#if key.hasPrivateKey}
-              <a
-                href={downloadSSHPrivateKeyUrl(key.id)}
-                download
-                class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-3"
-              >
-                Download private key
-              </a>
+              <Tooltip.Root>
+                <Tooltip.Trigger>
+                  <a
+                    href={downloadSSHPrivateKeyUrl(key.id)}
+                    download
+                    class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-3"
+                  >
+                    Download private key
+                  </a>
+                </Tooltip.Trigger>
+                <Tooltip.Content>Download the decrypted PEM private key file</Tooltip.Content>
+              </Tooltip.Root>
             {/if}
-            <Button variant="ghost" size="sm" class="text-destructive" onclick={() => handleDelete(key.id)}>Delete</Button>
+            <Button variant="ghost" size="sm" class="text-destructive" onclick={() => confirmDeleteKey(key.id)}>Delete</Button>
           </div>
         </div>
       {/each}
@@ -255,5 +287,21 @@
         </Dialog.Footer>
       </form>
     {/if}
+  </Dialog.Content>
+</Dialog.Root>
+
+<!-- Delete SSH key confirmation -->
+<Dialog.Root bind:open={deleteConfirmOpen}>
+  <Dialog.Content class="max-w-sm">
+    <Dialog.Header>
+      <Dialog.Title>Delete SSH key</Dialog.Title>
+      <Dialog.Description>
+        Are you sure you want to delete this SSH key? Stacks using it will lose their SSH key link.
+      </Dialog.Description>
+    </Dialog.Header>
+    <Dialog.Footer>
+      <Button variant="outline" onclick={() => { deleteConfirmOpen = false; }}>Cancel</Button>
+      <Button variant="destructive" onclick={doDeleteKey}>Delete</Button>
+    </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

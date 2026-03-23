@@ -99,7 +99,7 @@ Browser
                            └─ OCI Terraform provider v4.3.1
 ```
 
-**Target architecture** (see `docs/11-architecture-roadmap.md`):
+**Target architecture** (see `docs/roadmap.md`):
 ```
 Handler → Service (internal/services/) → Repository interface (internal/ports/) → DB Store
 ```
@@ -109,7 +109,7 @@ Business logic moves out of handlers into services. Stores implement narrow inte
 
 ## Non-Negotiable Invariants
 
-These must never be changed without updating this file and `docs/12-coding-principles.md`.
+These must never be changed without updating this file and `docs/coding-principles.md`.
 
 ### OCI Credentials — always inline, never file path
 ```go
@@ -162,7 +162,7 @@ the equivalent in YAML templates.
 
 ## Coding Principles (summary)
 
-Full detail: `docs/12-coding-principles.md`
+Full detail: `docs/coding-principles.md`
 
 - **Handlers are thin**: receive request → call service → return response. No DB calls, no business logic.
 - **Services own business logic**: credential resolution, referential integrity, recovery logic live in `internal/services/`.
@@ -173,22 +173,34 @@ Full detail: `docs/12-coding-principles.md`
 
 ---
 
+## Frontend UI/UX Guidelines (summary)
+
+Full detail: `docs/frontend.md` → "UI/UX Design Guidelines" section
+
+- **Tooltips**: use shadcn `Tooltip` (from `$lib/components/ui/tooltip`) on action buttons, disabled elements, status badges, and config/credential labels. `Tooltip.Provider` wraps the entire app in `App.svelte`.
+- **Status badges**: use shadcn `Badge` with consistent variant mapping — `default` + green class for succeeded, `destructive` for failed, `secondary` for other states.
+- **Confirmations**: **never use `window.confirm()`** — always use shadcn `Dialog` with a `$state` boolean, clear title/description, and destructive action button.
+- **Errors/warnings**: use shadcn `Alert` + `AlertDescription` — never raw `<div>` with hand-written styling.
+- **Relative times**: use "3h ago" / "just now" in compact contexts; full timestamps in detail views.
+
+---
+
 ## Active Improvement Roadmap (summary)
 
-Full detail: `docs/11-architecture-roadmap.md`
+Full detail: `docs/roadmap.md`
 
-| Theme | What | Priority |
+| Theme | What | Status |
 |---|---|---|
-| Part 0 | Add `ConfigLayer` + `ValidationHint` to `ConfigField` | 1 — foundation |
-| BE-1 | Extract `CredentialService` from handler | 2 |
-| BE-2 | Deduplicate Up/Destroy/Refresh/Preview in engine | 2 |
-| FE-1 | 3-step stack creation wizard | 3 |
-| BE-3 | Repository interfaces + store cleanup | 4 |
-| FE-2 | Extract OCI picker components from ConfigForm | 5 |
-| FE-3 | SSH key labelling + passphrase immutability UX | 6 |
-| BE-4 | Decompose God Object Handler | 7 (needs BE-3) |
-| BE-5 | Thread-safe ProgramRegistry (remove `init()`) | 8 |
-| FE-4 | Client-side config field validation | 9 (needs Part 0) |
+| Part 0 | Add `ConfigLayer` + `ValidationHint` to `ConfigField` | pending |
+| BE-1 | Extract `CredentialService` from handler | pending |
+| BE-2 | Deduplicate Up/Destroy/Refresh/Preview in engine | pending |
+| FE-1 | 3-step stack creation wizard | pending |
+| BE-3 | Repository interfaces + store cleanup | pending |
+| FE-2 | Extract OCI picker components from ConfigForm | pending |
+| FE-3 | SSH key labelling + passphrase immutability UX | pending |
+| BE-4 | Decompose God Object Handler (needs BE-3) | pending |
+| BE-5 | Thread-safe ProgramRegistry (remove `init()`) | **done** |
+| FE-4 | Client-side config field validation (needs Part 0) | pending |
 
 ---
 
@@ -206,6 +218,7 @@ Full detail: `docs/11-architecture-roadmap.md`
 | `docs/coding-principles.md` | SOLID principles for this codebase |
 | `docs/visual-editor.md` | Visual editor design, Program Graph model, known bugs + fix plan |
 | `docs/roadmap.md` | Architecture improvement roadmap + cloud-init redesign plan |
+| `docs/application-catalog-architecture.md` | Application catalog, Nebula mesh, agent binary, two-phase deploy pipeline |
 
 ---
 

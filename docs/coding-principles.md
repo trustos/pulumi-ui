@@ -103,7 +103,7 @@ When adding a new config field to any program, assign the correct layer.
 
 For the nomad-cluster program:
 - `nodeCount`, `compartmentName`, `vcnCidr`, `publicSubnetCidr`, `privateSubnetCidr`, `sshSourceCidr`, `skipDynamicGroup`, `adminGroupName`, `identityDomain` → `infrastructure`
-- `shape`, `imageId`, `bootVolSizeGb`, `glusterVolSizeGb` → `compute`
+- `shape`, `imageId`, `bootVolSizeGb` → `compute`
 - `nomadVersion`, `consulVersion` → `bootstrap`
 - NOMAD_CLIENT_CPU, NOMAD_CLIENT_MEMORY (derived from nodeCount × OCPU formula) → `derived`
 
@@ -124,8 +124,8 @@ eng := engine.New(stateDir, registry)
 ```go
 // internal/programs/registry.go
 func RegisterBuiltins(r *ProgramRegistry) {
-    r.Register(NewNomadClusterProgram())
-    r.Register(NewTestVCNProgram())
+    r.Register(&NomadClusterProgram{})
+    r.Register(&TestVcnProgram{})
 }
 ```
 
@@ -135,7 +135,7 @@ dependency graph invisible in `main.go`.
 When adding a new built-in program:
 1. Create `internal/programs/<name>.go`
 2. Implement the `Program` interface
-3. Add `r.Register(NewXxxProgram())` to `RegisterBuiltins()`
+3. Add `r.Register(&XxxProgram{})` to `RegisterBuiltins()`
 4. Annotate all `ConfigField` entries with `ConfigLayer`
 
 ---

@@ -55,15 +55,24 @@ type Program interface {
     Run(config map[string]string) pulumi.RunFunc
 }
 
-var registry []Program
+// ProgramRegistry is a thread-safe registry of Programs.
+// Constructed in main.go, passed as a dependency to Engine and Handler.
+type ProgramRegistry struct { /* sync.RWMutex + []Program */ }
 
-func Register(p Program)
-func Get(name string) (Program, bool)
-func List() []ProgramMeta
-func Deregister(name string) // removes a program by name (used when a custom program is updated or deleted)
+func NewProgramRegistry() *ProgramRegistry
+func (r *ProgramRegistry) Register(p Program)
+func (r *ProgramRegistry) Deregister(name string)
+func (r *ProgramRegistry) Get(name string) (Program, bool)
+func (r *ProgramRegistry) List() []ProgramMeta
+
+// RegisterBuiltins adds all built-in programs to r. Called from main.go.
+func RegisterBuiltins(r *ProgramRegistry)
+
+// RegisterYAML creates a YAMLProgram and adds it to r.
+func RegisterYAML(r *ProgramRegistry, name, displayName, description, yamlBody string)
 ```
 
-Built-in programs register explicitly from `main.go` via `RegisterBuiltins(r)`. There are no `init()` self-registrations.
+Built-in programs register explicitly from `main.go` via `RegisterBuiltins(r)`. There are no `init()` self-registrations. The registry is passed as a dependency to both the engine and the HTTP handler (`h.Registry`).
 
 ---
 
@@ -77,7 +86,7 @@ Example groups for `nomad-cluster`:
 |---|---|---|
 | `iam` | IAM & Permissions | `skipDynamicGroup`, `adminGroupName`, `identityDomain` |
 | `infrastructure` | Infrastructure | `nodeCount`, `compartmentName`, `vcnCidr`, `publicSubnetCidr`, `privateSubnetCidr`, `sshSourceCidr`, `shape`, `imageId` |
-| `compute` | Compute & Storage | `bootVolSizeGb`, `glusterVolSizeGb`, `sshPublicKey` |
+| `compute` | Compute & Storage | `bootVolSizeGb`, `sshPublicKey` |
 | `software` | Software Versions | `nomadVersion`, `consulVersion` |
 
 ---
@@ -103,7 +112,7 @@ Creates a compartment and VCN — a safe smoke test for OCI credentials that cre
 
 Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible). Seven sub-functions, one `Run` entry point.
 
-**Config fields (17 total):**
+**Config fields (16 total):**
 
 | Key | Type | Default | Description | Group |
 |---|---|---|---|---|
@@ -119,7 +128,6 @@ Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible). S
 | `ocpusPerNode` | `number` | _(empty)_ | Override OCPUs per node (homogeneous pools) | Compute & Storage |
 | `memoryGbPerNode` | `number` | _(empty)_ | Override memory per node | Compute & Storage |
 | `bootVolSizeGb` | `number` | `50` | Boot volume size in GB | Compute & Storage |
-| `glusterVolSizeGb` | `number` | `100` | GlusterFS block volume size in GB | Compute & Storage |
 | `sshPublicKey` | `ssh-public-key` | _(empty)_ | SSH public key injected into instance metadata | Compute & Storage |
 | `nomadVersion` | `text` | `1.10.3` | | Software Versions |
 | `consulVersion` | `text` | `1.21.3` | | Software Versions |
@@ -151,10 +159,9 @@ Run()
  ├─ 2. createIAM()           — dynamic groups, policies for instance principals
  │      (skipped if skipDynamicGroup = true)
  ├─ 3. createNetwork()       — VCN, IGW, NAT GW, route tables, subnets
- ├─ 4. createNSGs()          — SSH, Nomad, Traefik, GlusterFS NSGs
+ ├─ 4. createNSGs()          — SSH, Nomad, Traefik NSGs
  ├─ 5. createInstancePools() — instances with cloud-init (per node-count spec)
- ├─ 6. attachGlusterVolumes() — block volumes attached to each instance
- └─ 7. createNLB()           — Network Load Balancer for Traefik
+ └─ 6. createNLB()           — Network Load Balancer for Traefik
 ```
 
 ### IAM sub-function: `createIAM`
@@ -187,15 +194,13 @@ type nsgResult struct {
     sshNsgID     pulumi.IDOutput
     nomadNsgID   pulumi.IDOutput
     traefikNsgID pulumi.IDOutput
-    glusterNsgID pulumi.IDOutput
 }
 ```
 
-Creates 4 NSGs with security rules:
+Creates 3 NSGs with security rules:
 - **SSH NSG**: port 22 from `sshSourceCidr`
 - **Nomad NSG**: ports 4646, 4647, 4648 from public subnet CIDR
 - **Traefik NSG**: ports 80, 443 from public subnet CIDR
-- **GlusterFS NSG**: ports 24007, 24008, 49152–49251 from VCN CIDR
 
 ### Node sizing
 

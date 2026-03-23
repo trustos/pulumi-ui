@@ -371,7 +371,7 @@ Do not try to reconnect the SSE stream — poll instead.
 ## UI Component Library
 
 The project uses a copy-paste shadcn-svelte component setup (`components.json` + `svelte.config.js`) with:
-- **bits-ui v2** — headless primitives (Select, Dialog, Tabs, Combobox)
+- **bits-ui v2** — headless primitives (Select, Dialog, Tabs, Combobox, Tooltip)
 - **Tailwind CSS v4** — utility classes
 - **lucide-svelte** — icons (ChevronsUpDown, Check, X)
 - **class-variance-authority (cva)** — variant management for Button
@@ -380,6 +380,85 @@ The `Combobox` component (`src/lib/components/ui/combobox/`) is used for the OCI
 - Searchable filtering (label + sublabel)
 - Async item loading with `$effect(() => { if (!open) inputValue = selectedLabel; })` to keep the input in sync after items arrive
 - Optional `badge` field per item (used for "Always Free" shape tags)
+
+---
+
+## UI/UX Design Guidelines
+
+These guidelines must be followed for all new frontend work to maintain visual and behavioral consistency.
+
+### Tooltips
+
+A `Tooltip.Provider` wraps the entire app in `App.svelte`. Use shadcn `Tooltip` components (`$lib/components/ui/tooltip`) to provide contextual help. Guidelines:
+
+- **Action buttons** — every non-obvious action button should have a tooltip explaining what it does (e.g., "Sync Pulumi state with actual cloud resources" for Refresh).
+- **Status badges** — tooltip on badges to explain the status meaning.
+- **Disabled elements** — tooltip on disabled buttons to explain *why* they are disabled (e.g., "Cannot delete — remove all associated stacks first").
+- **Credential/config labels** — tooltip on labels like "Passphrase", "SSH Key", "OCI Account" to explain their purpose and any constraints (e.g., immutability).
+- **Health status items** — tooltip on each service name explaining what it represents.
+- Keep tooltip text concise (one sentence, no period at the end).
+- Use `cursor-default` class on non-interactive tooltip triggers to avoid misleading pointer changes.
+
+```svelte
+<Tooltip.Root>
+  <Tooltip.Trigger>
+    <Button>Action</Button>
+  </Tooltip.Trigger>
+  <Tooltip.Content>Explanation of what this action does</Tooltip.Content>
+</Tooltip.Root>
+```
+
+### Status Badges
+
+Use the shadcn `Badge` component with consistent variant mapping:
+
+| Status | Badge variant | Extra class |
+|---|---|---|
+| succeeded | `default` | `bg-green-600 text-white border-green-600` |
+| failed | `destructive` | — |
+| running, cancelled, not deployed | `secondary` | — |
+| verified (accounts) | `default` | — |
+| error (accounts) | `destructive` | — |
+| unverified (accounts) | `secondary` | — |
+
+### Confirmation Dialogs
+
+**Never use `window.confirm()`.** All destructive or dangerous actions use shadcn `Dialog` components:
+
+```svelte
+<Dialog.Root bind:open={confirmOpen}>
+  <Dialog.Content class="max-w-sm">
+    <Dialog.Header>
+      <Dialog.Title>Action title</Dialog.Title>
+      <Dialog.Description>Explain consequences clearly.</Dialog.Description>
+    </Dialog.Header>
+    <Dialog.Footer>
+      <Button variant="outline" onclick={() => { confirmOpen = false; }}>Cancel</Button>
+      <Button variant="destructive" onclick={doAction}>Confirm</Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+```
+
+Pattern: store `confirmOpen` boolean in `$state`, open it from the action handler, perform the action in a separate `doAction()` function.
+
+### Alerts and Error Display
+
+Use shadcn `Alert` + `AlertDescription` for page-level warnings and errors:
+- `variant="destructive"` for errors
+- Default variant for informational warnings
+- Never use raw `<div>` with hand-written error styling
+
+### Relative Times
+
+Display times as relative ("3h ago", "just now") in compact contexts (headers, card summaries). Show full timestamps (`toLocaleString()`) in detail views.
+
+### Page Layout Patterns
+
+- **Page header**: `h1` title + `text-sm text-muted-foreground` description + action buttons on the right
+- **StackDetail**: header + action bar + `Tabs` (Logs/Details/Outputs/Configuration)
+- **List pages** (Accounts, SSH Keys): header + list items with inline actions
+- **Card grids** (Dashboard, Programs): responsive grid with consistent card structure
 
 ---
 

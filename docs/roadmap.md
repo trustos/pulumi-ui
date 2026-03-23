@@ -152,17 +152,17 @@ Replace single `Handler` with focused handler groups, each with minimal dependen
 
 ---
 
-## BE-5 — Thread-Safe ProgramRegistry
+## BE-5 — Thread-Safe ProgramRegistry ✓ DONE
 
 ### Problem
-`internal/programs/registry.go` uses a package-level `var registry []Program` slice with no mutex. Concurrent `RegisterYAML` / `Deregister` calls from HTTP handlers are a data race.
+`internal/programs/registry.go` used a package-level `var registry []Program` slice with no mutex. Concurrent `RegisterYAML` / `Deregister` calls from HTTP handlers were a data race.
 
-### Solution
-Replace the package-level slice with a `ProgramRegistry` struct:
+### Solution (implemented)
+Replaced the package-level slice with a `ProgramRegistry` struct:
 ```go
 type ProgramRegistry struct {
     mu       sync.RWMutex
-    programs map[string]Program
+    programs []Program
 }
 func (r *ProgramRegistry) Register(p Program)
 func (r *ProgramRegistry) Deregister(name string)
@@ -170,24 +170,31 @@ func (r *ProgramRegistry) Get(name string) (Program, bool)
 func (r *ProgramRegistry) List() []ProgramMeta
 ```
 
-Created in `main.go`, passed explicitly to engine and handlers. Remove `init()` from program files. Replace with:
+Created in `main.go`, passed explicitly to engine and handlers. `init()` removed from all program files:
 ```go
 func RegisterBuiltins(r *ProgramRegistry) {
-    r.Register(NewNomadClusterProgram())
-    r.Register(NewTestVCNProgram())
+    r.Register(&NomadClusterProgram{})
+    r.Register(&TestVcnProgram{})
 }
 ```
 
-### Files
-- `internal/programs/registry.go` — rewritten
-- `internal/programs/nomad_cluster.go` — remove `init()`, add constructor
-- `internal/programs/test_vcn.go` — remove `init()`, add constructor
-- `internal/programs/yaml_program.go` — adjust `RegisterYAML` to accept registry
-- `internal/engine/engine.go` — receive registry
-- `internal/api/programs.go` — receive registry
-- `cmd/server/main.go` — create registry, call RegisterBuiltins
+`RegisterYAML` signature changed to accept the registry explicitly:
+```go
+func RegisterYAML(r *ProgramRegistry, name, displayName, description, yamlBody string)
+```
 
-**Scope: Medium | Dependencies: BE-3 interfaces help, not required | Priority: 8**
+### Files changed
+- `internal/programs/registry.go` — rewritten; `ProgramRegistry` struct + `RegisterBuiltins`
+- `internal/programs/nomad_cluster.go` — removed `func init() { Register(...) }`
+- `internal/programs/test_vcn.go` — removed `func init() { Register(...) }`
+- `internal/programs/yaml_program.go` — `RegisterYAML` now takes `*ProgramRegistry` as first param
+- `internal/engine/engine.go` — `New()` accepts `*ProgramRegistry`; all `programs.Get()` → `e.registry.Get()`
+- `internal/api/router.go` — `Handler` gains `Registry *programs.ProgramRegistry`; `NewHandler` gains `registry` param
+- `internal/api/programs.go` — all registry calls through `h.Registry`
+- `internal/api/stacks.go` — program lookup via `h.Registry.Get()`; removed `programs` import
+- `cmd/server/main.go` — creates registry, calls `RegisterBuiltins`, passes to engine and handler
+
+**Scope: Medium | Dependencies: none | Status: complete**
 
 ---
 
@@ -348,19 +355,19 @@ Step 5  Test end-to-end
 
 ## Execution Order
 
-| # | Theme | Scope | Gate |
-|---|---|---|---|
-| 1 | Part 0 — Config layer taxonomy | Medium | — |
-| 2 | BE-1 — CredentialService | Small | — |
-| 3 | BE-2 — Engine deduplication | Small | — |
-| 4 | FE-1 — 3-step wizard | Medium | Part 0 |
-| 5 | BE-3 — Repository interfaces | Medium | — |
-| 6 | FE-2 — Picker components | Medium | — |
-| 7 | FE-3 — SSH key + passphrase UX | Small | FE-1 |
-| 8 | BE-4 — Handler decomposition | Large | BE-3 |
-| 9 | BE-5 — Thread-safe registry | Medium | — |
-| 10 | FE-4 — Client-side validation | Medium | Part 0 |
-| 11 | Cloud-init redesign | Medium | — |
+| # | Theme | Scope | Gate | Status |
+|---|---|---|---|---|
+| 1 | Part 0 — Config layer taxonomy | Medium | — | pending |
+| 2 | BE-1 — CredentialService | Small | — | pending |
+| 3 | BE-2 — Engine deduplication | Small | — | pending |
+| 4 | FE-1 — 3-step wizard | Medium | Part 0 | pending |
+| 5 | BE-3 — Repository interfaces | Medium | — | pending |
+| 6 | FE-2 — Picker components | Medium | — | pending |
+| 7 | FE-3 — SSH key + passphrase UX | Small | FE-1 | pending |
+| 8 | BE-4 — Handler decomposition | Large | BE-3 | pending |
+| 9 | BE-5 — Thread-safe registry | Medium | — | **done** |
+| 10 | FE-4 — Client-side validation | Medium | Part 0 | pending |
+| 11 | Cloud-init redesign | Medium | — | pending |
 
 See `docs/visual-editor.md` for the visual program editor fix plan (G1 + P1/P2/P3 bugs).
 

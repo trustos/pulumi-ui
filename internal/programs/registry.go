@@ -1,6 +1,8 @@
 package programs
 
 import (
+	"sync"
+
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
@@ -36,27 +38,52 @@ type Program interface {
 	Run(config map[string]string) pulumi.RunFunc
 }
 
-// registry holds all known programs.
-var registry []Program
+// ProgramRegistry is a thread-safe registry of Programs.
+// It must be constructed via NewProgramRegistry and passed as a dependency
+// to the Engine and HTTP handlers. No package-level state is used.
+type ProgramRegistry struct {
+	mu       sync.RWMutex
+	programs []Program
+}
 
-func Register(p Program) {
-	registry = append(registry, p)
+// NewProgramRegistry creates an empty ProgramRegistry.
+func NewProgramRegistry() *ProgramRegistry {
+	return &ProgramRegistry{}
+}
+
+// RegisterBuiltins registers the built-in Go programs into r.
+// Called explicitly from main.go — no init() self-registration.
+func RegisterBuiltins(r *ProgramRegistry) {
+	r.Register(&NomadClusterProgram{})
+	r.Register(&TestVcnProgram{})
+}
+
+// Register adds p to the registry.
+func (r *ProgramRegistry) Register(p Program) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.programs = append(r.programs, p)
 }
 
 // Deregister removes the program with the given name from the registry.
 // Used when a custom program is updated or deleted at runtime.
-func Deregister(name string) {
-	updated := registry[:0]
-	for _, p := range registry {
+func (r *ProgramRegistry) Deregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	updated := r.programs[:0]
+	for _, p := range r.programs {
 		if p.Name() != name {
 			updated = append(updated, p)
 		}
 	}
-	registry = updated
+	r.programs = updated
 }
 
-func Get(name string) (Program, bool) {
-	for _, p := range registry {
+// Get returns the program with the given name, or (nil, false) if not found.
+func (r *ProgramRegistry) Get(name string) (Program, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.programs {
 		if p.Name() == name {
 			return p, true
 		}
@@ -64,9 +91,12 @@ func Get(name string) (Program, bool) {
 	return nil, false
 }
 
-func List() []ProgramMeta {
-	metas := make([]ProgramMeta, 0, len(registry))
-	for _, p := range registry {
+// List returns a serialisable snapshot of all registered programs.
+func (r *ProgramRegistry) List() []ProgramMeta {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	metas := make([]ProgramMeta, 0, len(r.programs))
+	for _, p := range r.programs {
 		_, isCustom := p.(YAMLProgramProvider)
 		metas = append(metas, ProgramMeta{
 			Name:         p.Name(),

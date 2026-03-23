@@ -16,8 +16,6 @@ import (
 
 type NomadClusterProgram struct{}
 
-func init() { Register(&NomadClusterProgram{}) }
-
 func (p *NomadClusterProgram) Name() string       { return "nomad-cluster" }
 func (p *NomadClusterProgram) DisplayName() string { return "Nomad Cluster" }
 func (p *NomadClusterProgram) Description() string {

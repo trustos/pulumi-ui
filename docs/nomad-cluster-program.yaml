@@ -37,7 +37,7 @@ meta:
       fields: [nodeCount, compartmentName, compartmentDescription, vcnCidr, publicSubnetCidr, privateSubnetCidr, sshSourceCidr, shape, imageId, sshPublicKey]
     - key: compute
       label: "Compute & Storage"
-      fields: [bootVolSizeGb, glusterVolSizeGb]
+      fields: [bootVolSizeGb]
     - key: software
       label: "Software Versions"
       fields: [nomadVersion, consulVersion]
@@ -93,9 +93,6 @@ config:
   bootVolSizeGb:
     type: integer
     default: 50
-  glusterVolSizeGb:
-    type: integer
-    default: 100
 
   # ── Software Versions ────────────────────────────────────────────────────────
   nomadVersion:
@@ -359,39 +356,6 @@ resources:
       description: {{ printf "Allow Traefik port %d from public subnet" $port | quote }}
   {{- end }}
 
-  gluster-nsg:
-    type: oci:core:NetworkSecurityGroup
-    properties:
-      compartmentId: ${nomad-compartment.id}
-      vcnId: ${nomad-vcn.id}
-      displayName: gluster-nsg
-
-  {{- range $port := list 24007 24008 }}
-  gluster-nsg-rule-{{ $port }}:
-    type: oci:core:NetworkSecurityGroupSecurityRule
-    properties:
-      networkSecurityGroupId: ${gluster-nsg.id}
-      direction: INGRESS
-      protocol: "6"
-      source: {{ $.Config.vcnCidr | quote }}
-      sourceType: CIDR_BLOCK
-      tcpOptions:
-        destinationPortRange: { min: {{ $port }}, max: {{ $port }} }
-      description: {{ printf "Allow GlusterFS port %d from VCN" $port | quote }}
-  {{- end }}
-
-  gluster-nsg-rule-dynamic:
-    type: oci:core:NetworkSecurityGroupSecurityRule
-    properties:
-      networkSecurityGroupId: ${gluster-nsg.id}
-      direction: INGRESS
-      protocol: "6"
-      source: {{ .Config.vcnCidr | quote }}
-      sourceType: CIDR_BLOCK
-      tcpOptions:
-        destinationPortRange: { min: 49152, max: 49251 }
-      description: "Allow GlusterFS dynamic ports from VCN"
-
   # ── Instances ────────────────────────────────────────────────────────────────
   # OCPUs and memory follow the Always Free allocation strategy:
   #   nodeCount=1 → 1×(4 OCPU / 24 GB)
@@ -424,53 +388,10 @@ resources:
           - ${ssh-nsg.id}
           - ${nomad-nsg.id}
           - ${traefik-nsg.id}
-          - ${gluster-nsg.id}
       metadata:
         ssh_authorized_keys: {{ $.Config.sshPublicKey | quote }}
         user_data: {{ cloudInit $i $.Config }}
   {{- end }}
-
-  # ── GlusterFS Block Volumes ──────────────────────────────────────────────────
-  # One volume per node, paravirtualized attachment.
-  # An incremental daily backup policy is applied to the first volume (node 0).
-
-  {{- range $i := until (atoi $.Config.nodeCount) }}
-  glusterfs-volume-{{ $i }}:
-    type: oci:core:Volume
-    properties:
-      compartmentId: ${nomad-compartment.id}
-      availabilityDomain: ${availabilityDomain}
-      sizeInGbs: {{ $.Config.glusterVolSizeGb | quote }}
-      displayName: {{ printf "glusterfs-data-%d" (add $i 1) | quote }}
-
-  glusterfs-attachment-{{ $i }}:
-    type: oci:core:VolumeAttachment
-    options:
-      dependsOn:
-        - ${nomad-instance-{{ $i }}}
-    properties:
-      instanceId: ${nomad-instance-{{ $i }}.id}
-      volumeId: ${glusterfs-volume-{{ $i }}.id}
-      attachmentType: paravirtualized
-      displayName: {{ printf "glusterfs-attachment-%d" (add $i 1) | quote }}
-  {{- end }}
-
-  glusterfs-backup-policy:
-    type: oci:core:VolumeBackupPolicy
-    properties:
-      compartmentId: ${nomad-compartment.id}
-      displayName: glusterfs-backup-policy
-      schedules:
-        - backupType: INCREMENTAL
-          period: ONE_DAY
-          retentionSeconds: 432000
-          timeZone: UTC
-
-  glusterfs-backup-policy-assignment:
-    type: oci:core:VolumeBackupPolicyAssignment
-    properties:
-      assetId: ${glusterfs-volume-0.id}
-      policyId: ${glusterfs-backup-policy.id}
 
   # ── Network Load Balancer ────────────────────────────────────────────────────
   # Public NLB in the public subnet, fronting Traefik (80/443) and the Nomad

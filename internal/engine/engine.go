@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optpreview"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optrefresh"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optup"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/trustos/pulumi-ui/internal/db"
@@ -27,15 +29,17 @@ type Credentials struct {
 
 type Engine struct {
 	stateDir string
+	registry *programs.ProgramRegistry
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
 	running map[string]bool
 }
 
-func New(stateDir string) *Engine {
+func New(stateDir string, registry *programs.ProgramRegistry) *Engine {
 	return &Engine{
 		stateDir: stateDir,
+		registry: registry,
 		cancels:  make(map[string]context.CancelFunc),
 		running:  make(map[string]bool),
 	}
@@ -254,7 +258,7 @@ func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[
 	}
 	defer e.unlock(stackName)
 
-	prog, ok := programs.Get(programName)
+	prog, ok := e.registry.Get(programName)
 	if !ok {
 		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
 		return "failed"
@@ -287,7 +291,8 @@ func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[
 
 	_, err = stack.Up(opCtx, optup.ProgressStreams(&sseWriter{send: send}))
 	if err != nil {
-		if ctx.Err() != nil {
+		if opCtx.Err() != nil {
+			send(SSEEvent{Type: "output", Data: "Operation cancelled. Resources that were mid-creation may exist in the cloud but are not fully tracked. Run Refresh to reconcile state, then check the cloud console for any orphaned resources."})
 			return "cancelled"
 		}
 		send(SSEEvent{Type: "error", Data: err.Error()})
@@ -304,7 +309,7 @@ func (e *Engine) Destroy(ctx context.Context, stackName, programName string, cfg
 	}
 	defer e.unlock(stackName)
 
-	prog, ok := programs.Get(programName)
+	prog, ok := e.registry.Get(programName)
 	if !ok {
 		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
 		return "failed"
@@ -335,9 +340,13 @@ func (e *Engine) Destroy(ctx context.Context, stackName, programName string, cfg
 		return "failed"
 	}
 
-	_, err = stack.Destroy(opCtx, optdestroy.ProgressStreams(&sseWriter{send: send}))
+	_, err = stack.Destroy(opCtx,
+		optdestroy.ProgressStreams(&sseWriter{send: send}),
+		optdestroy.ContinueOnError(),
+	)
 	if err != nil {
-		if ctx.Err() != nil {
+		if opCtx.Err() != nil {
+			send(SSEEvent{Type: "output", Data: "Operation cancelled. Some resources may not have been destroyed. Run Destroy again to retry."})
 			return "cancelled"
 		}
 		send(SSEEvent{Type: "error", Data: err.Error()})
@@ -354,7 +363,7 @@ func (e *Engine) Refresh(ctx context.Context, stackName, programName string, cfg
 	}
 	defer e.unlock(stackName)
 
-	prog, ok := programs.Get(programName)
+	prog, ok := e.registry.Get(programName)
 	if !ok {
 		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
 		return "failed"
@@ -385,9 +394,17 @@ func (e *Engine) Refresh(ctx context.Context, stackName, programName string, cfg
 		return "failed"
 	}
 
-	_, err = stack.Refresh(opCtx, optrefresh.ProgressStreams(&sseWriter{send: send}))
+	if err := e.recoverPendingOperations(opCtx, stack, send); err != nil {
+		send(SSEEvent{Type: "error", Data: "state recovery: " + err.Error()})
+		return "failed"
+	}
+
+	_, err = stack.Refresh(opCtx,
+		optrefresh.ProgressStreams(&sseWriter{send: send}),
+	)
 	if err != nil {
-		if ctx.Err() != nil {
+		if opCtx.Err() != nil {
+			send(SSEEvent{Type: "output", Data: "Refresh cancelled. State may be partially reconciled. Run Refresh again to complete."})
 			return "cancelled"
 		}
 		send(SSEEvent{Type: "error", Data: err.Error()})
@@ -404,7 +421,7 @@ func (e *Engine) Preview(ctx context.Context, stackName, programName string, cfg
 	}
 	defer e.unlock(stackName)
 
-	prog, ok := programs.Get(programName)
+	prog, ok := e.registry.Get(programName)
 	if !ok {
 		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
 		return "failed"
@@ -437,7 +454,8 @@ func (e *Engine) Preview(ctx context.Context, stackName, programName string, cfg
 
 	_, err = stack.Preview(opCtx, optpreview.ProgressStreams(&sseWriter{send: send}))
 	if err != nil {
-		if ctx.Err() != nil {
+		if opCtx.Err() != nil {
+			send(SSEEvent{Type: "output", Data: "Preview cancelled."})
 			return "cancelled"
 		}
 		send(SSEEvent{Type: "error", Data: err.Error()})
@@ -462,20 +480,95 @@ func (e *Engine) Cancel(stackName string) {
 	}
 }
 
-// Unlock removes all Pulumi lock files for the given stack.
-// Safe to call when no operation is running; no-op if no locks exist.
+// recoverPendingOperations uses stack Export/Import to clean up pending
+// operations left by a cancelled deploy. Pending creates that received an OCI
+// ID before the cancel are promoted to real resources so Refresh can reconcile
+// them. Pending creates without an ID are dropped (unrecoverable — the cloud
+// provider never returned an ID). Pending updates/deletes are simply cleared
+// since the resource already exists in the main resources array.
+func (e *Engine) recoverPendingOperations(ctx context.Context, stack auto.Stack, send SSESender) error {
+	state, err := stack.Export(ctx)
+	if err != nil {
+		return fmt.Errorf("export stack state: %w", err)
+	}
+
+	var dep apitype.DeploymentV3
+	if err := json.Unmarshal(state.Deployment, &dep); err != nil {
+		return fmt.Errorf("unmarshal deployment: %w", err)
+	}
+
+	if len(dep.PendingOperations) == 0 {
+		return nil
+	}
+
+	send(SSEEvent{Type: "output", Data: fmt.Sprintf("Recovering %d pending operation(s) from interrupted deployment...", len(dep.PendingOperations))})
+
+	for _, op := range dep.PendingOperations {
+		urn := string(op.Resource.URN)
+		name := urn
+		if idx := strings.LastIndex(urn, "::"); idx >= 0 {
+			name = urn[idx+2:]
+		}
+
+		switch op.Type {
+		case apitype.OperationTypeCreating:
+			if op.Resource.ID != "" {
+				dep.Resources = append(dep.Resources, op.Resource)
+				send(SSEEvent{Type: "output", Data: fmt.Sprintf("  Recovered %s (had ID, promoted to tracked resource)", name)})
+			} else {
+				send(SSEEvent{Type: "output", Data: fmt.Sprintf("  WARNING: Dropped %s (pending create without ID — may exist in cloud, check console)", name)})
+			}
+		default:
+			send(SSEEvent{Type: "output", Data: fmt.Sprintf("  Cleared pending %s on %s", op.Type, name)})
+		}
+	}
+
+	dep.PendingOperations = nil
+
+	updated, err := json.Marshal(dep)
+	if err != nil {
+		return fmt.Errorf("marshal deployment: %w", err)
+	}
+	state.Deployment = updated
+
+	if err := stack.Import(ctx, state); err != nil {
+		return fmt.Errorf("import stack state: %w", err)
+	}
+
+	send(SSEEvent{Type: "output", Data: "Pending operations recovered. Proceeding with refresh..."})
+	return nil
+}
+
+// Unlock removes all Pulumi lock files for the given stack across all projects.
+// The local backend stores locks under .pulumi/locks/organization/<project>/<stack>/,
+// and the project name varies (e.g. "pulumi-ui" for Go programs, the YAML name: field
+// for YAML programs). We scan all project directories to find the stack.
 func (e *Engine) Unlock(stackName string) error {
-	lockDir := fmt.Sprintf("%s/.pulumi/locks/organization/pulumi-ui/%s", e.stateDir, stackName)
-	entries, err := os.ReadDir(lockDir)
+	orgDir := filepath.Join(e.stateDir, ".pulumi", "locks", "organization")
+	projects, err := os.ReadDir(orgDir)
 	if os.IsNotExist(err) {
-		return nil // nothing to do
+		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("reading lock dir: %w", err)
+		return fmt.Errorf("reading locks dir: %w", err)
 	}
-	for _, entry := range entries {
-		if err := os.Remove(lockDir + "/" + entry.Name()); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("removing lock file %s: %w", entry.Name(), err)
+
+	for _, proj := range projects {
+		if !proj.IsDir() {
+			continue
+		}
+		lockDir := filepath.Join(orgDir, proj.Name(), stackName)
+		entries, err := os.ReadDir(lockDir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("reading lock dir %s: %w", lockDir, err)
+		}
+		for _, entry := range entries {
+			if err := os.Remove(filepath.Join(lockDir, entry.Name())); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("removing lock file %s: %w", entry.Name(), err)
+			}
 		}
 	}
 	return nil
@@ -506,7 +599,7 @@ func (e *Engine) GetStackOutputs(ctx context.Context, stackName, programName str
 	}
 	defer cleanup()
 
-	prog, ok := programs.Get(programName)
+	prog, ok := e.registry.Get(programName)
 	if !ok {
 		return nil, fmt.Errorf("unknown program: %s", programName)
 	}
