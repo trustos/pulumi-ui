@@ -29,7 +29,7 @@ The frontend is a pure Svelte 5 SPA built with Vite, embedded in the Go binary v
 | `frontend/src/lib/components/ConfigForm.svelte` | Dynamic form from `ProgramMeta.configFields` |
 | `frontend/src/lib/components/OciImportDialog.svelte` | Multi-step OCI config import wizard (file upload or ZIP) |
 | `frontend/src/lib/components/ApplicationSelector.svelte` | Application catalog selector for stack creation (ApplicationProvider programs) |
-| `frontend/src/lib/components/StackCard.svelte` | Card shown on Dashboard for each stack |
+| `frontend/src/lib/components/StackCard.svelte` | Card shown on Dashboard for each stack (with Agent Connect indicator) |
 | `frontend/src/lib/components/ui/` | shadcn-svelte component library (Button, Input, Select, Dialog, Tabs, Badge, Combobox, etc.) |
 
 ---
@@ -253,11 +253,38 @@ The logic is extracted into pure functions in `$lib/program-graph/scaffold-netwo
 
 Level 7 validation errors are **non-blocking** — the program can still be saved even if the warning is shown. Only Levels 1–6 block saving. This is enforced by `hasBlockingErrors()` in the backend API handler.
 
+### Resource Rename Propagation
+Renaming a resource in the visual editor automatically updates all references across the entire program graph:
+- **Property values**: `${oldName.id}` → `${newName.id}`, `${oldName[0].name}` → `${newName[0].name}`
+- **dependsOn arrays**: `oldName` → `newName`
+- **Output values**: `${oldName.publicIp}` → `${newName.publicIp}`
+- Propagation descends into **loops** and **conditionals** (including else branches) at any nesting depth.
+
+The rename is triggered on blur of the resource name input in `ResourceCard.svelte`. The `onRename` callback propagates up through `SectionEditor` / `LoopBlock` / `ConditionalBlock` to `ProgramEditor.handleRenameResource()`, which calls `propagateRename()` from `$lib/program-graph/rename-resource.ts`.
+
+In **YAML mode**, press **F2** (or right-click → "Rename Resource") with the cursor on a resource name. A prompt asks for the new name, and `propagateRenameYaml()` updates all `${oldName...}` references in the YAML text.
+
+Logic is in `$lib/program-graph/rename-resource.ts`, with 23 Vitest unit tests in `rename-resource.test.ts`.
+
 ### Promote to Variable
 `PropertyEditor` offers two promotion actions for empty required property values:
 
 - **`→ config`** — adds a `ConfigField` and sets the value to `{{ .Config.<key> }}`. Auto-detects `oci-shape`, `oci-image`, `ssh-public-key` types.
 - **`→ variable`** — for keys with known OCI patterns (e.g. `availabilityDomain`), auto-scaffolds a `variables:` entry with the correct `fn::invoke` call and sets the property to the Pulumi interpolation (e.g. `${availabilityDomains[0].name}`). Uses `KNOWN_VARIABLE_TEMPLATES` in `ProgramEditor.svelte`. For unknown keys, sets value to `${key}`.
+
+### Structured Object Property Editor
+Object-type properties (e.g. `createVnicDetails`, `sourceDetails`, `shapeConfig`, `routeRules`) with sub-field definitions in the schema are rendered as a structured sub-field editor instead of a raw textarea. `ObjectPropertyEditor.svelte` provides:
+
+- **Per-sub-field rows** with key labels, required markers (`*`), and tooltips from the schema.
+- **Full reference picker support** — each sub-field value has the same `⊕` picker as regular properties, supporting config refs, variable refs, and resource output refs.
+- **Chip rendering** — `{{ .Config.KEY }}` and `${resource.attr}` values render as colored chips (same as `PropertyEditor`).
+- **Optional field buttons** — sub-fields not yet present show `+ fieldName` buttons to add them from the schema.
+- **Array support** — for `type: "array"` properties with `items.properties` (e.g. `routeRules`), the editor renders a list of item editors with add/remove item controls.
+- **Fallback** — if the compact value string cannot be parsed, the editor falls back to a raw textarea.
+
+The compact value format (`{ key: "val", ref: "${subnet.id}" }`) is parsed/serialized by `$lib/program-graph/object-value.ts` using a state-machine tokenizer that respects nested `{}`, `[]`, quotes, and template expressions. Tests in `object-value.test.ts` (32 tests).
+
+Schema sub-field definitions come from the backend's `PropertySchema.Properties` and `PropertySchema.Items` fields, populated either by resolving `$ref` from the live Pulumi OCI provider schema or from the hardcoded `fallbackSchema()` in `internal/oci/schema.go`.
 
 ---
 
@@ -317,13 +344,15 @@ Located at `/ssh-keys`. Allows:
 Located at `/programs`. Allows:
 - Listing all programs — both built-in (read-only) and custom (editable)
 - Built-in programs show a "Built-in" badge; custom programs show a "Custom" badge
+- Programs with Agent Connect enabled show a globe icon (&#x1f310;) with a tooltip
 - Each card shows the display name, internal name, description, and config field count
-- **Creating a custom program** — "New Program" opens a full-screen YAML editor with:
-  - Internal name (immutable after creation) and display name
-  - Description field
-  - YAML textarea (monospace font) with drag-and-drop file import
-  - A default template stub is pre-filled to get started
-  - Import from file button for `.yaml` / `.yml` files
+- **Creating a custom program (Visual)** — "New Program (Visual)" opens the visual editor with a **template gallery** overlay:
+  - 11 templates across 7 categories (Networking, Compute, Web, Security, Data, High Availability, Cluster, Architecture)
+  - Text search filters by name, description, tags, and category
+  - Category pill filters for quick browsing
+  - Templates with Agent Connect show a globe icon
+  - "Start from scratch" option for a blank program
+- **Creating a custom program (YAML)** — "New Program (YAML)" opens a YAML editor with a default stub
 - **Editing a custom program** — opens the visual/YAML editor (`/programs/:name/edit`)
 - **Deleting a custom program** — confirmation dialog; blocked if any stacks reference the program
 

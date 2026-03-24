@@ -16,6 +16,7 @@
     onRemove,
     onMoveUp,
     onMoveDown,
+    onRename,
     allResourceNames = [] as string[],
     allResourceRefs = [] as { name: string; attrs: string[] }[],
     variableNames = [] as string[],
@@ -25,11 +26,22 @@
     onRemove?: () => void;
     onMoveUp?: () => void;
     onMoveDown?: () => void;
+    onRename?: (oldName: string, newName: string) => void;
     allResourceNames?: string[];
     allResourceRefs?: { name: string; attrs: string[] }[];
     variableNames?: string[];
     configFields?: ConfigFieldDef[];
   } = $props();
+
+  let nameBeforeEdit = $state(resource.name);
+
+  function handleNameBlur() {
+    const newName = resource.name.trim();
+    if (nameBeforeEdit && newName && nameBeforeEdit !== newName && onRename) {
+      onRename(nameBeforeEdit, newName);
+    }
+    nameBeforeEdit = newName;
+  }
 
   let expanded = $state(true);
   let currentSchema = $state<ResourceSchema | null>(null);
@@ -56,12 +68,13 @@
   });
 
   // Property key suggestions built from the schema (required first, then optional).
+  // Includes sub-field definitions (properties, items) for structured editing.
   const propertyKeyItems = $derived(
     currentSchema
       ? Object.entries(currentSchema.inputs)
           .sort(([, a], [, b]) => (b.required ? 1 : 0) - (a.required ? 1 : 0))
-          .map(([key, p]) => ({ value: key, type: p.type, required: p.required, description: p.description }))
-      : ([] as { value: string; type: string; required: boolean; description?: string }[])
+          .map(([key, p]) => ({ value: key, type: p.type, required: p.required, description: p.description, properties: p.properties, items: p.items }))
+      : ([] as { value: string; type: string; required: boolean; description?: string; properties?: Record<string, import('$lib/schema').PropertySchema>; items?: import('$lib/schema').PropertySchema }[])
   );
 
   // Extract namespace for display: "oci:Core/vcn:Vcn" → "Vcn"
@@ -96,6 +109,8 @@
         bind:value={resource.name}
         class="h-6 text-sm font-mono border-0 p-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0"
         placeholder="resource-name"
+        onfocus={() => { nameBeforeEdit = resource.name; }}
+        onblur={handleNameBlur}
       />
     </div>
     <span class="text-xs text-muted-foreground shrink-0 font-mono">{typeLabel}</span>

@@ -7,6 +7,7 @@
   import { yamlToGraph } from '$lib/program-graph/parser';
   import { insertAgentAccess, removeAgentAccess } from '$lib/program-graph/agent-access';
   import { scaffoldNetworkingGraph, scaffoldNetworkingYaml } from '$lib/program-graph/scaffold-networking';
+  import { propagateRename, propagateRenameYaml } from '$lib/program-graph/rename-resource';
   import type { ProgramGraph, ProgramSection } from '$lib/types/program-graph';
   import type { ValidationError } from '$lib/types';
   import EditorModeBar from '$lib/components/EditorModeBar.svelte';
@@ -33,6 +34,7 @@
   // ── State ─────────────────────────────────────────────────────────────────
   let mode = $state<'visual' | 'yaml'>('visual');
   let syncStatus = $state<'synced' | 'yaml-edited' | 'partial'>('synced');
+  let copyLabel = $state('Copy YAML');
   let showGallery = $state(untrack(() => isNew));
 
   let programName = $state('');
@@ -283,6 +285,10 @@
     yamlText = agentAccess ? insertAgentAccess(yamlText) : removeAgentAccess(yamlText);
     syncStatus = 'yaml-edited';
     scheduleValidation();
+  }
+
+  function handleRenameResource(oldName: string, newName: string) {
+    graph = propagateRename(graph, oldName, newName);
   }
 
   function scaffoldAgentNetworking() {
@@ -660,6 +666,7 @@
             allProgramResourceRefs={allProgramResourceRefs}
             variableNames={allVariableNames}
             onSwitchToYaml={() => handleModeChange('yaml')}
+            onRenameResource={handleRenameResource}
           />
         {:else}
           <p class="text-sm text-muted-foreground text-center py-12">No section selected.</p>
@@ -678,13 +685,33 @@
     </div>
   {:else}
     <!-- YAML editor -->
-    <div class="flex-1 min-h-0 p-4">
-      <MonacoEditor
-        bind:value={yamlText}
-        markers={validationErrors}
-        height="100%"
-        onchange={() => { syncStatus = 'yaml-edited'; scheduleValidation(); }}
-      />
+    <div class="flex-1 min-h-0 p-4 flex flex-col gap-2">
+      <div class="flex justify-end">
+        <Tooltip.Root>
+          <Tooltip.Trigger>
+            <Button
+              variant="outline"
+              size="sm"
+              class="h-7 text-xs gap-1.5"
+              onclick={() => {
+                navigator.clipboard.writeText(yamlText);
+                copyLabel = 'Copied!';
+                setTimeout(() => { copyLabel = 'Copy YAML'; }, 1500);
+              }}
+            >{copyLabel}</Button>
+          </Tooltip.Trigger>
+          <Tooltip.Content>Copy the full YAML program to clipboard</Tooltip.Content>
+        </Tooltip.Root>
+      </div>
+      <div class="flex-1 min-h-0">
+        <MonacoEditor
+          bind:value={yamlText}
+          markers={validationErrors}
+          height="100%"
+          enableResourceRename={true}
+          onchange={() => { syncStatus = 'yaml-edited'; scheduleValidation(); }}
+        />
+      </div>
     </div>
   {/if}
 </div>

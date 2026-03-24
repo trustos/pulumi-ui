@@ -1,10 +1,11 @@
 <script lang="ts">
   import * as Card from '$lib/components/ui/card';
   import { Badge } from '$lib/components/ui/badge';
+  import * as Tooltip from '$lib/components/ui/tooltip';
   import { navigate } from '$lib/router';
   import type { StackSummary } from '$lib/types';
 
-  let { stack }: { stack: StackSummary } = $props();
+  let { stack, agentAccess = false }: { stack: StackSummary; agentAccess?: boolean } = $props();
 
   function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
     if (status === 'succeeded') return 'default';
@@ -35,7 +36,17 @@
     <Card.Header class="pb-2">
       <div class="flex items-center justify-between">
         <Card.Title class="text-base">{stack.name}</Card.Title>
-        <Badge variant="secondary">{stack.program}</Badge>
+        <div class="flex items-center gap-1.5">
+          {#if agentAccess}
+            <Tooltip.Root>
+              <Tooltip.Trigger>
+                <span class="text-xs bg-blue-500/10 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded-full">&#x1f310;</span>
+              </Tooltip.Trigger>
+              <Tooltip.Content>Agent Connect — secure mesh networking</Tooltip.Content>
+            </Tooltip.Root>
+          {/if}
+          <Badge variant="secondary">{stack.program}</Badge>
+        </div>
       </div>
     </Card.Header>
     <Card.Content>

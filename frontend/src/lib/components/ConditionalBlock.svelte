@@ -23,12 +23,14 @@
     onRemove,
     onMoveUp,
     onMoveDown,
+    onRenameResource,
   }: {
     conditional?: ConditionalItem;
     configFields?: ConfigFieldDef[];
     onRemove?: () => void;
     onMoveUp?: () => void;
     onMoveDown?: () => void;
+    onRenameResource?: (oldName: string, newName: string) => void;
   } = $props();
 
   let showCatalogFor = $state<'then' | 'else' | null>(null);
@@ -118,6 +120,7 @@
               bind:resource={conditional.items[i] as ResourceItem}
               allResourceNames={thenNames}
               onRemove={() => removeFromBranch(i, 'then')}
+              onRename={onRenameResource}
             />
           {:else if item.kind === 'loop'}
             {#if LoopBlock}
@@ -125,6 +128,7 @@
               bind:loop={conditional.items[i] as LoopItem}
               {configFields}
               onRemove={() => removeFromBranch(i, 'then')}
+              {onRenameResource}
             />
             {/if}
           {:else if item.kind === 'raw'}
@@ -163,6 +167,7 @@
                 bind:resource={conditional.elseItems[i] as ResourceItem}
                 allResourceNames={elseNames}
                 onRemove={() => removeFromBranch(i, 'else')}
+                onRename={onRenameResource}
               />
             {:else if item.kind === 'loop'}
               {#if LoopBlock}
@@ -170,6 +175,7 @@
                 bind:loop={conditional.elseItems[i] as LoopItem}
                 {configFields}
                 onRemove={() => removeFromBranch(i, 'else')}
+                {onRenameResource}
               />
               {/if}
             {:else if item.kind === 'raw'}

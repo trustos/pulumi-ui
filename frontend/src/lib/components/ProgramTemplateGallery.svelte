@@ -1,11 +1,18 @@
 <script lang="ts">
-  import { graphToYaml } from '$lib/program-graph/serializer';
   import { vcnOnlyTemplate } from '$lib/program-graph/templates/vcn-only';
   import { singleInstanceTemplate } from '$lib/program-graph/templates/single-instance';
-  import { nNodeClusterTemplate } from '$lib/program-graph/templates/n-node-cluster';
-  import { nlbAppTemplate } from '$lib/program-graph/templates/nlb-app';
-  import type { ProgramGraph } from '$lib/types/program-graph';
+  import { privateSubnetTemplate } from '$lib/program-graph/templates/private-subnet';
+  import { webServerTemplate } from '$lib/program-graph/templates/web-server';
+  import { bastionHostTemplate } from '$lib/program-graph/templates/bastion-host';
+  import { devEnvironmentTemplate } from '$lib/program-graph/templates/dev-environment';
+  import { databaseServerTemplate } from '$lib/program-graph/templates/database-server';
+  import { loadBalancedClusterTemplate } from '$lib/program-graph/templates/load-balanced-cluster';
+  import { haPairTemplate } from '$lib/program-graph/templates/ha-pair';
+  import { orchestratorClusterTemplate } from '$lib/program-graph/templates/orchestrator-cluster';
+  import { multiTierAppTemplate } from '$lib/program-graph/templates/multi-tier-app';
+  import type { ProgramGraph, ProgramItem } from '$lib/types/program-graph';
   import { Button } from '$lib/components/ui/button';
+  import * as Tooltip from '$lib/components/ui/tooltip';
 
   let {
     onSelect,
@@ -17,17 +24,69 @@
     onBlank: () => void;
   } = $props();
 
-  const templates: { graph: ProgramGraph; category: string; resourceCount: number }[] = [
-    { graph: vcnOnlyTemplate, category: 'Networking', resourceCount: 2 },
-    { graph: singleInstanceTemplate, category: 'Compute', resourceCount: 4 },
-    { graph: nNodeClusterTemplate, category: 'Compute', resourceCount: 1 },
-    { graph: nlbAppTemplate, category: 'Load Balanced', resourceCount: 3 },
+  interface TemplateEntry {
+    graph: ProgramGraph;
+    category: string;
+    tags: string[];
+  }
+
+  function countResources(items: ProgramItem[]): number {
+    let count = 0;
+    for (const item of items) {
+      if (item.kind === 'resource') count++;
+      else if (item.kind === 'loop') count += countResources(item.items);
+      else if (item.kind === 'conditional') {
+        count += countResources(item.items);
+        if (item.elseItems) count += countResources(item.elseItems);
+      }
+    }
+    return count;
+  }
+
+  function totalResources(graph: ProgramGraph): number {
+    return graph.sections.reduce((sum, s) => sum + countResources(s.items), 0);
+  }
+
+  const templates: TemplateEntry[] = [
+    { graph: vcnOnlyTemplate, category: 'Networking', tags: ['vcn', 'network', 'foundation'] },
+    { graph: privateSubnetTemplate, category: 'Networking', tags: ['private', 'nat', 'subnet', 'security'] },
+    { graph: singleInstanceTemplate, category: 'Compute', tags: ['vm', 'instance', 'server', 'simple'] },
+    { graph: devEnvironmentTemplate, category: 'Compute', tags: ['dev', 'ssh', 'development', 'gitpod', 'ci', 'runner'] },
+    { graph: webServerTemplate, category: 'Web', tags: ['http', 'https', 'wordpress', 'nginx', 'apache', 'website', 'api'] },
+    { graph: bastionHostTemplate, category: 'Security', tags: ['jump', 'bastion', 'ssh', 'private', 'secure'] },
+    { graph: databaseServerTemplate, category: 'Data', tags: ['postgres', 'mysql', 'mongodb', 'database', 'storage', 'volume'] },
+    { graph: haPairTemplate, category: 'High Availability', tags: ['ha', 'failover', 'nlb', 'keepalived', 'pacemaker'] },
+    { graph: loadBalancedClusterTemplate, category: 'Cluster', tags: ['nlb', 'load', 'balancer', 'microservices', 'kubernetes', 'k8s', 'scale'] },
+    { graph: orchestratorClusterTemplate, category: 'Cluster', tags: ['nomad', 'kubernetes', 'k8s', 'containers', 'orchestration', 'consul', 'mesh'] },
+    { graph: multiTierAppTemplate, category: 'Architecture', tags: ['3-tier', 'web', 'app', 'db', 'lamp', 'rails', 'django'] },
   ];
+
+  const categories = [...new Set(templates.map(t => t.category))];
+
+  let searchQuery = $state('');
+  let activeCategory = $state<string | null>(null);
+
+  let filtered = $derived(() => {
+    let result = templates;
+    if (activeCategory) {
+      result = result.filter(t => t.category === activeCategory);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      result = result.filter(t =>
+        t.graph.metadata.displayName.toLowerCase().includes(q) ||
+        t.graph.metadata.description.toLowerCase().includes(q) ||
+        t.tags.some(tag => tag.includes(q)) ||
+        t.category.toLowerCase().includes(q)
+      );
+    }
+    return result;
+  });
 </script>
 
 <div class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
-  <div class="bg-background border rounded-lg shadow-lg w-full max-w-2xl">
-    <div class="flex items-center justify-between p-4 border-b">
+  <div class="bg-background border rounded-lg shadow-lg w-full max-w-3xl max-h-[85vh] flex flex-col">
+    <div class="flex items-center justify-between p-4 border-b shrink-0">
       <div>
         <h2 class="font-semibold">New Program</h2>
         <p class="text-sm text-muted-foreground">Start from a template or blank</p>
@@ -35,29 +94,70 @@
       <button class="text-muted-foreground hover:text-foreground" onclick={onClose}>✕</button>
     </div>
 
-    <div class="p-4 grid grid-cols-2 gap-3">
-      <!-- Blank option -->
-      <button
-        class="border-2 border-dashed rounded-lg p-4 text-left hover:border-primary hover:bg-accent transition-colors"
-        onclick={onBlank}
-      >
-        <p class="font-medium text-sm">Start from scratch</p>
-        <p class="text-xs text-muted-foreground mt-1">Empty program with no resources</p>
-      </button>
-
-      {#each templates as t}
+    <!-- Search + category filter -->
+    <div class="px-4 pt-3 pb-2 border-b shrink-0 space-y-2">
+      <input
+        type="text"
+        class="flex w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        placeholder="Search templates..."
+        bind:value={searchQuery}
+      />
+      <div class="flex flex-wrap gap-1.5">
         <button
-          class="border rounded-lg p-4 text-left hover:border-primary hover:bg-accent transition-colors"
-          onclick={() => onSelect(t.graph)}
-        >
-          <div class="flex items-start justify-between gap-2">
-            <p class="font-medium text-sm">{t.graph.metadata.displayName}</p>
-            <span class="text-xs bg-muted px-2 py-0.5 rounded-full shrink-0">{t.category}</span>
-          </div>
-          <p class="text-xs text-muted-foreground mt-1">{t.graph.metadata.description}</p>
-          <p class="text-xs text-muted-foreground mt-2">{t.resourceCount} resource{t.resourceCount === 1 ? '' : 's'}</p>
-        </button>
-      {/each}
+          class="text-xs px-2.5 py-1 rounded-full transition-colors {activeCategory === null ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'}"
+          onclick={() => activeCategory = null}
+        >All</button>
+        {#each categories as cat}
+          <button
+            class="text-xs px-2.5 py-1 rounded-full transition-colors {activeCategory === cat ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'}"
+            onclick={() => activeCategory = activeCategory === cat ? null : cat}
+          >{cat}</button>
+        {/each}
+      </div>
+    </div>
+
+    <!-- Template grid (scrollable) -->
+    <div class="p-4 overflow-y-auto flex-1 min-h-0">
+      <div class="grid grid-cols-2 gap-3">
+        <!-- Blank option -->
+        {#if !searchQuery.trim() && !activeCategory}
+          <button
+            class="border-2 border-dashed rounded-lg p-4 text-left hover:border-primary hover:bg-accent transition-colors"
+            onclick={onBlank}
+          >
+            <p class="font-medium text-sm">Start from scratch</p>
+            <p class="text-xs text-muted-foreground mt-1">Empty program with no resources</p>
+          </button>
+        {/if}
+
+        {#each filtered() as t}
+          <button
+            class="border rounded-lg p-4 text-left hover:border-primary hover:bg-accent transition-colors"
+            onclick={() => onSelect(t.graph)}
+          >
+            <div class="flex items-start justify-between gap-2">
+              <p class="font-medium text-sm">{t.graph.metadata.displayName}</p>
+              <div class="flex items-center gap-1.5 shrink-0">
+                {#if t.graph.metadata.agentAccess}
+                  <Tooltip.Root>
+                    <Tooltip.Trigger>
+                      <span class="text-xs bg-blue-500/10 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded-full">&#x1f310;</span>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>Agent Connect enabled — secure mesh networking auto-injected at deploy</Tooltip.Content>
+                  </Tooltip.Root>
+                {/if}
+                <span class="text-xs bg-muted px-2 py-0.5 rounded-full">{t.category}</span>
+              </div>
+            </div>
+            <p class="text-xs text-muted-foreground mt-1 line-clamp-2">{t.graph.metadata.description}</p>
+            <p class="text-xs text-muted-foreground mt-2">{totalResources(t.graph)} resource{totalResources(t.graph) === 1 ? '' : 's'}</p>
+          </button>
+        {/each}
+      </div>
+
+      {#if filtered().length === 0 && (searchQuery.trim() || activeCategory)}
+        <p class="text-sm text-muted-foreground text-center py-8">No templates match your search.</p>
+      {/if}
     </div>
   </div>
 </div>

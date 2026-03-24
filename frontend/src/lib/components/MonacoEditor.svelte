@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import type { ValidationError } from '$lib/types';
   import { getOciSchema, getResourceTypes } from '$lib/schema';
+  import { propagateRenameYaml } from '$lib/program-graph/rename-resource';
 
   let {
     value = $bindable(''),
@@ -9,12 +10,14 @@
     readonly = false,
     markers = [] as ValidationError[],
     onchange,
+    enableResourceRename = false,
   }: {
     value?: string;
     height?: string;
     readonly?: boolean;
     markers?: ValidationError[];
     onchange?: () => void;
+    enableResourceRename?: boolean;
   } = $props();
 
   let container: HTMLDivElement;
@@ -97,6 +100,30 @@
         },
       });
     }).catch(() => {/* schema unavailable — no autocomplete */});
+
+    if (enableResourceRename) {
+      editor.addAction({
+        id: 'rename-resource',
+        label: 'Rename Resource (update all references)',
+        keybindings: [monaco.KeyCode.F2],
+        contextMenuGroupId: 'navigation',
+        contextMenuOrder: 1,
+        run(ed: any) {
+          const position = ed.getPosition();
+          if (!position) return;
+          const word = ed.getModel()?.getWordAtPosition(position);
+          if (!word) return;
+          const oldName = word.word;
+          const newName = prompt(`Rename resource "${oldName}" to:`, oldName);
+          if (!newName || newName === oldName) return;
+          const updated = propagateRenameYaml(ed.getValue(), oldName, newName);
+          if (updated !== ed.getValue()) {
+            ed.setValue(updated);
+            onchange?.();
+          }
+        },
+      });
+    }
   });
 
   onDestroy(() => {

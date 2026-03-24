@@ -1,9 +1,11 @@
 <script lang="ts">
   import type { PropertyEntry, ConfigFieldDef } from '$lib/types/program-graph';
+  import type { PropertySchema } from '$lib/schema';
   import { Input } from '$lib/components/ui/input';
   import * as Tooltip from '$lib/components/ui/tooltip';
+  import ObjectPropertyEditor from './ObjectPropertyEditor.svelte';
 
-  type PropertyKeyItem = { value: string; type: string; required: boolean; description?: string };
+  type PropertyKeyItem = { value: string; type: string; required: boolean; description?: string; properties?: Record<string, PropertySchema>; items?: PropertySchema };
 
   type ResourceRefItem = { name: string; attrs: string[] }; // resource name + known output attrs
 
@@ -34,8 +36,8 @@
   let keyPicker = $state<number | null>(null);
   let keyFilter = $state('');
 
-  // Detect {{ .Config.KEY }} references
-  const CONFIG_REF_RE = /^\{\{\s*\.Config\.(\w+)\s*\}\}$/;
+  // Detect {{ .Config.KEY }} references — with or without wrapping quotes
+  const CONFIG_REF_RE = /^"?\{\{\s*\.Config\.(\w+)\s*\}\}"?$/;
   function getConfigRef(value: string): string | null {
     return CONFIG_REF_RE.exec(value)?.[1] ?? null;
   }
@@ -73,6 +75,20 @@
 
   function getPropertySchemaType(key: string): string {
     return propertyKeyItems.find(k => k.value === key)?.type ?? 'string';
+  }
+
+  function getPropertySchema(key: string): PropertySchema | null {
+    const item = propertyKeyItems.find(k => k.value === key);
+    if (!item) return null;
+    return { type: item.type, required: item.required, description: item.description, properties: item.properties, items: item.items };
+  }
+
+  function hasStructuredSchema(key: string): boolean {
+    const item = propertyKeyItems.find(k => k.value === key);
+    if (!item) return false;
+    if (item.type === 'object' && item.properties && Object.keys(item.properties).length > 0) return true;
+    if (item.type === 'array' && item.items?.properties && Object.keys(item.items.properties).length > 0) return true;
+    return false;
   }
 
   // Insert a value from the unified source picker
@@ -268,8 +284,23 @@
               </Tooltip.Root>
             {/if}
           </div>
+        {:else if hasStructuredSchema(prop.key)}
+          <!-- Structured object/array property with sub-field editing -->
+          {@const propSchema = getPropertySchema(prop.key)}
+          {#if propSchema}
+            <ObjectPropertyEditor
+              value={prop.value}
+              onvaluechange={(v) => updateValue(i, v)}
+              schema={propSchema}
+              {configFields}
+              {allResourceNames}
+              {allResourceRefs}
+              {variableNames}
+              {readonly}
+            />
+          {/if}
         {:else if getPropertySchemaType(prop.key) === 'object'}
-          <!-- Object-type property: multi-line textarea for YAML sub-mapping -->
+          <!-- Object-type property without sub-field schema: multi-line textarea -->
           <div class="relative">
             <textarea
               value={prop.value}

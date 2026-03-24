@@ -2,6 +2,8 @@ export interface PropertySchema {
   type: string;
   required: boolean;
   description?: string;
+  properties?: Record<string, PropertySchema>;
+  items?: PropertySchema;
 }
 
 export interface ResourceSchema {

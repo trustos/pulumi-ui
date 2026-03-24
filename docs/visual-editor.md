@@ -134,29 +134,42 @@ Tab switch is the sync trigger:
 ## Component Tree
 
 ```
-src/pages/ProgramEditor.svelte          ← page (owns state, fetches on mount)
+src/pages/ProgramEditor.svelte          ← page (owns state, fetches on mount, rename propagation)
   ├── ProgramEditorHeader               (name, display name, description, Save/Cancel)
   ├── EditorModeBar                     (Visual | YAML toggle + sync status)
   ├── [Visual mode]
   │     ├── SectionNavigator            (left: sections list, add/rename/delete)
-  │     ├── SectionEditor               (center: renders selected section items)
-  │     │     ├── ResourceCard          (type, name, PropertyEditor, dependsOn)
-  │     │     ├── LoopBlock             (loop config header + nested items)
-  │     │     ├── ConditionalBlock      (condition header + if/else nested items)
+  │     ├── SectionEditor               (center: renders selected section items, passes onRenameResource)
+  │     │     ├── ResourceCard          (type, name, PropertyEditor, dependsOn, onRename → propagation)
+  │     │     ├── LoopBlock             (loop config header + nested items, passes onRenameResource)
+  │     │     ├── ConditionalBlock      (condition header + if/else nested items, passes onRenameResource)
   │     │     └── RawCodeBlock          (inline Monaco for degraded/unparseable YAML)
   │     ├── ConfigFieldPanel            (right top: config fields + groups)
   │     └── OutputsPanel                (right bottom: stack outputs)
   └── [YAML mode]
-        └── MonacoEditor                (YAML + Go template, error markers, autocomplete)
+        └── MonacoEditor                (YAML + Go template, error markers, autocomplete, F2 rename)
 ```
 
 **`ResourceCatalog.svelte`** — full-screen overlay triggered by "Add Resource" in SectionEditor. Left panel: category tree from OCI schema namespace. Right panel: filterable resource list. On confirm: creates a `ResourceItem` pre-filled with all required properties from the schema.
 
-**`ProgramTemplateGallery.svelte`** — shown when creating a new program. Templates are TypeScript-defined `ProgramGraph` objects in `src/lib/program-graph/templates/`.
+**`ProgramTemplateGallery.svelte`** — shown when creating a new program. Features:
+- **11 templates** across 7 categories: Networking, Compute, Web, Security, Data, High Availability, Cluster, Architecture.
+- **Search** — text input filters by name, description, tags, and category.
+- **Category pills** — clickable category filters (All / Networking / Compute / etc.).
+- **Agent Connect indicator** — templates with `agentAccess: true` show a globe icon with tooltip.
+- **Resource count** — computed dynamically from the graph, including resources inside loops/conditionals.
+- Templates are TypeScript-defined `ProgramGraph` objects in `src/lib/program-graph/templates/`.
 
 ---
 
 ## Key Behaviors
+
+### Resource Rename Propagation
+Renaming a resource in the visual editor automatically updates all `${oldName...}` references, `dependsOn` arrays, and output values across the entire program graph — including inside loops, conditionals, and across multiple sections. The rename fires on blur of the name input in `ResourceCard.svelte` and is handled by `propagateRename()` from `$lib/program-graph/rename-resource.ts`.
+
+In **YAML mode**, press **F2** (or right-click → "Rename Resource") to trigger `propagateRenameYaml()` which updates all `${oldName...}` references in the text.
+
+Both functions are covered by 23 Vitest unit tests in `rename-resource.test.ts` — including edge cases for partial name matching, multiple references in one value, nested loops/conditionals, special regex characters, and realistic full-program YAML.
 
 ### Property Autocomplete
 `ResourceCard` reactively loads the schema for `resource.resourceType` via `$effect`. `PropertyEditor` shows an inline dropdown of all properties when the key field is focused (required properties first, marked with `*`).
@@ -174,8 +187,34 @@ For required non-object property rows with an empty value, a `→ config` chip i
 
 **Promote to Variable** — For certain well-known keys (e.g. `availabilityDomain`), a `→ variable` chip is shown instead. Clicking it auto-scaffolds the full `fn::invoke` variable definition in the graph's `variables:` and sets the property value to the correct Pulumi interpolation (e.g. `${availabilityDomains[0].name}`). This is driven by `KNOWN_VARIABLE_TEMPLATES` in `ProgramEditor.svelte`. For unknown keys, it sets the value to `${key}` and the user completes the variable definition manually.
 
+### Structured Object Property Editor
+When the OCI schema provides sub-field definitions for an object or array-of-objects property, `PropertyEditor` delegates rendering to `ObjectPropertyEditor.svelte` instead of showing a raw textarea. This gives users:
+
+- **Named sub-field rows** with key labels, required markers, and description tooltips.
+- **Reference pickers** (⊕) on every sub-field — config refs, variables, and resource outputs.
+- **Chip rendering** — `{{ .Config.KEY }}` and `${resource.id}` display as colored pills.
+- **Add optional sub-fields** — missing sub-fields appear as `+ fieldName` buttons below.
+- **Array mode** — `routeRules`, `ingressSecurityRules`, etc. render as a list of sub-field editors with add/remove item controls.
+- **Graceful fallback** — if a value string cannot be parsed (malformed or hand-edited), the editor shows a raw textarea with an explanatory message.
+
+Properties with structured editing enabled:
+
+| Property | Type | Sub-fields from schema |
+|---|---|---|
+| `createVnicDetails` | object | `subnetId*`, `assignPublicIp`, `nsgIds`, `displayName`, `hostnameLabel` |
+| `sourceDetails` | object | `sourceType*`, `imageId`, `bootVolumeSizeInGbs` |
+| `shapeConfig` | object | `ocpus`, `memoryInGbs` |
+| `healthChecker` | object | `protocol*`, `port*`, `urlPath`, `returnCode`, `intervalInMillis`, `timeoutInMillis`, `retries` |
+| `tcpOptions` / `udpOptions` | object | `destinationPortRange` → `{ min*, max* }` |
+| `routeRules` | array | items: `{ destination*, networkEntityId*, description }` |
+| `egressSecurityRules` | array | items: `{ protocol*, destination*, ... }` |
+| `ingressSecurityRules` | array | items: `{ protocol*, source*, ... }` |
+| `placementConfigurations` | array | items: `{ availabilityDomain*, primarySubnetId* }` |
+
+The compact value format (`{ key: "val" }` / `[{ ... }]`) is parsed and serialized by `$lib/program-graph/object-value.ts`. Sub-field schemas come from `PropertySchema.Properties` / `PropertySchema.Items` — populated by resolving `$ref` pointers in the live Pulumi schema or from the hardcoded `fallbackSchema()`.
+
 ### Object Property Placeholders
-Textarea fields for object-type properties show contextual placeholder text:
+When no structured sub-fields are available (plain `object` type without schema), textarea fields show contextual placeholder text:
 
 | Property key | Placeholder |
 |---|---|

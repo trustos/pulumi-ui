@@ -91,14 +91,17 @@ internal/db/         SQLite stores (one file per domain)
 internal/stacks/     Stack YAML envelope (StackConfig struct)
 internal/auth/       Session middleware
 internal/crypto/     AES-GCM encrypt / decrypt
-internal/oci/        Minimal OCI REST client (credential verification + shapes/images)
+internal/oci/        Minimal OCI REST client (credential verification + shapes/images + schema)
+  schema.go          OCI provider schema parser with $ref resolution and fallback
+  testdata/          JSON fixtures for schema tests
 internal/keystore/   Encryption key resolution (env → file → auto-generate)
 
 docs/                Architecture and developer documentation (see index below)
 frontend/            Svelte 5 SPA (src/ is the source; dist/ is embedded)
   src/pages/         Full-page route components
   src/lib/           Shared components, API client, stores, types
-  src/lib/components/ Reusable UI components (ConfigForm, dialogs, pickers)
+  src/lib/components/ Reusable UI components (ConfigForm, dialogs, pickers, ObjectPropertyEditor)
+  src/lib/program-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking)
   src/lib/api.ts     All backend calls — no raw fetch elsewhere
   src/lib/types.ts   TypeScript interfaces matching backend JSON
 ```

@@ -414,6 +414,13 @@ Resource type tokens follow the canonical pattern `oci:[Module]/[subpath]:[Resou
 
 **Use canonical form in new programs.** The visual editor's property autocomplete, required-field validation (Level 5), and the Resource Catalog all key off the canonical form.
 
+### Structured Object Properties
+The visual editor renders object-type properties (e.g. `createVnicDetails`, `sourceDetails`, `shapeConfig`, `routeRules`) as structured sub-field editors when the OCI provider schema includes sub-field definitions. Instead of typing raw compact strings, users get per-sub-field input rows with reference pickers, required markers, and description tooltips.
+
+The compact string format (`{ subnetId: "${subnet.id}", assignPublicIp: true }`) is preserved in the YAML output and round-trips cleanly. The parser/serializer in `object-value.ts` handles nested objects, arrays, template expressions, and quoted strings.
+
+Sub-field schema definitions come from resolving `$ref` pointers in the Pulumi OCI provider schema (see `internal/oci/schema.go`). The hardcoded `fallbackSchema()` also carries sub-fields for the most common properties, so structured editing works even without the `pulumi` binary.
+
 ### Identity
 
 ```yaml
@@ -742,6 +749,17 @@ A program that fails validation cannot be saved. Fix all errors shown in the edi
 | Editable via UI | No | Yes |
 
 For programs requiring runtime Pulumi output chaining, use a built-in Go program. YAML programs can use `cloudInit` but it resolves only static config values — runtime OCIDs must be fetched inside the VM at boot time via the OCI IMDS.
+
+---
+
+## Resource Rename Propagation
+
+Renaming a resource key changes all `${name}` references. Both editors support automatic propagation:
+
+- **Visual editor**: edit the resource name field → on blur, all `${oldName...}` property values, `dependsOn` arrays, and output values update automatically across sections, loops, and conditionals.
+- **YAML editor**: place cursor on a resource name → press **F2** (or right-click → "Rename Resource") → enter the new name → all `${oldName...}` references in the YAML text are updated.
+
+Logic: `$lib/program-graph/rename-resource.ts` (`propagateRename` for graph, `propagateRenameYaml` for text). Covered by 23 Vitest unit tests.
 
 ---
 

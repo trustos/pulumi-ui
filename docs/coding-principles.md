@@ -254,16 +254,67 @@ traefik-nlb-bs-{{ $port }}:
 
 ---
 
-## 10. Testing Approach
+## 10. Testing Requirements
 
-- Handlers: test via `httptest` with mock services (interfaces make this possible).
-- Services: unit-test with mock repositories.
-- Stores: integration-test against a real in-memory SQLite instance.
-- Engine: integration-test against a real Pulumi workspace (expensive; run in CI only).
-- Programs/validation: unit-test the 7-level validator (template syntax → template render → YAML structure → config section → resource structure → variable references → agent access context) with known good/bad YAML inputs.
-- Agent injection: unit-test `internal/agentinject/` (MIME composition, YAML injection with intermediate node creation, networking injection including bare-instance NSG/NLB creation). Tests in `yaml_test.go` (11 tests) and `network_test.go` (12 tests).
-- API handlers: unit-test `internal/api/` — `programs_test.go` (5 tests) covers the `hasBlockingErrors` helper ensuring Level 7 warnings are non-blocking while Levels 1–6 block saving.
-- Crypto: unit-test `internal/crypto/` (encrypt/decrypt round-trip).
-- Pipeline integration: test the full engine pipeline (template render → agent user_data injection → networking injection) in `internal/programs/pipeline_test.go`. Covers both full-networking and bare-instance scenarios.
-- Frontend: Vitest unit tests for pure utility modules — `agent-access.test.ts` (12 tests) for Agent Connect toggle YAML patching, `scaffold-networking.test.ts` (16 tests) for the VCN+Subnet scaffold in both visual graph and YAML modes. Run via `npx vitest run` in the `frontend/` directory.
-- CI: GitHub Actions runs `go test ./internal/... -count=1 -race`, `npx svelte-check --threshold warning`, and `npx vitest run` on every push and PR.
+Every new feature — backend, frontend, or agent — **must** ship with tests. The
+following rules are the project-level contract; they apply to every contributor
+and every agent session.
+
+### 10.1 Mandatory coverage by area
+
+| Area | Test type | Tool | Where |
+|------|-----------|------|-------|
+| **Exported Go functions** | Unit test | `testing` + `testify/assert` | Co-located `_test.go` |
+| **API endpoints** | Handler test | `httptest` + mock services | `internal/api/*_test.go` |
+| **Services** | Unit test | Mock repositories (interfaces) | `internal/services/*_test.go` |
+| **Stores** | Integration test | Real in-memory SQLite | `internal/db/*_test.go` |
+| **Engine** | Integration test | Real Pulumi workspace (CI only) | `internal/engine/*_test.go` |
+| **Programs / validation** | Unit test | Known good/bad YAML inputs | `internal/programs/*_test.go` |
+| **Agent injection** | Unit test | Inline YAML fixtures | `internal/agentinject/*_test.go` |
+| **Schema parsing** | Unit test | JSON fixtures in `testdata/` | `internal/oci/*_test.go` |
+| **Crypto** | Round-trip test | `testing` | `internal/crypto/*_test.go` |
+| **Frontend utilities** | Vitest unit test | `describe`/`it`/`expect` | Co-located `.test.ts` |
+| **Templates** | No new tests required | Existing Vitest suites must pass | — |
+
+### 10.2 Rules
+
+1. **Every new feature must have tests.** No exception. If you add a function,
+   endpoint, validation rule, or utility module, add a test file (or extend an
+   existing one) covering the happy path and at least one error/edge case.
+
+2. **Backend Go code**: every new exported function and every new API endpoint
+   must have a corresponding `_test.go` file. Use `testify/assert` for
+   assertions. Pure functions get unit tests; handlers get `httptest` tests.
+
+3. **Frontend TypeScript utilities**: every new file in `src/lib/program-graph/`
+   or `src/lib/` that exports pure functions must have a co-located `.test.ts`
+   file using Vitest. Component logic extracted into utilities is testable;
+   component rendering is not (no component test framework in this project).
+
+4. **Schema changes**: any change to `PropertySchema`, `ResourceSchema`, or
+   `parseSchema()` must include a test with a JSON fixture in
+   `internal/oci/testdata/`.
+
+5. **Test naming convention.**
+   - Go: `TestFunctionName_Scenario` (e.g., `TestParseSchema_ResolvesRef`)
+   - TS: `describe('moduleName')` with `it('does specific thing')`
+
+6. **Test fixture files** live in `testdata/` directories (Go convention) or
+   co-located `.test.ts` files (frontend convention).
+
+7. **CI must pass before merge.**
+   - Go: `go test ./internal/... -count=1 -race`
+   - Frontend: `npx vitest run` + `npx svelte-check --threshold warning` + `npm run build`
+   - All checks run in `.github/workflows/ci.yml` on every push and PR to `main`.
+
+8. **Local pre-push check**: run `make test-all` before pushing. This executes
+   Go tests, Vitest, and svelte-check in one command.
+
+### 10.3 Current test inventory
+
+- Agent injection: `yaml_test.go` (11 tests), `network_test.go` (12 tests).
+- API handlers: `programs_test.go` (5 tests) — `hasBlockingErrors` helper.
+- Programs/validation: `validate_test.go`, `pipeline_test.go` — 7-level validator + full pipeline.
+- Crypto: encrypt/decrypt round-trip in `internal/crypto/`.
+- Schema: `internal/oci/schema_test.go` (12 tests) — `$ref` resolution, nested ref, array items, fallback sub-fields, backward compatibility.
+- Frontend: `agent-access.test.ts` (12 tests), `scaffold-networking.test.ts` (16 tests), `rename-resource.test.ts` (23 tests), `object-value.test.ts` (32 tests) — compact object parser/serializer with round-trip, edge cases, and array support.

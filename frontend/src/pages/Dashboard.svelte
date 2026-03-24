@@ -24,6 +24,9 @@
       .then(s => { stacks = s; })
       .catch(e => { error = e.message; })
       .finally(() => { loading = false; });
+    listPrograms()
+      .then(p => { programs = p; })
+      .catch(() => { programs = []; });
     listAccounts()
       .then(a => { accounts = a; })
       .catch(() => { accounts = []; })
@@ -47,6 +50,10 @@
   }
 
   let hasAccounts = $derived(!loadingAccounts && accounts.length > 0);
+
+  let agentAccessByProgram = $derived(
+    Object.fromEntries(programs.map(p => [p.name, !!p.agentAccess]))
+  );
 </script>
 
 <div class="max-w-4xl mx-auto">
@@ -100,7 +107,7 @@
   {:else}
     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {#each stacks as stack}
-        <StackCard {stack} />
+        <StackCard {stack} agentAccess={agentAccessByProgram[stack.program] ?? false} />
       {/each}
     </div>
   {/if}

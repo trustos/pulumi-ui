@@ -22,12 +22,14 @@
     onRemove,
     onMoveUp,
     onMoveDown,
+    onRenameResource,
   }: {
     loop?: LoopItem;
     configFields?: ConfigFieldDef[];
     onRemove?: () => void;
     onMoveUp?: () => void;
     onMoveDown?: () => void;
+    onRenameResource?: (oldName: string, newName: string) => void;
   } = $props();
 
   const sourceTypeLabels: Record<LoopSource['type'], string> = {
@@ -243,6 +245,7 @@
             onRemove={() => removeNestedItem(i)}
             onMoveUp={i > 0 ? () => moveNestedItem(i, -1) : undefined}
             onMoveDown={i < loop.items.length - 1 ? () => moveNestedItem(i, 1) : undefined}
+            onRename={onRenameResource}
           />
         {:else if item.kind === 'loop'}
           <LoopBlockSelf
@@ -251,12 +254,14 @@
             onRemove={() => removeNestedItem(i)}
             onMoveUp={i > 0 ? () => moveNestedItem(i, -1) : undefined}
             onMoveDown={i < loop.items.length - 1 ? () => moveNestedItem(i, 1) : undefined}
+            {onRenameResource}
           />
         {:else if item.kind === 'conditional'}
           <ConditionalBlock
             bind:conditional={loop.items[i] as ConditionalItem}
             {configFields}
             onRemove={() => removeNestedItem(i)}
+            {onRenameResource}
           />
         {:else if item.kind === 'raw'}
           <div class="border rounded bg-amber-50 dark:bg-amber-950/20 border-amber-200 p-2">

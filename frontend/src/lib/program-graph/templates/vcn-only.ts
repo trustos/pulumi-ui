@@ -1,11 +1,12 @@
 import type { ProgramGraph } from '$lib/types/program-graph';
 
 export const vcnOnlyTemplate: ProgramGraph = {
-  metadata: { name: 'my-vcn', displayName: 'VCN Only', description: 'Creates a compartment and VCN' },
+  metadata: { name: 'my-vcn', displayName: 'Virtual Cloud Network', description: 'Compartment + VCN — the minimal networking foundation for any OCI deployment' },
   configFields: [
     { key: 'compartmentName', type: 'string', default: 'my-compartment' },
     { key: 'vcnCidr', type: 'string', default: '10.0.0.0/16', description: 'CIDR block for the VCN' },
   ],
+  variables: [],
   sections: [{
     id: 'networking',
     label: 'Networking',

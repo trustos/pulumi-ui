@@ -283,21 +283,31 @@ outputs:
                 <Card.Title class="text-base">{prog.displayName}</Card.Title>
                 <p class="text-xs text-muted-foreground font-mono mt-0.5">{prog.name}</p>
               </div>
-              {#if !prog.isCustom}
-                <Tooltip.Root>
-                  <Tooltip.Trigger>
-                    <span class="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full shrink-0">Built-in</span>
-                  </Tooltip.Trigger>
-                  <Tooltip.Content>Shipped with the application — read-only, can be forked</Tooltip.Content>
-                </Tooltip.Root>
-              {:else}
-                <Tooltip.Root>
-                  <Tooltip.Trigger>
-                    <span class="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full shrink-0">Custom</span>
-                  </Tooltip.Trigger>
-                  <Tooltip.Content>User-defined YAML program — fully editable</Tooltip.Content>
-                </Tooltip.Root>
-              {/if}
+              <div class="flex items-center gap-1.5 shrink-0">
+                {#if prog.agentAccess}
+                  <Tooltip.Root>
+                    <Tooltip.Trigger>
+                      <span class="text-xs bg-blue-500/10 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded-full">&#x1f310;</span>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>Agent Connect — secure mesh networking auto-injected at deploy</Tooltip.Content>
+                  </Tooltip.Root>
+                {/if}
+                {#if !prog.isCustom}
+                  <Tooltip.Root>
+                    <Tooltip.Trigger>
+                      <span class="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full">Built-in</span>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>Shipped with the application — read-only, can be forked</Tooltip.Content>
+                  </Tooltip.Root>
+                {:else}
+                  <Tooltip.Root>
+                    <Tooltip.Trigger>
+                      <span class="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full">Custom</span>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>User-defined YAML program — fully editable</Tooltip.Content>
+                  </Tooltip.Root>
+                {/if}
+              </div>
             </div>
           </Card.Header>
           <Card.Content class="flex-1 pb-3">

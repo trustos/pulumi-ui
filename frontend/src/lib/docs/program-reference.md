@@ -51,7 +51,27 @@ Click **+ Resource** (or **+ Resource** inside a loop) to open the Resource Cata
 
 When you set a type and leave the field (blur), all required properties for that type are automatically added as empty rows — so you only need to fill in values, not figure out which properties are mandatory.
 
-**Property value picker** — each property value field has a `{}` button on the right. Clicking it shows a dropdown of all defined config fields. Selecting one inserts `{{ .Config.fieldKey }}` — the most common way to wire a config value into a resource property.
+**Property value picker** — each property value field has a `⊕` button on the right. Clicking it shows a dropdown of all defined config fields, variables, and resource outputs. Selecting one inserts the appropriate reference — `{{ .Config.fieldKey }}` for config, `${varName}` for variables, or `${resource.attr}` for resources.
+
+**Structured object properties** — properties like `createVnicDetails`, `sourceDetails`, `shapeConfig`, and `routeRules` have sub-field definitions from the OCI provider schema. Instead of a raw text input, these properties show a structured editor with:
+- Named sub-field rows (e.g. `subnetId`, `assignPublicIp` for `createVnicDetails`)
+- Required sub-fields marked with `*`
+- The same `⊕` reference picker on each sub-field
+- Config and resource reference chips (colored badges showing `config fieldName` or `ref resource.id`)
+- Optional sub-fields available via `+ fieldName` buttons
+- For array properties (like `routeRules`), add/remove item controls
+
+If the structured editor cannot parse an existing value, it falls back to a raw text input.
+
+**Renaming a resource** — when you change a resource's name in the visual editor (the text field at the top of the resource card), all references to it are updated automatically when you leave the field:
+- `${oldName.id}` becomes `${newName.id}` in all property values
+- `${oldName[0].name}` becomes `${newName[0].name}` in indexed references
+- `dependsOn` checkboxes update to reference the new name
+- Output values like `${oldName.publicIp}` update to `${newName.publicIp}`
+
+This works across all sections, including inside loops and conditionals.
+
+In **YAML mode**, place your cursor on a resource name and press **F2** (or right-click → "Rename Resource"). Type the new name — all `${oldName...}` references are updated automatically.
 
 #### Loop blocks
 

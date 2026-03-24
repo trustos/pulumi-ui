@@ -13,9 +13,11 @@ import (
 )
 
 type PropertySchema struct {
-	Type        string `json:"type"`
-	Required    bool   `json:"required"`
-	Description string `json:"description,omitempty"`
+	Type        string                    `json:"type"`
+	Required    bool                      `json:"required"`
+	Description string                    `json:"description,omitempty"`
+	Properties  map[string]PropertySchema `json:"properties,omitempty"`
+	Items       *PropertySchema           `json:"items,omitempty"`
 }
 
 type ResourceSchema struct {
@@ -239,27 +241,22 @@ func saveCache(s map[string]ResourceSchema) {
 
 // parseSchema converts the raw JSON output of `pulumi schema get oci` into
 // the ResourceSchema map used by the rest of the application.
+// It resolves $ref pointers into the top-level "types" section to populate
+// sub-field schemas for object/array-of-object properties (up to 3 levels).
 func parseSchema(data []byte) map[string]ResourceSchema {
 	var raw struct {
 		Resources map[string]struct {
-			Description     string `json:"description"`
-			InputProperties map[string]struct {
-				Type        string `json:"type"`
-				Description string `json:"description"`
-			} `json:"inputProperties"`
-			// "properties" in Pulumi schema = output attributes (what the resource exposes
-			// after creation — includes id, echoed inputs, and computed values like
-			// defaultDhcpOptionsId, ipAddresses, etc.)
-			OutputProperties map[string]struct {
-				Type        string `json:"type"`
-				Description string `json:"description"`
-			} `json:"properties"`
-			RequiredInputs []string `json:"requiredInputs"`
+			Description     string                   `json:"description"`
+			InputProperties map[string]rawProperty    `json:"inputProperties"`
+			OutputProperties map[string]rawProperty   `json:"properties"`
+			RequiredInputs  []string                  `json:"requiredInputs"`
 		} `json:"resources"`
+		Types map[string]rawTypeDef `json:"types"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
 	}
+
 	result := make(map[string]ResourceSchema, len(raw.Resources))
 	for k, v := range raw.Resources {
 		required := make(map[string]bool, len(v.RequiredInputs))
@@ -268,26 +265,11 @@ func parseSchema(data []byte) map[string]ResourceSchema {
 		}
 		inputs := make(map[string]PropertySchema, len(v.InputProperties))
 		for pk, pv := range v.InputProperties {
-			t := pv.Type
-			if t == "" {
-				t = "string"
-			}
-			inputs[pk] = PropertySchema{
-				Type:        t,
-				Required:    required[pk],
-				Description: pv.Description,
-			}
+			inputs[pk] = resolveProperty(pv, required[pk], raw.Types, 0)
 		}
 		outputs := make(map[string]PropertySchema, len(v.OutputProperties))
 		for pk, pv := range v.OutputProperties {
-			t := pv.Type
-			if t == "" {
-				t = "string"
-			}
-			outputs[pk] = PropertySchema{
-				Type:        t,
-				Description: pv.Description,
-			}
+			outputs[pk] = resolveProperty(pv, false, raw.Types, 0)
 		}
 		result[k] = ResourceSchema{
 			Description: v.Description,
@@ -297,6 +279,93 @@ func parseSchema(data []byte) map[string]ResourceSchema {
 	}
 	return result
 }
+
+// rawProperty mirrors the JSON shape of a single property in the Pulumi schema.
+type rawProperty struct {
+	Type        string       `json:"type"`
+	Ref         string       `json:"$ref"`
+	Description string       `json:"description"`
+	Items       *rawProperty `json:"items"`
+}
+
+// rawTypeDef mirrors a named type in the top-level "types" section.
+type rawTypeDef struct {
+	Type        string                  `json:"type"`
+	Properties  map[string]rawProperty  `json:"properties"`
+	Required    []string                `json:"required"`
+	Description string                  `json:"description"`
+}
+
+const maxRefDepth = 3
+
+// resolveProperty converts a raw Pulumi schema property into our PropertySchema,
+// following $ref pointers into the types map for object sub-fields.
+func resolveProperty(rp rawProperty, isRequired bool, types map[string]rawTypeDef, depth int) PropertySchema {
+	ps := PropertySchema{
+		Type:        rp.Type,
+		Required:    isRequired,
+		Description: rp.Description,
+	}
+
+	// If there's a $ref, resolve it from the types map
+	if rp.Ref != "" && depth < maxRefDepth {
+		token := refToToken(rp.Ref)
+		if td, ok := types[token]; ok {
+			if ps.Type == "" {
+				ps.Type = "object"
+			}
+			ps.Properties = resolveTypeDef(td, types, depth+1)
+		}
+	}
+
+	// For arrays, resolve the element schema
+	if rp.Items != nil && depth < maxRefDepth {
+		if ps.Type == "" {
+			ps.Type = "array"
+		}
+		itemSchema := resolveProperty(*rp.Items, false, types, depth+1)
+		ps.Items = &itemSchema
+	}
+
+	// Default type to "string" if still empty
+	if ps.Type == "" {
+		ps.Type = "string"
+	}
+
+	return ps
+}
+
+// resolveTypeDef converts a rawTypeDef into a map of sub-field PropertySchemas.
+func resolveTypeDef(td rawTypeDef, types map[string]rawTypeDef, depth int) map[string]PropertySchema {
+	if len(td.Properties) == 0 {
+		return nil
+	}
+	reqSet := make(map[string]bool, len(td.Required))
+	for _, r := range td.Required {
+		reqSet[r] = true
+	}
+	result := make(map[string]PropertySchema, len(td.Properties))
+	for pk, pv := range td.Properties {
+		result[pk] = resolveProperty(pv, reqSet[pk], types, depth)
+	}
+	return result
+}
+
+// refToToken extracts the type token from a $ref string.
+// e.g. "#/types/oci:Core/InstanceCreateVnicDetails:InstanceCreateVnicDetails"
+// → "oci:Core/InstanceCreateVnicDetails:InstanceCreateVnicDetails"
+func refToToken(ref string) string {
+	const prefix = "#/types/"
+	if len(ref) > len(prefix) {
+		return ref[len(prefix):]
+	}
+	if ref == prefix {
+		return ""
+	}
+	return ref
+}
+
+// strings package not needed; using prefix slicing directly
 
 // fallbackSchema is the last-resort schema used when neither the disk cache
 // nor a live `pulumi schema get oci` fetch is available.
@@ -350,7 +419,14 @@ func fallbackSchema() map[string]ResourceSchema {
 			Inputs: map[string]PropertySchema{
 				"compartmentId": {Type: "string", Required: true},
 				"vcnId":         {Type: "string", Required: true},
-				"routeRules":    {Type: "array", Required: false},
+				"routeRules": {Type: "array", Required: false, Items: &PropertySchema{
+				Type: "object",
+				Properties: map[string]PropertySchema{
+					"destination":    {Type: "string", Required: true, Description: "CIDR block for the route rule destination"},
+					"networkEntityId": {Type: "string", Required: true, Description: "OCID of the target (IGW, NAT, DRG, etc.)"},
+					"description":    {Type: "string", Required: false},
+				},
+			}},
 				"displayName":   {Type: "string", Required: false},
 			},
 		},
@@ -360,8 +436,42 @@ func fallbackSchema() map[string]ResourceSchema {
 				"compartmentId":        {Type: "string", Required: true},
 				"vcnId":                {Type: "string", Required: true},
 				"displayName":          {Type: "string", Required: false},
-				"egressSecurityRules":  {Type: "array", Required: false},
-				"ingressSecurityRules": {Type: "array", Required: false},
+				"egressSecurityRules": {Type: "array", Required: false, Items: &PropertySchema{
+					Type: "object",
+					Properties: map[string]PropertySchema{
+						"protocol":        {Type: "string", Required: true, Description: "6=TCP, 17=UDP, all"},
+						"destination":     {Type: "string", Required: true, Description: "Destination CIDR"},
+						"destinationType": {Type: "string", Required: false, Description: "CIDR_BLOCK or SERVICE_CIDR_BLOCK"},
+						"description":     {Type: "string", Required: false},
+						"stateless":       {Type: "boolean", Required: false},
+						"tcpOptions":      {Type: "object", Required: false, Properties: map[string]PropertySchema{
+							"min": {Type: "integer", Required: false},
+							"max": {Type: "integer", Required: false},
+						}},
+						"udpOptions":      {Type: "object", Required: false, Properties: map[string]PropertySchema{
+							"min": {Type: "integer", Required: false},
+							"max": {Type: "integer", Required: false},
+						}},
+					},
+				}},
+				"ingressSecurityRules": {Type: "array", Required: false, Items: &PropertySchema{
+					Type: "object",
+					Properties: map[string]PropertySchema{
+						"protocol":   {Type: "string", Required: true, Description: "6=TCP, 17=UDP, all"},
+						"source":     {Type: "string", Required: true, Description: "Source CIDR"},
+						"sourceType": {Type: "string", Required: false, Description: "CIDR_BLOCK or SERVICE_CIDR_BLOCK"},
+						"description": {Type: "string", Required: false},
+						"stateless":  {Type: "boolean", Required: false},
+						"tcpOptions": {Type: "object", Required: false, Properties: map[string]PropertySchema{
+							"min": {Type: "integer", Required: false},
+							"max": {Type: "integer", Required: false},
+						}},
+						"udpOptions": {Type: "object", Required: false, Properties: map[string]PropertySchema{
+							"min": {Type: "integer", Required: false},
+							"max": {Type: "integer", Required: false},
+						}},
+					},
+				}},
 			},
 		},
 		"oci:Core/networkSecurityGroup:NetworkSecurityGroup": {
@@ -383,8 +493,18 @@ func fallbackSchema() map[string]ResourceSchema {
 				"destination":            {Type: "string", Required: false},
 				"destinationType":        {Type: "string", Required: false},
 				"description":            {Type: "string", Required: false},
-				"tcpOptions":             {Type: "object", Required: false},
-				"udpOptions":             {Type: "object", Required: false},
+				"tcpOptions": {Type: "object", Required: false, Properties: map[string]PropertySchema{
+					"destinationPortRange": {Type: "object", Required: false, Properties: map[string]PropertySchema{
+						"min": {Type: "integer", Required: true, Description: "Lower bound of the port range"},
+						"max": {Type: "integer", Required: true, Description: "Upper bound of the port range"},
+					}},
+				}},
+				"udpOptions": {Type: "object", Required: false, Properties: map[string]PropertySchema{
+					"destinationPortRange": {Type: "object", Required: false, Properties: map[string]PropertySchema{
+						"min": {Type: "integer", Required: true, Description: "Lower bound of the port range"},
+						"max": {Type: "integer", Required: true, Description: "Upper bound of the port range"},
+					}},
+				}},
 			},
 		},
 		"oci:Core/instance:Instance": {
@@ -394,10 +514,23 @@ func fallbackSchema() map[string]ResourceSchema {
 				"availabilityDomain": {Type: "string", Required: true},
 				"shape":              {Type: "string", Required: true},
 				"displayName":        {Type: "string", Required: false},
-				"sourceDetails":      {Type: "object", Required: true, Description: "Boot volume source"},
-				"createVnicDetails":  {Type: "object", Required: false},
-				"metadata":           {Type: "object", Required: false, Description: "cloud-init userdata etc."},
-				"shapeConfig":        {Type: "object", Required: false, Description: "Flex shape config (ocpus, memoryInGbs)"},
+				"sourceDetails": {Type: "object", Required: true, Description: "Boot volume source", Properties: map[string]PropertySchema{
+					"sourceType":        {Type: "string", Required: true, Description: "image or bootVolume"},
+					"imageId":           {Type: "string", Required: false, Description: "OCID of the image"},
+					"bootVolumeSizeInGbs": {Type: "string", Required: false, Description: "Size of the boot volume in GB"},
+				}},
+				"createVnicDetails": {Type: "object", Required: false, Properties: map[string]PropertySchema{
+					"subnetId":        {Type: "string", Required: false, Description: "OCID of the subnet"},
+					"assignPublicIp":  {Type: "boolean", Required: false, Description: "Whether to assign a public IP"},
+					"nsgIds":          {Type: "array", Required: false, Description: "List of NSG OCIDs"},
+					"displayName":     {Type: "string", Required: false},
+					"hostnameLabel":   {Type: "string", Required: false},
+				}},
+				"metadata": {Type: "object", Required: false, Description: "cloud-init userdata etc."},
+				"shapeConfig": {Type: "object", Required: false, Description: "Flex shape config (ocpus, memoryInGbs)", Properties: map[string]PropertySchema{
+					"ocpus":        {Type: "number", Required: false, Description: "Number of OCPUs"},
+					"memoryInGbs":  {Type: "number", Required: false, Description: "Total memory in GB"},
+				}},
 			},
 		},
 		"oci:Core/volume:Volume": {
@@ -487,7 +620,15 @@ func fallbackSchema() map[string]ResourceSchema {
 				"networkLoadBalancerId": {Type: "string", Required: true},
 				"name":                  {Type: "string", Required: true},
 				"policy":                {Type: "string", Required: true, Description: "FIVE_TUPLE, THREE_TUPLE, TWO_TUPLE"},
-				"healthChecker":         {Type: "object", Required: true},
+				"healthChecker": {Type: "object", Required: true, Properties: map[string]PropertySchema{
+					"protocol":          {Type: "string", Required: true, Description: "TCP, UDP, or HTTP"},
+					"port":              {Type: "integer", Required: true, Description: "Health check port"},
+					"urlPath":           {Type: "string", Required: false, Description: "URL path for HTTP health checks"},
+					"returnCode":        {Type: "integer", Required: false, Description: "Expected HTTP return code"},
+					"intervalInMillis":  {Type: "integer", Required: false, Description: "Interval between checks in ms"},
+					"timeoutInMillis":   {Type: "integer", Required: false, Description: "Timeout per check in ms"},
+					"retries":           {Type: "integer", Required: false, Description: "Number of retries before marking unhealthy"},
+				}},
 				"isPreserveSource":      {Type: "boolean", Required: false},
 			},
 		},
@@ -507,7 +648,10 @@ func fallbackSchema() map[string]ResourceSchema {
 			Inputs: map[string]PropertySchema{
 				"compartmentId":   {Type: "string", Required: true},
 				"displayName":     {Type: "string", Required: false},
-				"instanceDetails": {Type: "object", Required: false, Description: "Launch details (instanceType, launchDetails)"},
+				"instanceDetails": {Type: "object", Required: false, Description: "Launch details (instanceType, launchDetails)", Properties: map[string]PropertySchema{
+					"instanceType":  {Type: "string", Required: true, Description: "compute or instanceOptions"},
+					"launchDetails": {Type: "object", Required: false, Description: "Launch configuration for the instances"},
+				}},
 			},
 		},
 		"oci:Core/instancePool:InstancePool": {
@@ -517,7 +661,13 @@ func fallbackSchema() map[string]ResourceSchema {
 				"instanceConfigurationId": {Type: "string", Required: true},
 				"size":                    {Type: "integer", Required: true, Description: "Number of instances in the pool"},
 				"displayName":             {Type: "string", Required: false},
-				"placementConfigurations": {Type: "array", Required: true, Description: "Array of {availabilityDomain, primarySubnetId}"},
+				"placementConfigurations": {Type: "array", Required: true, Description: "Array of {availabilityDomain, primarySubnetId}", Items: &PropertySchema{
+					Type: "object",
+					Properties: map[string]PropertySchema{
+						"availabilityDomain": {Type: "string", Required: true, Description: "AD for the pool instances"},
+						"primarySubnetId":    {Type: "string", Required: true, Description: "OCID of the primary subnet"},
+					},
+				}},
 			},
 		},
 	}

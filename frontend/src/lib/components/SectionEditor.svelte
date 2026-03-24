@@ -17,6 +17,7 @@
     allProgramResourceRefs = [] as { name: string; attrs: string[] }[], // resource names + output attrs
     variableNames = [] as string[],
     onSwitchToYaml,                           // P2-1: raw block "edit in YAML" callback
+    onRenameResource,
   }: {
     section?: ProgramSection;
     configFields?: ConfigFieldDef[];
@@ -24,6 +25,7 @@
     allProgramResourceRefs?: { name: string; attrs: string[] }[];
     variableNames?: string[];
     onSwitchToYaml?: () => void;
+    onRenameResource?: (oldName: string, newName: string) => void;
   } = $props();
 
   let showCatalog = $state(false);
@@ -145,6 +147,7 @@
               onRemove={() => removeItem(i)}
               onMoveUp={i > 0 ? () => moveItem(i, -1) : undefined}
               onMoveDown={i < section.items.length - 1 ? () => moveItem(i, 1) : undefined}
+              onRename={onRenameResource}
             />
           {:else if item.kind === 'raw'}
             <div class="border rounded-md bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-3">
@@ -163,6 +166,7 @@
               onRemove={() => removeItem(i)}
               onMoveUp={i > 0 ? () => moveItem(i, -1) : undefined}
               onMoveDown={i < section.items.length - 1 ? () => moveItem(i, 1) : undefined}
+              {onRenameResource}
             />
           {:else if item.kind === 'conditional'}
             <ConditionalBlock
@@ -171,6 +175,7 @@
               onRemove={() => removeItem(i)}
               onMoveUp={i > 0 ? () => moveItem(i, -1) : undefined}
               onMoveDown={i < section.items.length - 1 ? () => moveItem(i, 1) : undefined}
+              {onRenameResource}
             />
           {/if}
         </div>

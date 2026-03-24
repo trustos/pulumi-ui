@@ -44,6 +44,7 @@ export interface ProgramMeta {
   configFields: ConfigField[];
   isCustom: boolean;
   applications?: ApplicationDef[];
+  agentAccess?: boolean;
 }
 
 export interface ValidationError {
