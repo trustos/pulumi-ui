@@ -2,7 +2,7 @@
 
 ## Authentication
 
-All API routes except `/api/auth/status`, `/api/auth/register`, and `/api/auth/login` require authentication.
+All API routes except `/api/auth/status`, `/api/auth/register`, `/api/auth/login`, `/api/oci-schema`, `/api/oci-schema/refresh`, and `/api/agent/binary/{os}/{arch}` require authentication.
 
 The `RequireAuth` middleware reads the session token from:
 1. `Authorization: Bearer <token>` header
@@ -141,6 +141,8 @@ When `generate: true` is sent, the server generates an Ed25519 key pair. The res
 | GET    | `/api/programs/{name}`   | —                                                     | `ProgramMeta` (built-in) or `CustomProgram` (custom) |
 | PUT    | `/api/programs/{name}`   | `{ displayName, description, programYaml }`          | `CustomProgram` |
 | DELETE | `/api/programs/{name}`   | —                                                     | `204 No Content` |
+| POST   | `/api/programs/validate` | `{ programYaml }`                                     | `{ valid, errors[], warnings[] }` |
+| POST   | `/api/programs/{name}/fork` | `{ name, displayName, description }`               | `CustomProgram` (201) |
 | GET    | `/api/stacks`            | —                                                     | `StackSummary[]` |
 | PUT | `/api/stacks/{name}` | `{ program, description?, config, ociAccountId, passphraseId, sshKeyId? }` | `200 OK` |
 | GET | `/api/stacks/{name}/info` | — | `StackInfo` |
@@ -152,6 +154,7 @@ When `generate: true` is sent, the server generates an Ed25519 key pair. The res
 | POST | `/api/stacks/{name}/preview` | `{}` | SSE stream |
 | POST | `/api/stacks/{name}/cancel` | — | `200 OK` |
 | POST | `/api/stacks/{name}/unlock` | — | `200 OK` |
+| POST | `/api/stacks/{name}/deploy-apps` | `{}` | SSE stream |
 | DELETE | `/api/stacks/{name}` | — | `200 OK` |
 
 `StackSummary` response shape:
@@ -188,6 +191,8 @@ When `generate: true` is sent, the server generates an Ed25519 key pair. The res
     "connected": true,
     "lighthouseAddr": "1.2.3.4:41820",
     "agentNebulaIp": "10.42.1.2",
+    "agentRealIp": "129.159.1.2",
+    "nebulaSubnet": "10.42.1.0/24",
     "lastSeenAt": 1742472000
   }
 }
@@ -195,7 +200,39 @@ When `generate: true` is sent, the server generates an Ed25519 key pair. The res
 
 The `running` field is `true` while a Pulumi operation is actively executing for this stack. It is derived from the engine's in-memory lock, not from the database.
 
-The `applications` and `appConfig` fields are present only for stacks whose program implements `ApplicationProvider`. The `mesh` field is present only when a stack connection (Nebula PKI) exists in `stack_connections`.
+The `applications` and `appConfig` fields are present only for stacks whose program implements `ApplicationProvider`. The `mesh` field is present only when a stack connection (Nebula PKI) exists in `stack_connections`. The `mesh.agentRealIP` and `mesh.nebulaSubnet` fields are included when available.
+
+### Agent Proxy (requires auth, routes through Nebula mesh)
+
+All agent communication is proxied through the server's userspace Nebula tunnel. No direct browser-to-agent connection exists.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/stacks/{name}/agent/health` | — | Agent health JSON (proxied) |
+| GET | `/api/stacks/{name}/agent/services` | — | Systemd service status JSON (proxied) |
+| POST | `/api/stacks/{name}/agent/exec` | `{ command, args? }` | SSE stream (proxied command output) |
+| POST | `/api/stacks/{name}/agent/upload` | File body, `X-Dest-Path` + `X-File-Mode` headers | Upload result JSON (proxied) |
+| GET | `/api/stacks/{name}/agent/shell` | — | WebSocket upgrade → interactive terminal (PTY) |
+
+All endpoints return `502 Bad Gateway` if the Nebula tunnel cannot be established (no PKI, no agent real IP, or agent unreachable).
+
+The `/agent/shell` endpoint upgrades the browser connection to a WebSocket, then dials the agent's `/shell` endpoint through the Nebula tunnel. The agent allocates a PTY (`/bin/bash`) and streams bidirectionally. Resize messages are supported.
+
+### OCI Schema (no auth required)
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/oci-schema` | — | OCI provider schema JSON (cached) |
+| POST | `/api/oci-schema/refresh` | — | Refreshes the cached OCI schema |
+
+### Agent Binary (no auth required)
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/agent/binary/{os}/{arch}` | — | Binary file download |
+| GET | `/api/agent/binary/{os}` | — | Binary file download (defaults to `arm64`) |
+
+Serves pre-compiled agent binaries from `dist/agent_{os}_{arch}`. Used by cloud-init at instance boot time. No authentication required — the binary itself is not sensitive. Defaults: `os=linux`, `arch=arm64`.
 
 `ProgramMeta` response shape (from `GET /api/programs`):
 ```json

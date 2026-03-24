@@ -109,7 +109,7 @@ func (d *Deployer) waitForAgent(
 			}
 
 			req, _ := http.NewRequestWithContext(ctx, "GET", agentAddr+"/health", nil)
-			req.Header.Set("Authorization", "Bearer agent-token")
+			req.Header.Set("Authorization", "Bearer "+conn.AgentToken)
 			resp, err := client.Do(req)
 			if err != nil {
 				send("output", fmt.Sprintf("Agent not ready yet: %v", err))
@@ -149,7 +149,7 @@ func (d *Deployer) deployWorkload(
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer agent-token") // placeholder
+	req.Header.Set("Authorization", "Bearer "+conn.AgentToken)
 
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(req)

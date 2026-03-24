@@ -30,6 +30,7 @@ The frontend is a pure Svelte 5 SPA built with Vite, embedded in the Go binary v
 | `frontend/src/lib/components/OciImportDialog.svelte` | Multi-step OCI config import wizard (file upload or ZIP) |
 | `frontend/src/lib/components/ApplicationSelector.svelte` | Application catalog selector for stack creation (ApplicationProvider programs) |
 | `frontend/src/lib/components/StackCard.svelte` | Card shown on Dashboard for each stack (with Agent Connect indicator) |
+| `frontend/src/lib/components/WebTerminal.svelte` | Interactive web terminal via xterm.js + WebSocket to agent /shell (Nebula mesh) |
 | `frontend/src/lib/components/ui/` | shadcn-svelte component library (Button, Input, Select, Dialog, Tabs, Badge, Combobox, etc.) |
 
 ---
@@ -47,6 +48,8 @@ The frontend is a pure Svelte 5 SPA built with Vite, embedded in the Go binary v
 | `/settings` | `Settings.svelte` | Yes |
 | `/stacks/{name}` | `StackDetail.svelte` | Yes |
 | `/programs/:name/edit` | `ProgramEditor.svelte` | Yes |
+| `/programs/:name/fork` | `ProgramEditor.svelte` (fork mode) | Yes |
+| `/programs/docs` | Program reference documentation | Yes |
 
 ---
 
@@ -234,6 +237,9 @@ Before saving in visual mode, `collectVisualErrors()` checks:
 - Required properties (from the schema) are all present and non-empty.
 - Loop variables start with `$`.
 - **Undefined variable references**: any `${varName}` in a property value is checked against the graph's defined variables and resource names. References containing `:` (e.g., `${oci:tenancyOcid}`) are skipped as provider config refs. Undefined references are flagged as errors.
+- **Missing "practically required" properties** (level 4 warnings): optional object properties whose nested fields include required sub-fields (e.g. `createVnicDetails` with `subnetId`) are flagged as non-blocking warnings. The warning index is built by `buildWarnByType()` from `$lib/program-graph/schema-utils.ts`.
+
+Errors (level 5) block saving and are shown in a destructive alert. Warnings (level 4) are shown in a separate warning-variant alert and **do not block** saving.
 
 ### Agent Connect Toggle
 The program editor header contains an **Agent Connect** toggle visible in both visual and YAML modes. When toggled:
@@ -664,7 +670,22 @@ interface MeshStatus {
   connected: boolean;
   lighthouseAddr?: string;
   agentNebulaIp?: string;
+  agentRealIp?: string;
+  nebulaSubnet?: string;
   lastSeenAt?: number;
+}
+
+interface AgentHealth {
+  status: string;
+  hostname: string;
+  os: string;
+  arch: string;
+  uptime?: string;
+}
+
+interface AgentService {
+  name: string;
+  active: string;
 }
 
 interface ProgramMeta {

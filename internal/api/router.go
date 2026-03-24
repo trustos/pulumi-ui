@@ -9,6 +9,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/auth"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
+	"github.com/trustos/pulumi-ui/internal/mesh"
 	"github.com/trustos/pulumi-ui/internal/oci"
 	"github.com/trustos/pulumi-ui/internal/programs"
 )
@@ -28,6 +29,7 @@ type Handler struct {
 	Engine         *engine.Engine
 	Registry       *programs.ProgramRegistry
 	ConnStore      *db.StackConnectionStore
+	MeshManager    *mesh.Manager
 }
 
 func NewHandler(
@@ -70,6 +72,10 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 	r.Use(middleware.RequestID)
 
 	r.Route("/api", func(r chi.Router) {
+		// Agent binary download — no auth (instances download at boot)
+		r.Get("/agent/binary/{os}/{arch}", h.ServeAgentBinary)
+		r.Get("/agent/binary/{os}", h.ServeAgentBinary)
+
 		// OCI schema — no authentication required
 		r.Get("/oci-schema", oci.SchemaHandler)
 		r.Post("/oci-schema/refresh", oci.SchemaRefreshHandler)
@@ -125,6 +131,13 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Post("/stacks/{name}/unlock", h.StackUnlock)
 			r.Post("/stacks/{name}/deploy-apps", h.StackDeployApps)
 			r.Get("/stacks/{name}/logs", h.GetStackLogs)
+
+			// Agent proxy (routes through Nebula mesh)
+			r.Get("/stacks/{name}/agent/health", h.AgentHealth)
+			r.Get("/stacks/{name}/agent/services", h.AgentServices)
+			r.Post("/stacks/{name}/agent/exec", h.AgentExec)
+			r.Post("/stacks/{name}/agent/upload", h.AgentUpload)
+			r.Get("/stacks/{name}/agent/shell", h.AgentShell)
 
 			// Passphrases
 			r.Get("/passphrases", h.ListPassphrases)

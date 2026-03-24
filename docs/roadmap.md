@@ -287,7 +287,7 @@ The Nomad cluster program embeds `cloudinit.sh` via `//go:embed`. `buildCloudIni
 Programs implementing `ApplicationProvider` or `AgentAccessProvider` (with `AgentAccess() == true`) automatically get Nebula mesh + pulumi-ui agent injected into every compute resource's `user_data`:
 
 - **`map.go`** — `ComputeResources` registry mapping Pulumi resource type tokens (e.g. `oci:Core/instance:Instance`) to their `user_data` property paths. Extensible for AWS, GCP, etc.
-- **`agent_bootstrap.sh`** — standalone Nebula + agent installer with `@@PLACEHOLDER@@` markers.
+- **`agent_bootstrap.sh`** — standalone Nebula + agent installer with `@@PLACEHOLDER@@` markers. Downloads Nebula binary from GitHub releases, creates `nebula.service` systemd unit, starts Nebula on port 41820, configures firewall (TCP 41820 inbound from "server" group).
 - **`bootstrap.go`** — embeds the script and renders placeholders with `AgentVars`.
 - **`compose.go`** — multipart MIME composition (`ComposeAndEncode`), gzip/base64 helpers (`GzipBase64`).
 - **`yaml.go`** — `InjectIntoYAML()` post-render YAML transformation: walks resources, detects compute types, composes `user_data` with agent bootstrap. Creates missing intermediate mapping nodes (e.g. `metadata`) when the property path doesn't exist.
@@ -301,6 +301,10 @@ Programs implementing `ApplicationProvider` or `AgentAccessProvider` (with `Agen
 **Go template rendering in `cloudinit.sh`:**
 
 The old `@@PLACEHOLDER@@` string substitution was replaced with Go `text/template` rendering. `CloudInitData` provides `Vars` (runtime variables) and `Apps` (per-app conditionals). Each application section is wrapped in `{{ if .Apps.KEY }}` blocks.
+
+**Nebula mesh + agent pipeline (Phases 1–3 complete):**
+
+PKI generation extended to `AgentAccessProvider` programs. Dedicated agent cert (`.2`, group "agent") separate from UI cert (`.1`, group "server"). Per-stack `crypto/rand` token. Post-deploy IP discovery populates `agent_real_ip`. Userspace Nebula tunnels via `internal/mesh/`. Agent proxy endpoints for health, services, exec, upload, and interactive WebSocket terminal. See `docs/application-catalog-architecture.md`.
 
 ### Remaining work
 
@@ -316,7 +320,7 @@ The old `@@PLACEHOLDER@@` string substitution was replaced with Go `text/templat
 | # | Theme | Scope | Gate | Status |
 |---|---|---|---|---|
 | 1 | Part 0 — Config layer taxonomy | Medium | — | pending |
-| 2 | BE-1 — CredentialService | Small | — | pending |
+| 2 | BE-1 — CredentialService | Small | — | partially started (service exists, handlers not migrated) |
 | 3 | BE-2 — Engine deduplication | Small | — | pending |
 | 4 | FE-1 — 3-step wizard | Medium | Part 0 | pending |
 | 5 | BE-3 — Repository interfaces | Medium | — | pending |
@@ -326,8 +330,14 @@ The old `@@PLACEHOLDER@@` string substitution was replaced with Go `text/templat
 | 9 | BE-5 — Thread-safe registry | Medium | — | **done** |
 | 10 | FE-4 — Client-side validation | Medium | Part 0 | pending |
 | 11 | Cloud-init redesign | Medium | — | **partial** (agent injection done, user scripts pending) |
+| 12 | Agent bootstrap pipeline (Phase 1) | Medium | — | **done** (PKI, agent cert, token, binary endpoint, migration 012) |
+| 13 | Nebula mesh (Phase 2) | Large | Phase 1 | **done** (userspace tunnels, post-deploy discovery, agent proxy) |
+| 14 | Interactive web terminal (Phase 3) | Small | Phase 2 | **done** (WebSocket PTY via Nebula) |
+| 15 | Agent health monitoring (Phase 4) | Medium | Phase 3 | pending |
+| 16 | Multi-stack mesh (Phase 5) | Large | Phase 4 | pending |
 
 See `docs/visual-editor.md` for the visual program editor fix plan (G1 + P1/P2/P3 bugs).
+See `docs/application-catalog-architecture.md` for the complete agent/mesh architecture.
 
 ---
 

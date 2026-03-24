@@ -3,6 +3,7 @@
   import { navigate } from '$lib/router';
   import { getProgram, createProgram, updateProgram, validateProgram, forkProgram } from '$lib/api';
   import { getOciSchema } from '$lib/schema';
+  import { buildWarnByType, type WarnEntry } from '$lib/program-graph/schema-utils';
   import { graphToYaml } from '$lib/program-graph/serializer';
   import { yamlToGraph } from '$lib/program-graph/parser';
   import { insertAgentAccess, removeAgentAccess } from '$lib/program-graph/agent-access';
@@ -441,12 +442,14 @@
     items: import('$lib/types/program-graph').ProgramItem[],
     path: string,
     requiredByType: Record<string, string[]>,
-  ): LocalError[] {
+    warnByType: Record<string, WarnEntry[]>,
+  ): { errors: LocalError[]; warnings: LocalError[] } {
     const varNames = new Set(graph.variables.map(v => v.name));
     const allNames = new Set(graph.sections.flatMap(s => collectAllResourceNames(s.items)));
     const pulumiRefRe = /^\$\{([^.[}]+)/;
 
     const errors: LocalError[] = [];
+    const warnings: LocalError[] = [];
     function check(items: import('$lib/types/program-graph').ProgramItem[], path: string) {
       for (const item of items) {
         if (item.kind === 'resource') {
@@ -460,6 +463,17 @@
               for (const prop of required) {
                 if (!presentKeys.has(prop)) {
                   errors.push({ message: `"${item.name || item.resourceType}": missing required property '${prop}'` });
+                }
+              }
+            }
+            const warnEntries = warnByType[item.resourceType];
+            if (warnEntries) {
+              const presentKeys = new Set(item.properties.map(p => p.key));
+              for (const entry of warnEntries) {
+                if (!presentKeys.has(entry.key)) {
+                  warnings.push({
+                    message: `"${item.name || item.resourceType}": missing '${entry.key}' (contains required sub-field${entry.children.length === 1 ? '' : 's'} '${entry.children.join("', '")}')`,
+                  });
                 }
               }
             }
@@ -487,7 +501,7 @@
       }
     }
     check(items, path);
-    return errors;
+    return { errors, warnings };
   }
 
   // ── Save ──────────────────────────────────────────────────────────────────
@@ -500,8 +514,9 @@
 
     // Visual-mode client-side checks
     if (mode === 'visual') {
-      // Build required-props index from the schema (fails silently — backend validates authoritatively).
+      // Build required-props index and warn index from the schema.
       let requiredByType: Record<string, string[]> = {};
+      let warnByType: Record<string, WarnEntry[]> = {};
       try {
         const schema = await getOciSchema();
         for (const [type, res] of Object.entries(schema.resources)) {
@@ -510,16 +525,26 @@
             .map(([k]) => k);
           if (req.length > 0) requiredByType[type] = req;
         }
+        warnByType = buildWarnByType(schema.resources);
       } catch { /* schema unavailable — backend will catch any missing props */ }
 
       const localErrors: LocalError[] = [];
+      const localWarnings: LocalError[] = [];
       for (const section of graph.sections) {
-        localErrors.push(...collectVisualErrors(section.items, section.label, requiredByType));
+        const result = collectVisualErrors(section.items, section.label, requiredByType, warnByType);
+        localErrors.push(...result.errors);
+        localWarnings.push(...result.warnings);
       }
       if (localErrors.length > 0) {
-        validationErrors = localErrors.map(e => ({ level: 5 as const, message: e.message }));
+        validationErrors = [
+          ...localErrors.map(e => ({ level: 5 as const, message: e.message })),
+          ...localWarnings.map(e => ({ level: 4 as const, message: e.message })),
+        ];
         saveError = 'Fix the errors highlighted below before saving.';
         return;
+      }
+      if (localWarnings.length > 0) {
+        validationErrors = localWarnings.map(e => ({ level: 4 as const, message: e.message }));
       }
     }
 
@@ -647,9 +672,9 @@
   />
 
   <!-- Validation errors -->
-  {#if validationErrors.length > 0}
+  {#if validationErrors.some(e => e.level !== 4)}
     <Alert variant="destructive" class="rounded-none border-x-0 border-t-0 max-h-32 overflow-y-auto">
-      {#each validationErrors as err}
+      {#each validationErrors.filter(e => e.level !== 4) as err}
         <div class="flex items-start gap-2 text-xs">
           {#if err.line}
             <span class="font-mono shrink-0">L{err.line}</span>
@@ -661,6 +686,16 @@
           {#if err.level === 7 && err.message.includes('no networking context')}
             <Button variant="link" size="sm" class="h-auto p-0 text-[11px]" onclick={scaffoldAgentNetworking}>Add VCN + Subnet</Button>
           {/if}
+        </div>
+      {/each}
+    </Alert>
+  {/if}
+  <!-- Validation warnings (non-blocking) -->
+  {#if validationErrors.some(e => e.level === 4)}
+    <Alert variant="warning" class="rounded-none border-x-0 border-t-0 max-h-32 overflow-y-auto">
+      {#each validationErrors.filter(e => e.level === 4) as err}
+        <div class="flex items-start gap-2 text-xs">
+          <span>{err.message}</span>
         </div>
       {/each}
     </Alert>

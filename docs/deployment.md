@@ -14,7 +14,7 @@ COPY frontend/ .
 RUN npm run build          # outputs to ../cmd/server/frontend/dist/
 
 # Stage 2: Build Go binary (with embedded frontend)
-FROM golang:1.23-bookworm AS go-build
+FROM golang:1.25-bookworm AS go-build
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -44,17 +44,20 @@ VOLUME ["/data"]
 ENV PULUMI_UI_DATA_DIR=/data
 ENV PULUMI_UI_ADDR=:8080
 EXPOSE 8080
+# Note: Nebula mesh tunnels use ephemeral UDP ports (outbound only from the server)
+# — no additional port mapping needed. Port 41820 is used by the *agent* on instances.
 
 ENTRYPOINT ["/usr/local/bin/pulumi-ui"]
 ```
 
 **What the binary contains:**
-- The Go HTTP server + API handlers
+- The Go HTTP server + API handlers + agent proxy endpoints
 - The Svelte SPA (embedded via `go:embed`)
 - The SQLite engine (`modernc.org/sqlite`, pure Go)
 - All SQL migrations (embedded via `go:embed`)
 - All Pulumi program logic (Go inline functions)
 - The agent bootstrap script (embedded via `go:embed` in `internal/agentinject/`)
+- Nebula mesh manager (`internal/mesh/`) — userspace tunnels via `github.com/slackhq/nebula/service` (gvisor-based, no TUN device)
 
 **What the binary does NOT contain (must be on the filesystem):**
 - Pulumi resource provider plugins (`~/.pulumi/plugins/` — pre-installed in image)
@@ -62,14 +65,17 @@ ENTRYPOINT ["/usr/local/bin/pulumi-ui"]
 
 ### Agent binary (`cmd/agent/`)
 
-The `pulumi-ui-agent` is a separate Go binary deployed to provisioned instances. It embeds a Nebula mesh client and exposes a management HTTP API for `exec`, `upload`, `health`, and `services`. The agent is **not** bundled in the main `pulumi-ui` binary — it is downloaded by instances at boot time via the agent bootstrap script injected into cloud-init.
+The `pulumi-ui-agent` is a separate Go binary deployed to provisioned instances. It embeds a Nebula mesh client and exposes a management HTTP API for `exec`, `upload`, `health`, `services`, and an interactive `/shell` WebSocket endpoint (PTY via `github.com/creack/pty`). The agent is **not** bundled in the main `pulumi-ui` binary — it is downloaded by instances at boot time via the agent bootstrap script injected into cloud-init.
+
+The pulumi-ui server serves agent binaries at `GET /api/agent/binary/{os}/{arch}` (no auth required). Cloud-init downloads from this endpoint at boot. Both architectures must be pre-built in `dist/`:
 
 ```bash
-# Build the agent binary
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o pulumi-ui-agent ./cmd/agent
+# Build agent binaries (included in `make build`)
+make build-agent
+# Produces: dist/agent_linux_arm64, dist/agent_linux_amd64
 ```
 
-The agent binary must be hosted at a URL accessible by provisioned instances (e.g., a GitHub release, OCI Object Storage, or HTTP server). The download URL is configured in the agent bootstrap variables (`AgentDownloadURL`).
+The agent bootstrap script auto-detects architecture at runtime and downloads the correct binary. The Nebula binary is downloaded separately from GitHub releases by the bootstrap script.
 
 ---
 

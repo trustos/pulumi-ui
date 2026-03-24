@@ -124,7 +124,22 @@ CREATE TABLE IF NOT EXISTS nebula_subnet_counter (
 );
 ```
 
-Each stack gets a unique `/24` subnet from the `10.42.0.0/16` range, allocated atomically via `nebula_subnet_counter`. The CA key and UI key are AES-GCM encrypted at rest; all other fields are plaintext.
+Each stack gets a unique `/24` subnet from the `10.42.0.0/16` range, allocated atomically via `nebula_subnet_counter`. The CA key, UI key, and agent key are AES-GCM encrypted at rest; all other fields are plaintext. Migration 012 adds dedicated agent cert/key, per-stack auth token, and agent real IP columns (see `012_agent_cert_and_token.sql` below).
+
+### `012_agent_cert_and_token.sql` — Dedicated agent identity + auth token
+
+Adds dedicated agent Nebula certificate/key, per-stack auth token, and agent real IP to `stack_connections`:
+
+```sql
+ALTER TABLE stack_connections ADD COLUMN agent_cert    BLOB;     -- Nebula agent certificate (PEM)
+ALTER TABLE stack_connections ADD COLUMN agent_key     BLOB;     -- Nebula agent private key (AES-GCM encrypted)
+ALTER TABLE stack_connections ADD COLUMN agent_token   TEXT NOT NULL DEFAULT '';  -- per-stack Bearer token (hex)
+ALTER TABLE stack_connections ADD COLUMN agent_real_ip TEXT;     -- public or NLB IP for Nebula static_host_map
+```
+
+- **`agent_cert` / `agent_key`**: Dedicated Nebula identity for the agent (`.2` address, group "agent"), separate from the UI cert (`.1`, group "server"). The agent key is AES-GCM encrypted at rest.
+- **`agent_token`**: `crypto/rand` 32-byte hex token generated at stack creation, used as Bearer token for all agent HTTP requests.
+- **`agent_real_ip`**: Populated after successful `Up` by post-deploy discovery — the engine scans Pulumi outputs for IP patterns and stores the public/NLB IP here. Used in Nebula `static_host_map` for tunnel establishment.
 
 ### `006_passphrases.sql` — Named Pulumi passphrases
 
@@ -212,7 +227,7 @@ On startup, `OperationStore.MarkStaleRunning()` is also called to mark any opera
 | `PassphraseStore` | `passphrases.go` | `Create`, `List`, `GetValue`, `Rename`, `Delete` (protected), `HasAny` |
 | `SSHKeyStore` | `ssh_keys.go` | `Create`, `List`, `GetByID`, `GetPublicKey`, `GetPrivateKey`, `Delete` (protected) |
 | `CustomProgramStore` | `custom_programs.go` | `Create`, `Get`, `List`, `Update`, `Delete` |
-| `StackConnectionStore` | `stack_connections.go` | `Create`, `Get`, `UpdateLighthouse`, `UpdateAgentConnected`, `UpdateLastSeen`, `Delete`, `AllocateSubnet` |
+| `StackConnectionStore` | `stack_connections.go` | `Create`, `Get`, `UpdateLighthouse`, `UpdateAgentConnected`, `UpdateAgentRealIP`, `UpdateLastSeen`, `Delete`, `AllocateSubnet` |
 
 ---
 

@@ -10,9 +10,10 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, listSSHKeys, streamDeployApps } from '$lib/api';
-  import type { StackInfo, OciAccount, ProgramMeta, SshKey, ApplicationDef } from '$lib/types';
+  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, listSSHKeys, streamDeployApps, getAgentHealth, getAgentServices, agentShellUrl } from '$lib/api';
+  import type { StackInfo, OciAccount, ProgramMeta, SshKey, ApplicationDef, AgentHealth, AgentService } from '$lib/types';
   import EditStackDialog from '$lib/components/EditStackDialog.svelte';
+  import WebTerminal from '$lib/components/WebTerminal.svelte';
 
   let { name }: { name: string } = $props();
 
@@ -49,6 +50,11 @@
 
   const appCatalog = $derived<ApplicationDef[]>(currentProgram?.applications ?? []);
   const hasApps = $derived(appCatalog.length > 0);
+  const hasAgent = $derived(info?.agentAccess === true);
+  let agentHealth = $state<AgentHealth | null>(null);
+  let agentServices = $state<AgentService[]>([]);
+  let agentError = $state('');
+  let showTerminal = $state(false);
   const selectedApps = $derived<Record<string, boolean>>(info?.applications ?? {});
   const bootstrapApps = $derived(appCatalog.filter(a => a.tier === 'bootstrap' && selectedApps[a.key]));
   const workloadApps = $derived(appCatalog.filter(a => a.tier === 'workload' && selectedApps[a.key]));
@@ -85,6 +91,19 @@
       }
     } catch (err) {
       loadError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function loadAgentStatus() {
+    if (!hasAgent || notDeployed) return;
+    try {
+      agentError = '';
+      agentHealth = await getAgentHealth(name);
+      agentServices = await getAgentServices(name);
+    } catch (err) {
+      agentError = err instanceof Error ? err.message : String(err);
+      agentHealth = null;
+      agentServices = [];
     }
   }
 
@@ -424,6 +443,9 @@
       {#if hasApps}
         <Tabs.Trigger value="applications">Applications</Tabs.Trigger>
       {/if}
+      {#if hasAgent}
+        <Tabs.Trigger value="nodes">Nodes</Tabs.Trigger>
+      {/if}
       <Tabs.Trigger value="details">Details</Tabs.Trigger>
       <Tabs.Trigger value="outputs">Outputs</Tabs.Trigger>
       <Tabs.Trigger value="config">Configuration</Tabs.Trigger>
@@ -603,6 +625,94 @@
             </div>
           </div>
         {/if}
+      </Tabs.Content>
+    {/if}
+
+    <!-- Nodes tab (Agent Connect) -->
+    {#if hasAgent}
+      <Tabs.Content value="nodes" class="flex-1 flex flex-col min-h-0">
+        <div class="mt-2 space-y-4 flex-1 flex flex-col min-h-0">
+          <!-- Agent Health -->
+          <div class="flex items-center gap-4 flex-wrap">
+            <Button size="sm" variant="outline" onclick={loadAgentStatus}>
+              Refresh Status
+            </Button>
+            {#if agentHealth}
+              <Badge variant="default">
+                {agentHealth.hostname} &bull; {agentHealth.os}/{agentHealth.arch} &bull; up {agentHealth.uptime}
+              </Badge>
+            {:else if agentError}
+              <Badge variant="destructive">Agent unreachable</Badge>
+            {:else if notDeployed}
+              <span class="text-sm text-muted-foreground">Deploy infrastructure first</span>
+            {:else}
+              <span class="text-sm text-muted-foreground">Click Refresh to check agent status</span>
+            {/if}
+          </div>
+
+          <!-- Mesh Info -->
+          {#if info?.mesh}
+            <Card.Root>
+              <Card.Header class="py-3">
+                <Card.Title class="text-sm">Nebula Mesh</Card.Title>
+              </Card.Header>
+              <Card.Content class="py-2">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div>
+                    <span class="text-muted-foreground">Subnet</span>
+                    <div class="font-mono">{info.mesh.nebulaSubnet ?? '—'}</div>
+                  </div>
+                  <div>
+                    <span class="text-muted-foreground">Agent Mesh IP</span>
+                    <div class="font-mono">{info.mesh.agentNebulaIp ?? '—'}</div>
+                  </div>
+                  <div>
+                    <span class="text-muted-foreground">Agent Real IP</span>
+                    <div class="font-mono">{info.mesh.agentRealIp ?? '—'}</div>
+                  </div>
+                  <div>
+                    <span class="text-muted-foreground">Status</span>
+                    <div>{info.mesh.connected ? 'Connected' : 'Not connected'}</div>
+                  </div>
+                </div>
+              </Card.Content>
+            </Card.Root>
+          {/if}
+
+          <!-- Services -->
+          {#if agentServices.length > 0}
+            <Card.Root>
+              <Card.Header class="py-3">
+                <Card.Title class="text-sm">Services</Card.Title>
+              </Card.Header>
+              <Card.Content class="py-2">
+                <div class="flex flex-wrap gap-2">
+                  {#each agentServices as svc}
+                    <Badge variant={svc.active === 'active' ? 'default' : 'secondary'}>
+                      {svc.name}: {svc.active}
+                    </Badge>
+                  {/each}
+                </div>
+              </Card.Content>
+            </Card.Root>
+          {/if}
+
+          <!-- Terminal -->
+          <div class="flex items-center gap-2">
+            <Button size="sm" variant={showTerminal ? 'default' : 'outline'} onclick={() => showTerminal = !showTerminal}>
+              {showTerminal ? 'Hide Terminal' : 'Open Terminal'}
+            </Button>
+            {#if showTerminal && agentError}
+              <span class="text-xs text-destructive">Agent must be reachable for terminal access</span>
+            {/if}
+          </div>
+
+          {#if showTerminal && !agentError}
+            <div class="flex-1 min-h-[300px]">
+              <WebTerminal url={agentShellUrl(name)} />
+            </div>
+          {/if}
+        </div>
       </Tabs.Content>
     {/if}
 

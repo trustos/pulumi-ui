@@ -150,14 +150,15 @@ Key difference from built-in programs: OCI credentials are passed as Pulumi prov
 | Package | Path | Responsibility |
 |---|---|---|
 | `main` | `cmd/server/` | HTTP server bootstrap, `go:embed` directives, graceful shutdown |
-| `main` | `cmd/agent/` | Standalone agent binary: Nebula mesh + management HTTP API |
-| `api` | `internal/api/` | HTTP handlers, request parsing, SSE response writing, credential resolution |
+| `main` | `cmd/agent/` | Standalone agent binary: Nebula mesh + management HTTP API (including `/shell` WebSocket PTY) |
+| `api` | `internal/api/` | HTTP handlers, request parsing, SSE response writing, credential resolution, agent proxy (routes through Nebula mesh), agent binary serving |
+| `mesh` | `internal/mesh/` | Nebula tunnel manager: on-demand userspace tunnels per stack, cached with 5-minute idle timeout, HTTP client + WebSocket dial through mesh |
 | `auth` | `internal/auth/` | Session middleware, user context extraction |
 | `engine` | `internal/engine/` | Pulumi Automation API: up/destroy/refresh/preview/cancel/unlock; agent bootstrap injection orchestration |
 | `programs` | `internal/programs/` | Program interface, registry, built-in Go `PulumiFn` implementations, YAML program type, Go template renderer (Sprig + custom OCI helpers), YAML config field parser, application catalog types |
 | `agentinject` | `internal/agentinject/` | Universal agent bootstrap injection: compute resource map, multipart MIME composition, YAML post-render transformation (user_data + networking), Go program config key |
 | `applications` | `internal/applications/` | Application catalog deployment orchestration via agent |
-| `nebula` | `internal/nebula/` | Nebula PKI generation (per-stack CA + host certificates) |
+| `nebula` | `internal/nebula/` | Nebula PKI generation (per-stack CA + host certificates: UI cert at .1, agent cert at .2) |
 | `stacks` | `internal/stacks/` | YAML `StackConfig` schema, validation, config field metadata |
 | `db` | `internal/db/` | SQLite connection, migrations, all CRUD stores (including `StackConnectionStore` for Nebula mesh state) |
 | `oci` | `internal/oci/` | OCI HTTP signature client: credential verification, shapes, images |
@@ -166,9 +167,10 @@ Key difference from built-in programs: OCI credentials are passed as Pulumi prov
 | `keystore` | `internal/keystore/` | Encryption key resolution: env override → load from store → auto-generate; `file` and `consul` backends |
 
 **Import rules:**
-- `api` imports `engine`, `db`, `auth`, `stacks`, `programs` — but not `crypto` directly
+- `api` imports `engine`, `db`, `auth`, `stacks`, `programs`, `mesh` — but not `crypto` directly
+- `mesh` imports `db`, `nebula`, `github.com/slackhq/nebula/service` — no other internal packages
 - `auth` imports `db` only (reads users/sessions)
-- `engine` imports `programs`, `db`, `agentinject`, `applications` — but not `api`
+- `engine` imports `programs`, `db`, `agentinject`, `applications`, `nebula` — but not `api`
 - `agentinject` imports `gopkg.in/yaml.v3` — no other internal packages
 - `applications` does not import `engine` (uses a `LogFunc` callback to avoid cycles)
 - `programs` imports `agentinject` (for `ComposeAndEncode`, `GzipBase64`, `CfgKeyAgentBootstrap`), `github.com/Masterminds/sprig/v3` (template functions), `gopkg.in/yaml.v3` (config parser) — no other internal packages
@@ -198,6 +200,9 @@ require (
     gopkg.in/yaml.v3                      v3.x      // YAML config parsing
     github.com/Masterminds/sprig/v3       v3.x      // Go template function library (same as Helm) — used by YAML program renderer
     github.com/google/uuid                v1.x      // Operation + account + passphrase + SSH key IDs
+    github.com/slackhq/nebula             v1.x      // Nebula mesh: PKI generation + userspace tunnel service (gvisor)
+    github.com/gorilla/websocket          v1.x      // WebSocket support for agent shell proxy
+    github.com/sirupsen/logrus            v1.x      // Logging (required by Nebula library)
 )
 ```
 
@@ -233,6 +238,10 @@ The engine also unconditionally sets `PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING=tr
 | Pulumi passphrases (named, per-stack) | SQLite `passphrases` table | AES-256-GCM, app-level |
 | Encryption key itself | Key store (`file` or `consul`) or `PULUMI_UI_ENCRYPTION_KEY` env var | Auto-generated on first run, persisted to store |
 | Pulumi stack state | Local file (`/data/state/`) | Pulumi native encryption (passphrase-derived key + per-stack salt) |
+| Nebula CA key (per-stack) | SQLite `stack_connections` table | AES-256-GCM, app-level |
+| Nebula UI key (per-stack) | SQLite `stack_connections` table | AES-256-GCM, app-level |
+| Nebula agent key (per-stack) | SQLite `stack_connections` table | AES-256-GCM, app-level |
+| Agent auth token (per-stack) | SQLite `stack_connections` table | Plaintext (random 32-byte hex, per-stack) |
 
 The encryption key is resolved at startup: `PULUMI_UI_ENCRYPTION_KEY` env var takes priority (used by Nomad Variables injection), then the configured key store, then auto-generate and persist. In production the env var is injected by the Nomad job template.
 
@@ -243,6 +252,17 @@ The encryption key is resolved at startup: `PULUMI_UI_ENCRYPTION_KEY` env var ta
 Each passphrase has a human-readable **name** (e.g. "production", "staging") and a secret **value**. The value is encrypted at rest and is write-once — it cannot be retrieved or changed through the API after creation. Changing a passphrase value after stacks are created would permanently break decryption of those stacks' state.
 
 A passphrase **cannot be deleted** while any stacks reference it. Stacks must be removed first.
+
+### Nebula Mesh Security
+
+All agent communication flows through per-stack Nebula encrypted tunnels. No SSH port (22) or agent HTTP port is exposed to the internet.
+
+- **Single UDP port** (41820) exposed via NSG/NLB — Nebula wire protocol only
+- **Per-stack PKI isolation**: each stack has its own Nebula CA. Certificates are non-transferable between stacks.
+- **Two identities per stack**: UI cert (`.1`, group "server") used by pulumi-ui, agent cert (`.2`, group "agent") used by provisioned instances
+- **Per-stack auth token**: `crypto/rand` 32-byte hex token stored in `stack_connections`, sent as Bearer token on every agent HTTP request (defense in depth)
+- **Userspace tunnels**: `internal/mesh/` uses Nebula's gvisor-based `service.Service` — no TUN device, no root privileges. Tunnels are created on-demand and cached with a 5-minute idle timeout.
+- **WebSocket terminal**: browser ↔ pulumi-ui ↔ Nebula tunnel ↔ agent `/shell` endpoint (PTY via `github.com/creack/pty`)
 
 ### Auth flow
 

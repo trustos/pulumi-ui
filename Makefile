@@ -11,8 +11,8 @@ all: build
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
-## build: Build frontend then Go binary
-build: frontend backend
+## build: Build frontend, agent binaries, then Go server binary
+build: frontend build-agent backend
 
 ## frontend: Build the Svelte SPA into cmd/server/frontend/dist/
 frontend:

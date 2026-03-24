@@ -116,10 +116,13 @@ Creates a compartment and VCN — a safe smoke test for OCI credentials that cre
 
 Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible). Seven sub-functions, one `Run` entry point.
 
-**Config fields (16 total):**
+**Config fields (18 total):**
 
 | Key | Type | Default | Description | Group |
 |---|---|---|---|---|
+| `skipDynamicGroup` | `select` | `false` | Skip Dynamic Group creation if OCI user lacks tenancy-level IAM permissions | IAM & Permissions |
+| `adminGroupName` | `text` | _(empty)_ | IAM group name of the deploying user — needed to grant permission to create Dynamic Groups | IAM & Permissions |
+| `identityDomain` | `text` | _(empty)_ | Leave empty for old-style IDCS tenancies; set to e.g. `Default` for new Identity Domain tenancies | IAM & Permissions |
 | `nodeCount` | `select` | `3` | Number of nodes (1–4; Always Free limit: 4 OCPUs / 24 GB total) | Infrastructure |
 | `compartmentName` | `text` | `nomad-compartment` | OCI compartment name | Infrastructure |
 | `compartmentDescription` | `text` | `Compartment for Nomad cluster` | | Infrastructure |
@@ -129,15 +132,12 @@ Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible). S
 | `sshSourceCidr` | `text` | `0.0.0.0/0` | Restrict to your IP for production security | Infrastructure |
 | `shape` | `oci-shape` | `VM.Standard.A1.Flex` | OCI compute shape | Infrastructure |
 | `imageId` | `oci-image` | _(required)_ | OCI image OCID | Infrastructure |
-| `ocpusPerNode` | `number` | _(empty)_ | Override OCPUs per node (homogeneous pools) | Compute & Storage |
-| `memoryGbPerNode` | `number` | _(empty)_ | Override memory per node | Compute & Storage |
+| `ocpusPerNode` | `number` | `1` | OCPUs allocated to each node (Always Free limit: 4 total) | Compute & Storage |
+| `memoryGbPerNode` | `number` | `6` | Memory GiB per node (Always Free limit: 24 GB total) | Compute & Storage |
 | `bootVolSizeGb` | `number` | `50` | Boot volume size in GB | Compute & Storage |
-| `sshPublicKey` | `ssh-public-key` | _(empty)_ | SSH public key injected into instance metadata | Compute & Storage |
+| `sshPublicKey` | `ssh-public-key` | _(required)_ | SSH public key injected into instance metadata | Compute & Storage |
 | `nomadVersion` | `text` | `1.10.3` | | Software Versions |
 | `consulVersion` | `text` | `1.21.3` | | Software Versions |
-| `skipDynamicGroup` | `select` | `false` | Skip Dynamic Group creation if OCI user lacks tenancy-level IAM permissions | IAM & Permissions |
-| `adminGroupName` | `text` | _(empty)_ | IAM group name of the deploying user — needed to grant permission to create Dynamic Groups | IAM & Permissions |
-| `identityDomain` | `text` | _(empty)_ | Leave empty for old-style IDCS tenancies; set to e.g. `Default` for new Identity Domain tenancies | IAM & Permissions |
 
 **Outputs:** `traefikNlbIps`, `privateSubnetId`
 
@@ -251,9 +251,13 @@ When `agentBootstrap` is nil, the result is a simple gzip+base64 encoded script.
 Programs can optionally implement the `ApplicationProvider` interface to expose an application catalog — a list of selectable applications deployed after infrastructure provisioning via the pulumi-ui agent. When a program implements this interface, the engine automatically injects the Nebula mesh + agent bootstrap into every compute resource's `user_data` via multipart MIME composition (see `internal/agentinject`). Nebula and the agent are **not** part of the program's application catalog; they are infrastructure plumbing managed by the engine.
 
 Separately, YAML programs can declare `meta.agentAccess: true` to opt into automatic agent connectivity. This causes the engine to:
-1. Inject the agent bootstrap into compute resource `user_data` (same as `ApplicationProvider`). Missing intermediate property nodes (e.g. `metadata`) are created automatically.
-2. Auto-add NSG security rules for the Nebula UDP port on existing NSG resources, or create a new NSG from the VCN if none exist
-3. Auto-add NLB backend set + listener for the agent port on existing NLB resources, or create a new NLB from the subnet if none exist
+1. **Generate Nebula PKI** at stack creation — per-stack CA, UI cert (`.1`, group "server"), agent cert (`.2`, group "agent"), and a `crypto/rand` 32-byte hex auth token. Stored in `stack_connections`.
+2. Inject the agent bootstrap into compute resource `user_data` (same as `ApplicationProvider`). Missing intermediate property nodes (e.g. `metadata`) are created automatically.
+3. Auto-add NSG security rules for the Nebula UDP port on existing NSG resources, or create a new NSG from the VCN if none exist
+4. Auto-add NLB backend set + listener for the agent port on existing NLB resources, or create a new NLB from the subnet if none exist
+5. **Post-deploy IP discovery** — after successful `Up`, the engine scans Pulumi outputs for IP patterns and stores the agent's real IP in `stack_connections` for Nebula tunnel establishment.
+
+The agent bootstrap script installs both the Nebula binary (from GitHub releases, configured as a systemd service on port 41820) and the pulumi-ui agent binary (from the server at `GET /api/agent/binary/{os}/{arch}`). All subsequent agent communication routes through the Nebula mesh via `internal/mesh/mesh.go`.
 
 See `docs/application-catalog-architecture.md` for the full architecture.
 

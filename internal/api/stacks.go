@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -161,8 +163,17 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate Nebula PKI for programs that support ApplicationProvider (first time only)
-	if _, isAppProvider := prog.(programs.ApplicationProvider); isAppProvider && h.ConnStore != nil {
+	// Generate Nebula PKI for programs with agent connectivity (first time only).
+	// Applies to both ApplicationProvider (built-in Go programs with catalog)
+	// and AgentAccessProvider (YAML programs with meta.agentAccess: true).
+	shouldGeneratePKI := false
+	if _, ok := prog.(programs.ApplicationProvider); ok {
+		shouldGeneratePKI = true
+	}
+	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
+		shouldGeneratePKI = true
+	}
+	if shouldGeneratePKI && h.ConnStore != nil {
 		if existing, _ := h.ConnStore.Get(stackName); existing == nil {
 			if err := h.generateNebulaPKI(stackName); err != nil {
 				log.Printf("[stacks] Warning: failed to generate Nebula PKI for %s: %v", stackName, err)
@@ -193,6 +204,8 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		Connected      bool    `json:"connected"`
 		LighthouseAddr *string `json:"lighthouseAddr,omitempty"`
 		AgentNebulaIP  *string `json:"agentNebulaIp,omitempty"`
+		AgentRealIP    *string `json:"agentRealIp,omitempty"`
+		NebulaSubnet   string  `json:"nebulaSubnet,omitempty"`
 		LastSeenAt     *int64  `json:"lastSeenAt,omitempty"`
 	}
 
@@ -211,6 +224,7 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		Status       string                 `json:"status"`
 		Running      bool                   `json:"running"`
 		Mesh         *MeshStatus            `json:"mesh,omitempty"`
+		AgentAccess  bool                   `json:"agentAccess"`
 	}
 
 	info := StackInfo{
@@ -246,6 +260,16 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Determine if program has agent access
+	if prog, ok := h.Registry.Get(row.Program); ok {
+		if _, isApp := prog.(programs.ApplicationProvider); isApp {
+			info.AgentAccess = true
+		}
+		if aap, isAgent := prog.(programs.AgentAccessProvider); isAgent && aap.AgentAccess() {
+			info.AgentAccess = true
+		}
+	}
+
 	// Mesh status from stack_connections
 	if h.ConnStore != nil {
 		if conn, err := h.ConnStore.Get(stackName); err == nil && conn != nil {
@@ -253,6 +277,8 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 				Connected:      conn.AgentNebulaIP != nil,
 				LighthouseAddr: conn.LighthouseAddr,
 				AgentNebulaIP:  conn.AgentNebulaIP,
+				AgentRealIP:    conn.AgentRealIP,
+				NebulaSubnet:   conn.NebulaSubnet,
 				LastSeenAt:     conn.LastSeenAt,
 			}
 			info.Mesh = mesh
@@ -285,6 +311,12 @@ func (h *Handler) DeleteStack(w http.ResponseWriter, r *http.Request) {
 	if row != nil {
 		if err := h.Engine.RemoveStackState(stackName, row.Program); err != nil {
 			log.Printf("[warn] failed to remove Pulumi state for stack %s (program %s): %v", stackName, row.Program, err)
+		}
+	}
+
+	if h.ConnStore != nil {
+		if err := h.ConnStore.Delete(stackName); err != nil {
+			log.Printf("[warn] failed to remove stack connection for %s: %v", stackName, err)
 		}
 	}
 
@@ -509,14 +541,15 @@ func (h *Handler) GetStackLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-// generateNebulaPKI creates the Nebula CA + pulumi-ui node cert for a new stack.
+// generateNebulaPKI creates the Nebula CA, pulumi-ui node cert, agent node
+// cert, and a per-stack auth token for a new stack.
 func (h *Handler) generateNebulaPKI(stackName string) error {
 	subnet, err := h.ConnStore.AllocateSubnet()
 	if err != nil {
 		return fmt.Errorf("allocate subnet: %w", err)
 	}
 
-	ca, err := nebulaPKI.GenerateCA(stackName+"-ca", 365*24*time.Hour)
+	ca, err := nebulaPKI.GenerateCA(stackName+"-ca", 2*365*24*time.Hour)
 	if err != nil {
 		return fmt.Errorf("generate CA: %w", err)
 	}
@@ -531,13 +564,32 @@ func (h *Handler) generateNebulaPKI(stackName string) error {
 		return fmt.Errorf("issue UI cert: %w", err)
 	}
 
+	agentIP, err := nebulaPKI.AgentAddress(subnet)
+	if err != nil {
+		return fmt.Errorf("compute agent address: %w", err)
+	}
+
+	agentCert, err := nebulaPKI.IssueCert(ca.CertPEM, ca.KeyPEM, "agent", agentIP, []string{"agent"}, 365*24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("issue agent cert: %w", err)
+	}
+
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return fmt.Errorf("generate agent token: %w", err)
+	}
+	agentToken := hex.EncodeToString(tokenBytes)
+
 	conn := &db.StackConnection{
-		StackName:    stackName,
-		NebulaCACert: ca.CertPEM,
-		NebulaCAKey:  ca.KeyPEM,
-		NebulaUICert: uiCert.CertPEM,
-		NebulaUIKey:  uiCert.KeyPEM,
-		NebulaSubnet: subnet,
+		StackName:       stackName,
+		NebulaCACert:    ca.CertPEM,
+		NebulaCAKey:     ca.KeyPEM,
+		NebulaUICert:    uiCert.CertPEM,
+		NebulaUIKey:     uiCert.KeyPEM,
+		NebulaSubnet:    subnet,
+		NebulaAgentCert: agentCert.CertPEM,
+		NebulaAgentKey:  agentCert.KeyPEM,
+		AgentToken:      agentToken,
 	}
 	return h.ConnStore.Create(conn)
 }

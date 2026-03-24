@@ -226,6 +226,8 @@ When no structured sub-fields are available (plain `object` type without schema)
 ### Required Property Auto-fill
 When a resource type loses focus in `ResourceCard.onTypeBlur()`, any required properties not yet present are added with empty values from the schema. When a resource is selected in `ResourceCatalog`, required properties are pre-filled at creation time.
 
+Only **top-level required** properties are auto-added. Optional object properties that contain required nested fields (e.g. `createVnicDetails` with `subnetId`) are **not** auto-added — the schema cannot distinguish "practically required for any deployment" from "required only if you use this optional feature" (many optional objects like `platformConfig` have a `type` discriminator marked required). Instead, these are flagged as non-blocking warnings at save time (see Pre-Save Validation below).
+
 ### Section Management
 Sections can be renamed via double-click on the label in `SectionNavigator`. The last section cannot be deleted. Deleting a section shows a confirmation. Sections can be added via the `+ Section` button.
 
@@ -254,8 +256,9 @@ Before saving in visual mode, `collectVisualErrors()` checks:
 - Required properties (from the schema) are all present and non-empty.
 - Loop variables start with `$`.
 - **Undefined variable references**: any `${varName}` in property values is checked against defined variables and resource names. References containing `:` (e.g. `${oci:tenancyOcid}`) are treated as provider config and skipped.
+- **Missing "practically required" properties** (level 4 warnings): optional object properties that contain required nested fields (e.g. `createVnicDetails` with `subnetId`) are flagged as non-blocking warnings. The `warnByType` index is built by `buildWarnByType()` from `$lib/program-graph/schema-utils.ts`.
 
-Errors are shown in the validation panel below the mode bar.
+Errors (level 5) are shown in a destructive alert and block saving. Warnings (level 4) are shown in a separate warning alert and **do not block** saving — the backend validates authoritatively.
 
 ---
 

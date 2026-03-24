@@ -3,8 +3,8 @@ set -euo pipefail
 # PULUMI_UI_AGENT_BOOTSTRAP
 # Standalone Nebula mesh + pulumi-ui agent installer.
 # Injected automatically by the engine into every compute instance whose
-# program implements ApplicationProvider. Uses @@PLACEHOLDER@@ markers
-# replaced at injection time (not Go templates).
+# program implements ApplicationProvider or AgentAccessProvider.
+# Uses @@PLACEHOLDER@@ markers replaced at injection time (not Go templates).
 
 # --- OS detection ---
 check_os_agent() {
@@ -21,10 +21,28 @@ check_os_agent() {
 }
 check_os_agent
 
+# --- Architecture detection ---
+ARCH=$(uname -m)
+case "$ARCH" in
+  aarch64) AGENT_ARCH="arm64" ;;
+  x86_64)  AGENT_ARCH="amd64" ;;
+  *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+esac
+
 # --- Nebula mesh ---
 install_nebula() {
   echo "[agent-bootstrap] Installing Nebula mesh..."
   mkdir -p /etc/nebula
+
+  NEBULA_VERSION="@@AGENT_VERSION@@"
+  if [ "$NEBULA_VERSION" = "latest" ]; then
+    NEBULA_VERSION="v1.10.3"
+  fi
+
+  echo "[agent-bootstrap] Downloading Nebula ${NEBULA_VERSION} for ${AGENT_ARCH}..."
+  curl -fsSL "https://github.com/slackhq/nebula/releases/download/${NEBULA_VERSION}/nebula-linux-${AGENT_ARCH}.tar.gz" \
+    | tar xz -C /usr/local/bin nebula nebula-cert
+  chmod +x /usr/local/bin/nebula /usr/local/bin/nebula-cert
 
   cat > /etc/nebula/ca.crt <<'NEBULA_CA'
 @@NEBULA_CA_CERT@@
@@ -54,7 +72,7 @@ lighthouse:
 
 listen:
   host: 0.0.0.0
-  port: 4242
+  port: 41820
 
 punchy:
   punch: true
@@ -62,24 +80,53 @@ punchy:
 tun:
   disabled: false
   dev: nebula1
+
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: 41820
+      proto: tcp
+      group: server
+    - port: any
+      proto: icmp
+      host: any
 EOF
 
-  echo "[agent-bootstrap] Nebula configuration written."
+  cat > /etc/systemd/system/nebula.service <<EOF
+[Unit]
+Description=Nebula Mesh Network
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/nebula -config /etc/nebula/config.yml
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable nebula
+  systemctl start nebula
+  echo "[agent-bootstrap] Nebula mesh started."
 }
 
 # --- pulumi-ui agent ---
 install_agent() {
   echo "[agent-bootstrap] Installing pulumi-ui agent..."
-  ARCH=$(uname -m)
-  case "$ARCH" in
-    aarch64) AGENT_ARCH="arm64" ;;
-    x86_64)  AGENT_ARCH="amd64" ;;
-    *) echo "Unsupported arch: $ARCH"; exit 1 ;;
-  esac
 
-  AGENT_VERSION="@@AGENT_VERSION@@"
   AGENT_URL="@@AGENT_DOWNLOAD_URL@@"
   if [ -z "$AGENT_URL" ]; then
+    AGENT_VERSION="@@AGENT_VERSION@@"
+    if [ "$AGENT_VERSION" = "latest" ]; then
+      AGENT_VERSION="v1.10.3"
+    fi
     AGENT_URL="https://github.com/trustos/pulumi-ui/releases/download/${AGENT_VERSION}/agent_linux_${AGENT_ARCH}"
   fi
 
@@ -93,7 +140,7 @@ install_agent() {
   cat > /etc/systemd/system/pulumi-ui-agent.service <<EOF
 [Unit]
 Description=pulumi-ui Agent
-After=network-online.target
+After=network-online.target nebula.service
 Wants=network-online.target
 
 [Service]

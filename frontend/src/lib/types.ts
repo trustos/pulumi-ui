@@ -92,7 +92,22 @@ export interface MeshStatus {
   connected: boolean;
   lighthouseAddr?: string;
   agentNebulaIp?: string;
+  agentRealIp?: string;
+  nebulaSubnet?: string;
   lastSeenAt?: number;
+}
+
+export interface AgentHealth {
+  status: string;
+  hostname: string;
+  os: string;
+  arch: string;
+  uptime?: string;
+}
+
+export interface AgentService {
+  name: string;
+  active: string;
 }
 
 export interface StackInfo {
@@ -110,6 +125,7 @@ export interface StackInfo {
   status: string;
   running: boolean;
   mesh?: MeshStatus;
+  agentAccess?: boolean;
 }
 
 export interface SshKey {

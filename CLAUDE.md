@@ -11,7 +11,7 @@ that stream live output back to the browser.
 
 | Layer | Technology |
 |---|---|
-| Backend | Go 1.23+, single binary, `net/http` + chi router |
+| Backend | Go 1.25+, single binary, `net/http` + chi router |
 | Database | SQLite via `modernc.org/sqlite` (pure Go, no CGO) |
 | Encryption | AES-GCM, key from env var or auto-generated keystore |
 | Provisioning | Pulumi Automation API (Go SDK) + OCI Terraform provider v4.3.1 |
@@ -39,8 +39,10 @@ internal/api/        HTTP handlers (one file per domain)
   keypair.go         ED25519 keypair generation
   import.go          Bulk OCI account import
   export.go          Bulk OCI account export
+  agent_proxy.go     Agent proxy endpoints (health, services, exec, upload, shell WebSocket) — routes through Nebula mesh
+  agent_binary.go    Agent binary serving (GET /api/agent/binary/{os}/{arch})
 
-cmd/agent/           Standalone agent binary (Nebula mesh + management HTTP API)
+cmd/agent/           Standalone agent binary (Nebula mesh + management HTTP API + /shell WebSocket PTY)
 
 internal/engine/     Pulumi Automation API wrapper
   engine.go          Up / Destroy / Refresh / Preview / Cancel / Unlock
@@ -74,6 +76,9 @@ internal/nebula/     Nebula PKI generation (per-stack CA + host certificates)
   pki.go             Certificate generation using slackhq/nebula library
   subnet.go          Subnet allocation helpers
 
+internal/mesh/       Nebula tunnel manager (userspace, on-demand per stack)
+  mesh.go            Manager + Tunnel types, gvisor-based service, 5-min idle reaper, HTTP client + WebSocket dial
+
 internal/db/         SQLite stores (one file per domain)
   db.go              Open + Migrate (runs SQL migration files)
   stacks.go          Stack config persistence (YAML blob per stack)
@@ -83,10 +88,10 @@ internal/db/         SQLite stores (one file per domain)
   passphrases.go     Named passphrase store
   ssh_keys.go        SSH key pair store
   custom_programs.go User-defined YAML program persistence
-  stack_connections.go Nebula mesh state per stack (PKI, subnet, lighthouse)
+  stack_connections.go Nebula mesh state per stack (PKI, subnet, lighthouse, agent cert/key/token/realIP)
   users.go           User accounts
   sessions.go        Session tokens
-  migrations/        Numbered SQL migration files (001–011)
+  migrations/        Numbered SQL migration files (001–012)
 
 internal/stacks/     Stack YAML envelope (StackConfig struct)
 internal/auth/       Session middleware
@@ -101,7 +106,7 @@ frontend/            Svelte 5 SPA (src/ is the source; dist/ is embedded)
   src/pages/         Full-page route components
   src/lib/           Shared components, API client, stores, types
   src/lib/components/ Reusable UI components (ConfigForm, dialogs, pickers, ObjectPropertyEditor)
-  src/lib/program-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking)
+  src/lib/program-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking, schema-utils)
   src/lib/api.ts     All backend calls — no raw fetch elsewhere
   src/lib/types.ts   TypeScript interfaces matching backend JSON
 ```
@@ -112,11 +117,13 @@ frontend/            Svelte 5 SPA (src/ is the source; dist/ is embedded)
 
 ```
 Browser
-  └─ SvelteKit SPA (src/lib/api.ts → /api/*)
+  └─ Svelte 5 SPA (src/lib/api.ts → /api/*)
        └─ chi HTTP router  (internal/api/router.go)
             └─ Handler methods  (internal/api/*.go)
                  ├─ DB Stores  (internal/db/*.go)  — persistence
-                 └─ Engine  (internal/engine/engine.go)  — Pulumi orchestration
+                 ├─ Mesh Manager  (internal/mesh/)  — on-demand Nebula tunnels per stack
+                 │    └─ Agent Proxy  (internal/api/agent_proxy.go)  — health/exec/upload/shell via mesh
+                 └─ Engine  (internal/engine/engine.go)  — Pulumi orchestration + post-deploy discovery
                       ├─ Programs  (internal/programs/)  — what to deploy
                       ├─ AgentInject (internal/agentinject/) — auto-injects Nebula + agent into compute user_data
                       ├─ Deployer  (internal/applications/) — post-infra app deployment via agent
@@ -227,7 +234,7 @@ Full detail: `docs/roadmap.md`
 | Theme | What | Status |
 |---|---|---|
 | Part 0 | Add `ConfigLayer` + `ValidationHint` to `ConfigField` | pending |
-| BE-1 | Extract `CredentialService` from handler | pending |
+| BE-1 | Extract `CredentialService` from handler | partially started |
 | BE-2 | Deduplicate Up/Destroy/Refresh/Preview in engine | pending |
 | FE-1 | 3-step stack creation wizard | pending |
 | BE-3 | Repository interfaces + store cleanup | pending |
@@ -235,6 +242,10 @@ Full detail: `docs/roadmap.md`
 | FE-3 | SSH key labelling + passphrase immutability UX | pending |
 | BE-4 | Decompose God Object Handler (needs BE-3) | pending |
 | BE-5 | Thread-safe ProgramRegistry (remove `init()`) | **done** |
+| Agent Phase 1 | Agent bootstrap pipeline (PKI, certs, token, binary endpoint) | **done** |
+| Agent Phase 2 | Nebula mesh (userspace tunnels, post-deploy discovery, agent proxy) | **done** |
+| Agent Phase 3 | Interactive web terminal (WebSocket PTY via Nebula) | **done** |
+| Agent Phase 4 | Health monitoring, auto-update, user mesh access | pending |
 | FE-4 | Client-side config field validation (needs Part 0) | pending |
 
 ---
@@ -284,5 +295,6 @@ Environment variables:
 PULUMI_UI_DATA_DIR   Data directory (default: /data)
 PULUMI_UI_STATE_DIR  Pulumi state directory (default: $DATA_DIR/state)
 PULUMI_UI_ADDR       Listen address (default: :8080)
-PULUMI_UI_KEY        AES-256 encryption key (hex) — auto-generated if absent
+PULUMI_UI_ENCRYPTION_KEY  AES-256 encryption key (hex) — auto-generated if absent
+PULUMI_UI_STACK_DIR  Per-stack Pulumi project directories (default: $DATA_DIR/stacks)
 ```

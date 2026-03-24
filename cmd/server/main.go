@@ -18,6 +18,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
 	"github.com/trustos/pulumi-ui/internal/keystore"
+	"github.com/trustos/pulumi-ui/internal/mesh"
 	"github.com/trustos/pulumi-ui/internal/oci"
 	"github.com/trustos/pulumi-ui/internal/programs"
 )
@@ -122,8 +123,12 @@ func main() {
 	deployer := applications.NewDeployer(connStore)
 	eng := engine.New(stateDir, registry, deployer, connStore)
 
+	// Nebula mesh tunnel manager — creates on-demand userspace tunnels to agents
+	meshMgr := mesh.NewManager(connStore)
+
 	// HTTP handler
 	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customPrograms, eng, registry, connStore)
+	h.MeshManager = meshMgr
 
 	// Embedded frontend — serve from the embed.FS sub-tree
 	sub, err := fs.Sub(frontendDist, "frontend/dist")
@@ -163,6 +168,7 @@ func main() {
 
 	<-stop
 	log.Println("Shutting down...")
+	meshMgr.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)

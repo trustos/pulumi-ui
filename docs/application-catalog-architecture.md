@@ -48,17 +48,23 @@ Step B — POST /api/stacks/{name}/deploy-apps  (only if Step A succeeded)
 
 ## Key Design Decisions
 
-### 1. Nebula Embedded Mesh (Communication Layer)
+### 1. Nebula Embedded Mesh (Communication Layer) — IMPLEMENTED
 
 Both pulumi-ui and the agent embed [Nebula](https://github.com/slackhq/nebula) (Slack's open-source overlay network, MIT license, written in Go) as a library. This creates an encrypted, invisible management plane.
 
-**How it works:**
+**How it works (implemented):**
 
-1. **Stack creation**: pulumi-ui generates a per-stack Nebula CA certificate and issues certs for itself and the agent. The agent cert + CA are injected into cloud-init.
-2. **Infrastructure deploys**: A Nebula lighthouse runs on a UDP port on the NLB (or on any instance with a reachable IP). The lighthouse only facilitates peer discovery — it does not relay data.
-3. **Agent starts**: Embeds Nebula, connects to the lighthouse, registers on the mesh.
-4. **pulumi-ui connects**: Embeds Nebula, queries the lighthouse, discovers the agent. Nebula hole-punches a direct P2P UDP tunnel.
-5. **Communication**: The agent's management API runs on the Nebula virtual network only — not on any real network port. It is unreachable from the internet.
+1. **Stack creation** (`internal/api/stacks.go`): pulumi-ui generates a per-stack Nebula CA and issues two certificates — a **UI cert** (`.1` address, group "server") and a **dedicated agent cert** (`.2` address, group "agent"). A `crypto/rand` 32-byte hex **auth token** is also generated. All are stored in `stack_connections`. PKI generation is triggered for both `ApplicationProvider` programs and `AgentAccessProvider` programs (YAML with `meta.agentAccess: true`).
+2. **Infrastructure deploys**: The agent cert, CA cert, and auth token are injected into cloud-init via multipart MIME composition. The agent bootstrap script installs the Nebula binary from GitHub releases, configures `nebula.service` (systemd), and starts Nebula on port 41820.
+3. **Post-deploy discovery** (`internal/engine/engine.go`): After successful `Up`, the engine scans Pulumi stack outputs for IP patterns and stores the public/NLB IP in `agent_real_ip`. This IP is used in Nebula's `static_host_map` for direct tunnel establishment.
+4. **On-demand tunnels** (`internal/mesh/mesh.go`): `mesh.Manager` creates userspace Nebula tunnels per stack using the gvisor-based `service.Service` — no TUN device, no root privileges. Tunnels are cached with a 5-minute idle timeout and reaped by a background goroutine.
+5. **Agent proxy** (`internal/api/agent_proxy.go`): All agent communication routes through the mesh — `GET /health`, `/services`, `POST /exec`, `/upload`, and `GET /shell` (WebSocket terminal with PTY). The proxy uses `tunnel.HTTPClient()` for HTTP requests and `tunnel.Dial()` for WebSocket connections.
+
+**Security layers:**
+- Nebula transport: mutual certificate authentication (Noise Protocol), AES-256-GCM encryption
+- Per-stack PKI: each stack has its own CA, certificates are non-transferable
+- Per-stack Bearer token: defense in depth on every HTTP request
+- Agent firewall: Nebula config allows inbound TCP 41820 only from "server" group
 
 **Why Nebula, not a plain TCP port:**
 
@@ -70,11 +76,11 @@ Both pulumi-ui and the agent embed [Nebula](https://github.com/slackhq/nebula) (
 | NAT traversal | None (needs port forwarding) | UDP hole punching (works through NAT) |
 | Key exchange | Manual (share token) | Noise Protocol (same as WireGuard/Signal) |
 
-The Nebula lighthouse UDP port on the NLB **does not respond to unauthorized probes**. Without a valid Nebula certificate signed by the stack's CA, you cannot even initiate a handshake.
+The Nebula UDP port on the NLB **does not respond to unauthorized probes**. Without a valid Nebula certificate signed by the stack's CA, you cannot even initiate a handshake.
 
-**Replaces ZeroTier**: Nebula replaces the current ZeroTier install in `cloudinit.sh`. The ZeroTier block is removed in the rewritten script. The mesh is established automatically as part of the deploy, with certificates managed by pulumi-ui. This eliminates the ZeroTier Central third-party dependency.
+**Replaced ZeroTier**: Nebula replaced ZeroTier in `cloudinit.sh`. The mesh is established automatically as part of the deploy, with certificates managed by pulumi-ui. This eliminated the ZeroTier Central third-party dependency.
 
-**Embeddable since v1.8.0**: Nebula supports a "fake TUN device" mode for embedding into Go applications. No OS-level network interfaces or root privileges needed for the management channel.
+**Userspace embedding**: Nebula's gvisor-based `overlay.NewUserDeviceFromConfig` provides a fake TUN device for embedding into Go applications. No OS-level network interfaces or root privileges needed.
 
 ### 2. Topology-Aware Connectivity
 
@@ -150,11 +156,11 @@ The Nebula mesh and pulumi-ui agent are **not** part of any program's applicatio
 
 **Provider extensibility:** Adding a new cloud provider (AWS, GCP) requires adding entries to the `ComputeResources` map in `internal/agentinject/map.go` and networking resource types in `network.go`. The multipart MIME composition and agent bootstrap script are provider-agnostic (cloud-init is a Linux guest standard).
 
-### 6. Agent Binary Distribution
+### 6. Agent Binary Distribution — IMPLEMENTED
 
-The agent binary is published to **GitHub Releases** as part of the release pipeline. Cloud-init downloads it directly. OCI instances on private subnets have outbound internet access via the NAT Gateway that the Nomad cluster program provisions — no special connectivity to pulumi-ui is required for the download.
+The pulumi-ui server serves agent binaries directly at `GET /api/agent/binary/{os}/{arch}` (no authentication required). Cloud-init downloads from this endpoint at boot. The Nebula binary is downloaded separately from GitHub releases by the agent bootstrap script.
 
-**Two architectures must be built:**
+**Two architectures are built** (included in `make build`):
 
 | OCI shape family | Architecture |
 |---|---|
@@ -162,28 +168,12 @@ The agent binary is published to **GitHub Releases** as part of the release pipe
 | E3/E4/E5 (AMD EPYC) | `linux/amd64` |
 
 ```makefile
-# Makefile (new targets)
 build-agent:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o dist/agent_linux_arm64 ./cmd/agent
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/agent_linux_amd64 ./cmd/agent
 ```
 
-Cloud-init auto-detects architecture at runtime:
-
-```bash
-ARCH=$(uname -m)
-case "$ARCH" in
-  aarch64) AGENT_ARCH="arm64" ;;
-  x86_64)  AGENT_ARCH="amd64" ;;
-  *) echo "Unsupported arch: $ARCH"; exit 1 ;;
-esac
-curl -fsSL \
-  "https://github.com/trustos/pulumi-ui/releases/download/{{ .Vars.AGENT_VERSION }}/agent_linux_${AGENT_ARCH}" \
-  -o /usr/local/bin/pulumi-ui-agent
-chmod +x /usr/local/bin/pulumi-ui-agent
-```
-
-The agent version (`AGENT_VERSION`) is injected into cloud-init by `buildCloudInit()` as a template variable, pinned to the same version as the running pulumi-ui server.
+Cloud-init auto-detects architecture at runtime and downloads the agent binary from the pulumi-ui server. The bootstrap script also downloads the Nebula binary from GitHub releases, installs it, and creates a `nebula.service` systemd unit.
 
 ---
 
@@ -321,11 +311,14 @@ Agent binary:
 │   ├── POST /exec       -- Execute command (streaming stdout/stderr)
 │   ├── POST /upload     -- Upload file to instance
 │   ├── GET  /health     -- Agent health + system info
-│   └── GET  /services   -- Status of systemd services
+│   ├── GET  /services   -- Status of systemd services
+│   └── GET  /shell      -- WebSocket: interactive PTY terminal (github.com/creack/pty)
 └── Systemd service wrapper
 ```
 
-The management API binds to the Nebula virtual IP (e.g., `10.42.7.2:8080`). It is **not reachable from any real network interface**. Only peers on the Nebula mesh (i.e., pulumi-ui with a valid certificate) can access it.
+The management API binds to the Nebula virtual IP (e.g., `10.42.7.2:41820`). It is **not reachable from any real network interface**. Only peers on the Nebula mesh (i.e., pulumi-ui with a valid certificate) can access it.
+
+The `/shell` endpoint upgrades to a WebSocket connection and allocates a PTY (`/bin/bash`). The server-side proxy (`internal/api/agent_proxy.go`) bridges the browser's WebSocket through the Nebula tunnel to the agent, supporting terminal resize messages. This provides a fully interactive web terminal without exposing SSH.
 
 ### Security Layers
 
@@ -649,41 +642,35 @@ Programs without a catalog omit the `applications` field (or return an empty arr
 
 ## Implementation Phases
 
-### Phase 1 (Current Priority)
+### Phase 1 — Agent Bootstrap Pipeline ✓ DONE
 
-Order matters — each step unblocks the next.
+1. **PKI generation** extended to `AgentAccessProvider` (YAML programs with `meta.agentAccess: true`) — not just `ApplicationProvider`
+2. **Dedicated agent cert** issued at `.2` address (group "agent"), stored separately from UI cert (`.1`, group "server")
+3. **Per-stack secure token** — `crypto/rand` 32-byte hex token stored in `stack_connections`
+4. **Agent binary endpoint** — `GET /api/agent/binary/{os}/{arch}` serves cross-compiled binaries from `dist/`
+5. **Migration 012** — adds `agent_cert`, `agent_key`, `agent_token`, `agent_real_ip` columns
 
-**Prerequisites already done:**
-- **BE-5 (ProgramRegistry)**: `ProgramRegistry` struct with `sync.RWMutex` is complete. `init()` removed from all program files. `engine.New()` and `api.NewHandler()` both accept the registry. No further changes needed to wire the registry.
+### Phase 2 — Nebula Mesh ✓ DONE
 
-**Remaining work:**
+1. **Agent bootstrap script** — downloads Nebula binary from GitHub releases, creates `nebula.service` systemd unit, starts Nebula on port 41820, configures firewall
+2. **Embedded Nebula in server** — `internal/mesh/` uses Nebula's gvisor-based userspace service. On-demand tunnels per stack, cached with 5-minute idle timeout.
+3. **Post-deploy discovery** — after successful `Up`, engine scans Pulumi outputs for IP patterns and stores in `agent_real_ip`
+4. **Agent proxy layer** — all agent communication routes through Nebula: health, services, exec, upload
 
-1. **Agent binary** (`cmd/agent/`): minimal Go binary with embedded Nebula + management API. Build with `make build-agent` (produces `dist/agent_linux_arm64` + `dist/agent_linux_amd64`). Published to GitHub Releases alongside the server binary — not embedded in the server.
-2. **Nebula PKI** (`internal/nebula/`): CA generation, cert issuance, subnet allocator. Called at stack creation time (in the `PutStack` / `CreateStack` handler path).
-3. **Migration 011** (`internal/db/migrations/011_nebula_connections.sql`): Drop and recreate `stack_connections`. Add `nebula_subnet_counter` singleton.
-4. **Stack connection store** (`internal/db/stack_connections.go`): CRUD + `AllocateSubnet()`. Called by the stack creation handler.
-5. **Application interfaces** (`internal/programs/applications.go`): `ApplicationDef`, `ApplicationProvider`, `TargetMode` types.
-6. **Nomad cluster catalog** (`internal/programs/nomad_cluster.go`): implement `ApplicationProvider`, define the catalog table from this doc.
-7. **Cloud-init rewrite** (`internal/programs/cloudinit.sh`): template conditionals (`{{ if .Apps.consul }}`). Nebula + agent removed from `cloudinit.sh` — they are auto-injected by `internal/agentinject/` via multipart MIME composition. Update `buildCloudInit()` to use `template.Execute()` and accept optional agent bootstrap.
-7b. **Agent bootstrap auto-injection** (`internal/agentinject/`): standalone `agent_bootstrap.sh`, compute resource map, multipart MIME composition, YAML post-render injection, Go program cfg-based injection.
-8. **Infra changes** (`internal/programs/nomad_cluster.go`): add Nebula lighthouse UDP port (41820) to NSG + NLB. Output `nebulaLighthouseAddr`.
-9. **Application deployer** (`internal/applications/deployer.go`): Nebula connection management, agent HTTP client, Phase 2 registration wait, Phase 3 workload execution.
-10. **`Engine.DeployApps()`** (`internal/engine/engine.go`): reads stack outputs, calls deployer.
-11. **`DeployApps` handler** (`internal/api/stacks.go`): `POST /api/stacks/{name}/deploy-apps` — SSE, operation record, calls engine.
-12. **Stack config extension** (`internal/stacks/schema.go`): add `Applications map[string]bool` + `AppConfig map[string]string`.
-13. **API updates**: programs return catalogs (via `ApplicationProvider` type assertion in handler), stacks accept/return app selections.
-14. **Frontend Step 4**: `ApplicationSelector.svelte`, wire into `NewStackDialog` (skip step for programs without catalog).
-15. **Frontend StackDetail**: Applications panel, mesh status, phased SSE rendering for `deploy-apps` operation.
+### Phase 3 — Interactive Web Terminal ✓ DONE
 
-### Phase 2 (Future)
+1. **Agent `/shell` endpoint** — WebSocket with PTY allocation (using `github.com/creack/pty` and `github.com/gorilla/websocket`). Supports resize messages.
+2. **WebSocket proxy** — `GET /api/stacks/{name}/agent/shell` proxies browser WebSocket through Nebula tunnel to agent
+
+### Phase 4 (Future)
 
 - Nomad ACL bootstrap from pulumi-ui via mesh
-- Live health monitoring via agent
+- Live health monitoring via agent (periodic health poll + UI indicators)
 - Per-app redeploy/restart actions from stack detail page
 - Agent auto-update via mesh
 - Nebula mesh exposed to users (certs for joining from workstation — users can add their machine to the cluster mesh directly)
 
-### Phase 3 (Future)
+### Phase 5 (Future)
 
 - YAML program `meta.applications` support
 - Kubernetes program with Helm chart applications
@@ -694,37 +681,30 @@ Order matters — each step unblocks the next.
 
 ## Key Files
 
-**Already done (BE-5):**
-- `internal/programs/registry.go` — `ProgramRegistry` struct with `sync.RWMutex`; `RegisterBuiltins`; `RegisterYAML(r, ...)`
-- `internal/engine/engine.go` — holds `registry *ProgramRegistry`; uses `e.registry.Get()`
-- `internal/api/router.go` — `Handler` has `Registry *ProgramRegistry`
-- `internal/api/programs.go` / `stacks.go` — all registry calls through `h.Registry`
-- `cmd/server/main.go` — creates registry, calls `RegisterBuiltins`, passes to engine + handler
+**Implemented (Phases 1–3):**
 
-**New files to create (Phase 1):**
-- `cmd/agent/` — agent binary entry point (embeds Nebula + management API)
-- `internal/nebula/` — Nebula PKI generation, cert issuance, subnet allocation, embedded node management
-- `internal/programs/applications.go` — `ApplicationDef`, `ApplicationProvider`, `TargetMode` types
-- `internal/applications/deployer.go` — Deployer service (Phase 2 mesh + Phase 3 workload execution)
-- `internal/db/migrations/011_nebula_connections.sql` — drops and recreates `stack_connections`; adds `nebula_subnet_counter`
-- `internal/db/stack_connections.go` — `StackConnectionStore` with `AllocateSubnet()`
-- `internal/agentinject/` — agent bootstrap auto-injection (map.go, bootstrap.go, compose.go, yaml.go, goprog.go, agent_bootstrap.sh)
-- `frontend/src/lib/components/ApplicationSelector.svelte` — Step 4 catalog UI
+*New files:*
+- `internal/mesh/mesh.go` — Nebula tunnel manager (on-demand userspace tunnels, idle reaper)
+- `internal/api/agent_proxy.go` — Agent proxy endpoints (health, services, exec, upload, shell WebSocket)
+- `internal/api/agent_binary.go` — Agent binary serving (`GET /api/agent/binary/{os}/{arch}`)
+- `internal/db/migrations/012_agent_cert_and_token.sql` — Adds agent cert/key, token, real IP columns
+- `internal/nebula/pki_test.go`, `internal/mesh/mesh_test.go`, `internal/engine/discovery_test.go` — Tests
 
-**Files to modify (Phase 1):**
-- `internal/programs/cloudinit.go` — switch from `strings.ReplaceAll` to `template.Execute`; accept optional agent bootstrap for multipart MIME composition
-- `internal/programs/cloudinit.sh` — modular with Go template conditionals; Nebula + agent removed (auto-injected by agentinject)
-- `internal/programs/nomad_cluster.go` — implement `ApplicationProvider`; add Nebula lighthouse NSG + NLB; output `nebulaLighthouseAddr`
-- `internal/stacks/schema.go` — add `Applications map[string]bool` + `AppConfig map[string]string`
-- `internal/api/stacks.go` — add `DeployApps` handler (`POST .../deploy-apps`); generate Nebula PKI at stack creation; return app selections in stack info
-- `internal/api/router.go` — register `POST /stacks/{name}/deploy-apps`
-- `internal/api/programs.go` — include `applications` catalog in listing (via `ApplicationProvider` type assertion)
-- `internal/engine/engine.go` — add `DeployApps()` method
-- `frontend/src/lib/types.ts` — `ApplicationDef` types, mesh status, app statuses
-- `frontend/src/lib/api.ts` — `deployApps(stackName)` call
-- `frontend/src/lib/components/NewStackDialog.svelte` — add Step 4; skip for programs without catalog
-- `frontend/src/lib/components/EditStackDialog.svelte` — app selection editing
-- `frontend/src/pages/StackDetail.svelte` — applications panel + mesh status + `deploy-apps` operation rendering
+*Modified files:*
+- `internal/api/stacks.go` — PKI generation for `AgentAccessProvider`, agent cert, per-stack token, mesh status with `agentRealIP`/`nebulaSubnet`
+- `internal/api/router.go` — New agent proxy routes + `MeshManager` field on `Handler`
+- `internal/engine/engine.go` — Post-deploy IP discovery, uses agent cert/token from `stack_connections`
+- `internal/applications/deployer.go` — Uses per-stack token for agent communication
+- `internal/agentinject/agent_bootstrap.sh` — Nebula binary install + systemd service configuration
+- `internal/db/stack_connections.go` — New fields (`NebulaAgentCert`, `NebulaAgentKey`, `AgentToken`, `AgentRealIP`), `UpdateAgentRealIP` method
+- `cmd/agent/main.go` — `/shell` WebSocket endpoint with PTY
+- `Makefile` — `build` target includes `build-agent`
+
+**Previously implemented (BE-5, agent injection):**
+- `internal/programs/registry.go` — `ProgramRegistry` struct with `sync.RWMutex`
+- `internal/agentinject/` — Agent bootstrap auto-injection (map, compose, YAML/Go injection, networking)
+- `internal/nebula/` — Nebula PKI generation, cert issuance
+- `internal/applications/deployer.go` — Application deployment orchestration
 
 ---
 

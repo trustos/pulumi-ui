@@ -309,14 +309,104 @@ func (e *Engine) agentVarsForStack(stackName string) *agentinject.AgentVars {
 	if err != nil || conn == nil {
 		return nil
 	}
+
+	hostCert := string(conn.NebulaAgentCert)
+	hostKey := string(conn.NebulaAgentKey)
+	if hostCert == "" {
+		hostCert = string(conn.NebulaUICert)
+		hostKey = string(conn.NebulaUIKey)
+	}
+
+	token := conn.AgentToken
+	if token == "" {
+		token = "placeholder-token"
+	}
+
+	downloadURL := ""
+	if addr := os.Getenv("PULUMI_UI_ADDR"); addr != "" {
+		downloadURL = fmt.Sprintf("http://localhost%s/api/agent/binary/linux", addr)
+	}
+
 	return &agentinject.AgentVars{
 		NebulaCACert:    string(conn.NebulaCACert),
-		NebulaHostCert:  string(conn.NebulaUICert),
-		NebulaHostKey:   string(conn.NebulaUIKey),
-		AgentVersion:    "latest",
-		AgentDownloadURL: "",
-		AgentToken:      "placeholder-token",
+		NebulaHostCert:  hostCert,
+		NebulaHostKey:   hostKey,
+		AgentVersion:    "v1.10.3",
+		AgentDownloadURL: downloadURL,
+		AgentToken:      token,
 	}
+}
+
+// discoverAgentAddress extracts the agent's real IP from Pulumi outputs
+// after a successful deploy and stores it for Nebula static_host_map.
+func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, prog programs.Program, stack auto.Stack, send SSESender) {
+	hasAgent := false
+	if _, ok := prog.(programs.ApplicationProvider); ok {
+		hasAgent = true
+	}
+	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
+		hasAgent = true
+	}
+	if !hasAgent || e.connStore == nil {
+		return
+	}
+
+	outputs, err := stack.Outputs(ctx)
+	if err != nil {
+		log.Printf("[agent-discover] failed to read outputs for %s: %v", stackName, err)
+		return
+	}
+
+	ipKeys := []string{
+		"instancePublicIp", "instancePublicIP",
+		"nlbPublicIp", "nlbPublicIP",
+		"publicIp", "publicIP",
+		"serverPublicIp", "serverPublicIP",
+	}
+	for _, key := range ipKeys {
+		if v, ok := outputs[key]; ok {
+			if ip, ok := v.Value.(string); ok && ip != "" {
+				if err := e.connStore.UpdateAgentRealIP(stackName, ip); err != nil {
+					log.Printf("[agent-discover] failed to store agent IP for %s: %v", stackName, err)
+				} else {
+					send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: found %s = %s", key, ip)})
+					log.Printf("[agent-discover] stack %s: agent reachable at %s", stackName, ip)
+				}
+				return
+			}
+		}
+	}
+
+	for key, v := range outputs {
+		if ip, ok := v.Value.(string); ok && ip != "" && looksLikeIP(ip) {
+			if err := e.connStore.UpdateAgentRealIP(stackName, ip); err != nil {
+				log.Printf("[agent-discover] failed to store agent IP for %s: %v", stackName, err)
+			} else {
+				send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: found %s = %s", key, ip)})
+			}
+			return
+		}
+	}
+
+	log.Printf("[agent-discover] no IP output found for stack %s", stackName)
+}
+
+func looksLikeIP(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if len(p) == 0 || len(p) > 3 {
+			return false
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Up runs pulumi up for the given stack.
@@ -369,6 +459,9 @@ func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[
 		send(SSEEvent{Type: "error", Data: err.Error()})
 		return "failed"
 	}
+
+	e.discoverAgentAddress(opCtx, stackName, prog, stack, send)
+
 	return "succeeded"
 }
 
@@ -731,8 +824,13 @@ func (e *Engine) DeployApps(ctx context.Context, stackName, programName string, 
 		return "failed"
 	}
 
-	provider, ok := prog.(programs.ApplicationProvider)
-	if !ok {
+	provider, isAppProvider := prog.(programs.ApplicationProvider)
+	isAgentAccess := false
+	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
+		isAgentAccess = true
+	}
+
+	if !isAppProvider && !isAgentAccess {
 		send(SSEEvent{Type: "error", Data: "program does not support application deployment"})
 		return "failed"
 	}
@@ -753,35 +851,39 @@ func (e *Engine) DeployApps(ctx context.Context, stackName, programName string, 
 		cancel()
 	}()
 
-	// Read Pulumi outputs to get the lighthouse address
-	outputs, err := e.GetStackOutputs(opCtx, stackName, programName, cfg, creds)
-	if err != nil {
-		send(SSEEvent{Type: "error", Data: "failed to read stack outputs: " + err.Error()})
-		return "failed"
-	}
-
-	lighthouseAddr := ""
-	if v, ok := outputs["nebulaLighthouseAddr"]; ok {
-		if s, ok := v.Value.(string); ok {
-			lighthouseAddr = s
+	if isAppProvider {
+		outputs, err := e.GetStackOutputs(opCtx, stackName, programName, cfg, creds)
+		if err != nil {
+			send(SSEEvent{Type: "error", Data: "failed to read stack outputs: " + err.Error()})
+			return "failed"
 		}
-	}
 
-	if lighthouseAddr == "" {
-		send(SSEEvent{Type: "error", Data: "nebulaLighthouseAddr not found in stack outputs — deploy infrastructure first"})
-		return "failed"
-	}
-
-	logFn := func(eventType, message string) {
-		send(SSEEvent{Type: eventType, Data: message})
-	}
-	if err := e.deployer.DeployApps(opCtx, stackName, lighthouseAddr, selectedApps, provider.Applications(), logFn); err != nil {
-		if opCtx.Err() != nil {
-			send(SSEEvent{Type: "output", Data: "Application deployment cancelled."})
-			return "cancelled"
+		lighthouseAddr := ""
+		if v, ok := outputs["nebulaLighthouseAddr"]; ok {
+			if s, ok := v.Value.(string); ok {
+				lighthouseAddr = s
+			}
 		}
-		send(SSEEvent{Type: "error", Data: err.Error()})
-		return "failed"
+
+		if lighthouseAddr == "" {
+			send(SSEEvent{Type: "error", Data: "nebulaLighthouseAddr not found in stack outputs — deploy infrastructure first"})
+			return "failed"
+		}
+
+		logFn := func(eventType, message string) {
+			send(SSEEvent{Type: eventType, Data: message})
+		}
+		if err := e.deployer.DeployApps(opCtx, stackName, lighthouseAddr, selectedApps, provider.Applications(), logFn); err != nil {
+			if opCtx.Err() != nil {
+				send(SSEEvent{Type: "output", Data: "Application deployment cancelled."})
+				return "cancelled"
+			}
+			send(SSEEvent{Type: "error", Data: err.Error()})
+			return "failed"
+		}
+	} else {
+		send(SSEEvent{Type: "output", Data: "Agent access program — agent connects via Nebula mesh."})
+		send(SSEEvent{Type: "output", Data: "Use the Nodes tab for terminal access and command execution."})
 	}
 
 	return "succeeded"

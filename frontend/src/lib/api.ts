@@ -522,3 +522,22 @@ export async function deleteSSHKey(id: string): Promise<void> {
 export function downloadSSHPrivateKeyUrl(id: string): string {
   return `/api/ssh-keys/${id}/private-key`;
 }
+
+// Agent proxy
+
+export async function getAgentHealth(stackName: string): Promise<import('./types').AgentHealth> {
+  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/agent/health`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getAgentServices(stackName: string): Promise<import('./types').AgentService[]> {
+  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/agent/services`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export function agentShellUrl(stackName: string): string {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${location.host}/api/stacks/${encodeURIComponent(stackName)}/agent/shell`;
+}

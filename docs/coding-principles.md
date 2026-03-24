@@ -118,7 +118,7 @@ Built-in programs register via an explicit function in `main.go`, not via `init(
 registry := programs.NewProgramRegistry()
 programs.RegisterBuiltins(registry)
 // ... load custom programs from DB ...
-deployer := applications.NewDeployer()
+deployer := applications.NewDeployer(connStore)
 eng := engine.New(stateDir, registry, deployer, connStore)
 ```
 
@@ -175,24 +175,20 @@ credentials, causing silent authentication against the wrong OCI account.
 
 ## 7. Engine Operation Pattern
 
-All four Pulumi operations (Up/Destroy/Refresh/Preview) go through the private
-`executeOperation` method. Do not duplicate the boilerplate:
+> **Note (BE-2 roadmap item — not yet implemented):** The four Pulumi operations
+> (Up/Destroy/Refresh/Preview) currently duplicate the same 8-step pattern.
+> The aspirational pattern is a private `executeOperation` method that each public
+> method delegates to. Until BE-2 is completed, the duplication exists in
+> `engine.go` and must be kept consistent manually.
 
 ```go
-// CORRECT
+// ASPIRATIONAL (BE-2) — each method becomes a one-liner:
 func (e *Engine) Up(ctx context.Context, ...) string {
     return e.executeOperation(ctx, stackName, programName, cfg, creds, send,
         func(ctx context.Context, stack auto.Stack) error {
             _, err := stack.Up(ctx, optup.ProgressStreams(&sseWriter{send: send}))
             return err
         })
-}
-
-// WRONG — duplicating tryLock, buildEnvVars, resolveStack, etc.
-func (e *Engine) Up(...) string {
-    if !e.tryLock(stackName) { ... }
-    envVars, cleanup, err := e.buildEnvVars(creds)
-    // ... 40 more lines
 }
 ```
 
