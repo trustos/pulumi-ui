@@ -43,7 +43,8 @@ type pulumiMetaField struct {
 // strip it to keep the execution input tidy).
 //
 // Convention-based ui_type overrides: fields named "imageId" → oci-image,
-// fields named "shape" → oci-shape. These can also be declared explicitly
+// "shape" → oci-shape, "compartmentId" → oci-compartment,
+// "availabilityDomain" → oci-ad. These can also be declared explicitly
 // under meta.fields.
 // truncateAtResources returns the portion of a Pulumi YAML body before the
 // top-level "resources:" key. The meta: and config: sections always precede
@@ -163,6 +164,10 @@ func yamlTypeToFieldType(key, pulumiType string, uiTypeByField map[string]string
 		return "oci-shape"
 	case "sshPublicKey":
 		return "ssh-public-key"
+	case "compartmentId":
+		return "oci-compartment"
+	case "availabilityDomain":
+		return "oci-ad"
 	}
 	// Pulumi type → form field type.
 	switch strings.ToLower(pulumiType) {

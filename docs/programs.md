@@ -33,6 +33,8 @@ type ConfigField struct {
 | `select` | Dropdown from `Options` |
 | `oci-shape` | Combobox loaded from `/api/accounts/{id}/shapes`; "Always Free" badge on eligible shapes |
 | `oci-image` | Combobox loaded from `/api/accounts/{id}/images`; auto-selects latest Ubuntu Minimal by default |
+| `oci-compartment` | Combobox loaded from `/api/accounts/{id}/compartments`; includes tenancy root as first entry |
+| `oci-ad` | Combobox loaded from `/api/accounts/{id}/availability-domains`; typically 1-3 entries per region |
 | `ssh-public-key` | Picker loaded from `/api/ssh-keys`; allows selecting a named SSH key pair from the SSH Keys store |
 
 ```go
@@ -303,6 +305,8 @@ Type mapping:
 | `boolean` | `select` |
 | key == `imageId` | `oci-image` (convention) |
 | key == `shape` | `oci-shape` (convention) |
+| key == `compartmentId` | `oci-compartment` (convention) |
+| key == `availabilityDomain` | `oci-ad` (convention) |
 
 The optional `meta:` top-level section (stripped before execution) allows declaring field groups, explicit `ui_type` overrides, and agent connectivity:
 ```yaml

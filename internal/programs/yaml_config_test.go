@@ -47,17 +47,53 @@ config:
     type: string
   sshPublicKey:
     type: string
+  compartmentId:
+    type: string
+  availabilityDomain:
+    type: string
 resources:
   r:
     type: oci:Core/vcn:Vcn
 `
 	fields, _, err := ParseConfigFields(yaml)
 	require.NoError(t, err)
-	require.Len(t, fields, 3)
+	require.Len(t, fields, 5)
 
 	assert.Equal(t, "oci-image", fields[0].Type)
 	assert.Equal(t, "oci-shape", fields[1].Type)
 	assert.Equal(t, "ssh-public-key", fields[2].Type)
+	assert.Equal(t, "oci-compartment", fields[3].Type)
+	assert.Equal(t, "oci-ad", fields[4].Type)
+}
+
+func TestParseConfigFields_UITypeOverride(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+meta:
+  fields:
+    targetCompartment:
+      ui_type: oci-compartment
+      label: Target Compartment
+    ad:
+      ui_type: oci-ad
+      label: Availability Domain
+config:
+  targetCompartment:
+    type: string
+  ad:
+    type: string
+resources:
+  r:
+    type: oci:Core/vcn:Vcn
+`
+	fields, _, err := ParseConfigFields(yaml)
+	require.NoError(t, err)
+	require.Len(t, fields, 2)
+
+	assert.Equal(t, "oci-compartment", fields[0].Type)
+	assert.Equal(t, "Target Compartment", fields[0].Label)
+	assert.Equal(t, "oci-ad", fields[1].Type)
+	assert.Equal(t, "Availability Domain", fields[1].Label)
 }
 
 func TestParseConfigFields_Groups(t *testing.T) {

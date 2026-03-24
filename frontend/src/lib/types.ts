@@ -10,10 +10,22 @@ export interface OciImage {
   operatingSystemVersion: string;
 }
 
+export interface OciCompartment {
+  id: string;
+  name: string;
+  description: string;
+  compartmentId: string;
+}
+
+export interface OciAvailabilityDomain {
+  name: string;
+  id: string;
+}
+
 export interface ConfigField {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'textarea' | 'select' | 'oci-shape' | 'oci-image' | 'ssh-public-key';
+  type: 'text' | 'number' | 'textarea' | 'select' | 'oci-shape' | 'oci-image' | 'oci-compartment' | 'oci-ad' | 'ssh-public-key';
   required?: boolean;
   default?: string;
   description?: string;

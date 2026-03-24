@@ -191,3 +191,45 @@ func (c *Client) ListImages() ([]Image, error) {
 	}
 	return combined, nil
 }
+
+// Compartment is a simplified OCI IAM compartment.
+type Compartment struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	CompartmentID string `json:"compartmentId"`
+}
+
+// AvailabilityDomain is an OCI availability domain within a region.
+type AvailabilityDomain struct {
+	Name string `json:"name"`
+	ID   string `json:"id"`
+}
+
+// ListCompartments returns all active compartments accessible to the user.
+// The tenancy root compartment is prepended as the first entry since the
+// Identity API only returns child compartments.
+func (c *Client) ListCompartments() ([]Compartment, error) {
+	var compartments []Compartment
+	if err := c.get(CompartmentsURL(c.region, c.tenancyOCID), &compartments); err != nil {
+		return nil, err
+	}
+	root := Compartment{
+		ID:          c.tenancyOCID,
+		Name:        c.GetTenancyName(),
+		Description: "Tenancy root compartment",
+	}
+	if root.Name == "" {
+		root.Name = "Root"
+	}
+	return append([]Compartment{root}, compartments...), nil
+}
+
+// ListAvailabilityDomains returns the availability domains for the account's region.
+func (c *Client) ListAvailabilityDomains() ([]AvailabilityDomain, error) {
+	var ads []AvailabilityDomain
+	if err := c.get(AvailabilityDomainsURL(c.region, c.tenancyOCID), &ads); err != nil {
+		return nil, err
+	}
+	return ads, nil
+}

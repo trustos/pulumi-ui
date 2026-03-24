@@ -90,6 +90,8 @@ config:
 | key = `imageId` | OCI image picker | Convention — type must be `string` |
 | key = `shape` | OCI shape picker | Convention — type must be `string` |
 | key = `sshPublicKey` | SSH key picker | Convention — type must be `string` |
+| key = `compartmentId` | OCI compartment picker | Convention — type must be `string` |
+| key = `availabilityDomain` | OCI availability domain picker | Convention — type must be `string` |
 
 ### Accessing Config Values
 
@@ -138,7 +140,7 @@ meta:
 
 | Property | Description |
 |---|---|
-| `ui_type` | Override the form control. Options: `oci-image`, `oci-shape`, `ssh-public-key`, `text`, `number`, `select`, `textarea` |
+| `ui_type` | Override the form control. Options: `oci-image`, `oci-shape`, `oci-compartment`, `oci-ad`, `ssh-public-key`, `text`, `number`, `select`, `textarea` |
 | `label` | Override the auto-generated label (default: camelCase → Title Case) |
 | `description` | Help text shown below the field in the stack form |
 

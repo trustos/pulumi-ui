@@ -182,7 +182,7 @@ Property values matching `{{ .Config.KEY }}` are rendered as read-only chips in 
 
 ### Promote to Config Field
 For required non-object property rows with an empty value, a `→ config` chip is shown. Clicking it:
-1. Adds a config field for that key (with `oci-shape`, `oci-image`, or `ssh-public-key` ui_type as appropriate for `shape`, `imageId`, `sshPublicKey`)
+1. Adds a config field for that key (with `oci-shape`, `oci-image`, `oci-compartment`, `oci-ad`, or `ssh-public-key` ui_type as appropriate for `shape`, `imageId`, `compartmentId`, `availabilityDomain`, `sshPublicKey`)
 2. Sets the property value to `{{ .Config.<key> }}`
 
 **Promote to Variable** — For certain well-known keys (e.g. `availabilityDomain`), a `→ variable` chip is shown instead. Clicking it auto-scaffolds the full `fn::invoke` variable definition in the graph's `variables:` and sets the property value to the correct Pulumi interpolation (e.g. `${availabilityDomains[0].name}`). This is driven by `KNOWN_VARIABLE_TEMPLATES` in `ProgramEditor.svelte`. For unknown keys, it sets the value to `${key}` and the user completes the variable definition manually.

@@ -8,6 +8,7 @@
   import { Alert, AlertDescription } from '$lib/components/ui/alert';
   import { ScrollArea } from '$lib/components/ui/scroll-area';
   import * as Tooltip from '$lib/components/ui/tooltip';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { navigate } from '$lib/router';
   import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, listSSHKeys, streamDeployApps } from '$lib/api';
   import type { StackInfo, OciAccount, ProgramMeta, SshKey, ApplicationDef } from '$lib/types';
@@ -297,6 +298,13 @@
     return out;
   });
 
+  function copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      copyState = 'copied';
+      setTimeout(() => { copyState = 'idle'; }, 2000);
+    }).catch(() => {});
+  }
+
   function copyLastOperation() {
     const lines = displayLines();
     let lastSep = -1;
@@ -307,11 +315,12 @@
       }
     }
     const slice = lastSep >= 0 ? lines.slice(lastSep) : lines;
-    const text = slice.map(l => l.data).join('\n');
-    navigator.clipboard.writeText(text).then(() => {
-      copyState = 'copied';
-      setTimeout(() => { copyState = 'idle'; }, 2000);
-    }).catch(() => {});
+    copyToClipboard(slice.map(l => l.data).join('\n'));
+  }
+
+  function copyFullLog() {
+    const text = displayLines().map(l => l.data).join('\n');
+    copyToClipboard(text);
   }
 </script>
 
@@ -431,14 +440,19 @@
           {/if}
         </span>
         <div class="flex items-center gap-1">
-          <Tooltip.Root>
-            <Tooltip.Trigger>
-              <Button variant="ghost" size="sm" onclick={copyLastOperation}>
-                {copyState === 'copied' ? 'Copied!' : 'Copy last'}
-              </Button>
-            </Tooltip.Trigger>
-            <Tooltip.Content>Copy the most recent operation log to clipboard</Tooltip.Content>
-          </Tooltip.Root>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger>
+              {#snippet child({ props })}
+                <Button variant="ghost" size="sm" {...props}>
+                  {copyState === 'copied' ? 'Copied!' : 'Copy'}
+                </Button>
+              {/snippet}
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content align="end">
+              <DropdownMenu.Item onclick={copyLastOperation}>Copy last operation</DropdownMenu.Item>
+              <DropdownMenu.Item onclick={copyFullLog}>Copy full log</DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
           <Tooltip.Root>
             <Tooltip.Trigger>
               <Button variant="ghost" size="sm" onclick={() => { logLines = []; }}>

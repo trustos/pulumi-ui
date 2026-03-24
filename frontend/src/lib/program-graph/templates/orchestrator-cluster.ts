@@ -167,7 +167,7 @@ export const orchestratorClusterTemplate: ProgramGraph = {
                 { key: 'availabilityDomain', value: '${availabilityDomains[0].name}' },
                 { key: 'shape', value: '"{{ .Config.shape }}"' },
                 { key: 'displayName', value: '"node-{{ $i }}"' },
-                { key: 'sourceDetails', value: '{ sourceType: "image", imageId: "{{ .Config.imageId }}" }' },
+                { key: 'sourceDetails', value: '{ sourceType: "image", sourceId: "{{ .Config.imageId }}" }' },
                 { key: 'createVnicDetails', value: '{ subnetId: "${private-subnet.id}", assignPublicIp: false, nsgIds: ["${nsg.id}"] }' },
                 { key: 'metadata', value: '{ ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }' },
                 { key: 'shapeConfig', value: '{ ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }' },

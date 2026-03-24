@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { ConfigField, OciShape, OciImage, SshKey } from '$lib/types';
-  import { listShapes, listImages, listSSHKeys } from '$lib/api';
+  import type { ConfigField, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, SshKey } from '$lib/types';
+  import { listShapes, listImages, listCompartments, listAvailabilityDomains, listSSHKeys } from '$lib/api';
   import { Input } from '$lib/components/ui/input';
   import { Textarea } from '$lib/components/ui/textarea';
   import * as Select from '$lib/components/ui/select';
@@ -44,12 +44,18 @@
 
   let shapes = $state<OciShape[]>([]);
   let images = $state<OciImage[]>([]);
+  let compartments = $state<OciCompartment[]>([]);
+  let ads = $state<OciAvailabilityDomain[]>([]);
   let sshKeys = $state<SshKey[]>([]);
   let shapesLoading = $state(false);
   let imagesLoading = $state(false);
+  let compartmentsLoading = $state(false);
+  let adsLoading = $state(false);
   let sshKeysLoading = $state(false);
   let shapesError = $state('');
   let imagesError = $state('');
+  let compartmentsError = $state('');
+  let adsError = $state('');
   let sshKeysError = $state('');
 
   // Shapes that qualify for OCI Always Free tier.
@@ -57,6 +63,8 @@
 
   const needsShapes = $derived(fields.some(f => f.type === 'oci-shape'));
   const needsImages = $derived(fields.some(f => f.type === 'oci-image'));
+  const needsCompartments = $derived(fields.some(f => f.type === 'oci-compartment'));
+  const needsADs = $derived(fields.some(f => f.type === 'oci-ad'));
   const needsSshKeys = $derived(fields.some(f => f.type === 'ssh-public-key'));
 
   const sshKeyItems = $derived(
@@ -83,6 +91,21 @@
       value: img.id,
       label: img.displayName,
       sublabel: `${img.operatingSystem} ${img.operatingSystemVersion}`,
+    }))
+  );
+
+  const compartmentItems = $derived(
+    compartments.map(c => ({
+      value: c.id,
+      label: c.name,
+      sublabel: c.description || c.id.slice(0, 48) + '…',
+    }))
+  );
+
+  const adItems = $derived(
+    ads.map(ad => ({
+      value: ad.name,
+      label: ad.name,
     }))
   );
 
@@ -132,6 +155,28 @@
     }
   });
 
+  $effect(() => {
+    if (accountId && needsCompartments) {
+      compartmentsLoading = true;
+      compartmentsError = '';
+      listCompartments(accountId)
+        .then(data => { compartments = data; })
+        .catch(err => { compartmentsError = err instanceof Error ? err.message : String(err); })
+        .finally(() => { compartmentsLoading = false; });
+    }
+  });
+
+  $effect(() => {
+    if (accountId && needsADs) {
+      adsLoading = true;
+      adsError = '';
+      listAvailabilityDomains(accountId)
+        .then(data => { ads = data; })
+        .catch(err => { adsError = err instanceof Error ? err.message : String(err); })
+        .finally(() => { adsLoading = false; });
+    }
+  });
+
   function handleSubmit(e: Event) {
     e.preventDefault();
     // Ensure all values are strings — number inputs return JS numbers via
@@ -178,7 +223,6 @@
                   items={shapeItems}
                   bind:value={values[field.key]}
                   placeholder="Select a shape..."
-                  searchPlaceholder="Search shapes..."
                   emptyText="No shapes match your search."
                 />
               {:else}
@@ -196,11 +240,44 @@
                   items={imageItems}
                   bind:value={values[field.key]}
                   placeholder="Select an image..."
-                  searchPlaceholder="Search by name or OS (Ubuntu, Oracle Linux...)"
                   emptyText="No images match your search."
                 />
               {:else}
                 <Input id={field.key} bind:value={values[field.key]} placeholder="ocid1.image.oc1.." />
+              {/if}
+
+            {:else if field.type === 'oci-compartment'}
+              {#if compartmentsError}
+                <p class="text-xs text-destructive">{compartmentsError}</p>
+                <Input id={field.key} bind:value={values[field.key]} placeholder="ocid1.compartment.oc1.." />
+              {:else if compartmentsLoading}
+                <div class="h-9 rounded-md border bg-muted animate-pulse"></div>
+              {:else if compartments.length > 0}
+                <Combobox
+                  items={compartmentItems}
+                  bind:value={values[field.key]}
+                  placeholder="Select a compartment..."
+                  emptyText="No compartments match your search."
+                />
+              {:else}
+                <Input id={field.key} bind:value={values[field.key]} placeholder="ocid1.compartment.oc1.." />
+              {/if}
+
+            {:else if field.type === 'oci-ad'}
+              {#if adsError}
+                <p class="text-xs text-destructive">{adsError}</p>
+                <Input id={field.key} bind:value={values[field.key]} placeholder="Uocm:PHX-AD-1" />
+              {:else if adsLoading}
+                <div class="h-9 rounded-md border bg-muted animate-pulse"></div>
+              {:else if ads.length > 0}
+                <Combobox
+                  items={adItems}
+                  bind:value={values[field.key]}
+                  placeholder="Select an availability domain..."
+                  emptyText="No availability domains found."
+                />
+              {:else}
+                <Input id={field.key} bind:value={values[field.key]} placeholder="Uocm:PHX-AD-1" />
               {/if}
 
             {:else if field.type === 'ssh-public-key'}

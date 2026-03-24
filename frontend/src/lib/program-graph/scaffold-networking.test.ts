@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scaffoldNetworkingGraph, scaffoldNetworkingYaml } from './scaffold-networking';
+import { scaffoldNetworkingGraph, scaffoldNetworkingYaml, hasNetworkingResources } from './scaffold-networking';
 import type { ProgramGraph } from '$lib/types/program-graph';
 
 function makeGraph(overrides?: Partial<ProgramGraph>): ProgramGraph {
@@ -13,10 +13,54 @@ function makeGraph(overrides?: Partial<ProgramGraph>): ProgramGraph {
   };
 }
 
+// ── hasNetworkingResources ──────────────────────────────────────────────────
+
+describe('hasNetworkingResources', () => {
+  it('returns false for empty graph', () => {
+    expect(hasNetworkingResources(makeGraph())).toBe(false);
+  });
+
+  it('returns false for graph with only compute', () => {
+    const graph = makeGraph({
+      sections: [{
+        id: 'main', label: 'Resources', items: [{
+          kind: 'resource', name: 'inst',
+          resourceType: 'oci:Core/instance:Instance', properties: [],
+        }],
+      }],
+    });
+    expect(hasNetworkingResources(graph)).toBe(false);
+  });
+
+  it('returns true when VCN exists', () => {
+    const graph = makeGraph({
+      sections: [{
+        id: 'main', label: 'Resources', items: [{
+          kind: 'resource', name: 'vcn',
+          resourceType: 'oci:Core/vcn:Vcn', properties: [],
+        }],
+      }],
+    });
+    expect(hasNetworkingResources(graph)).toBe(true);
+  });
+
+  it('returns true when Subnet exists', () => {
+    const graph = makeGraph({
+      sections: [{
+        id: 'main', label: 'Resources', items: [{
+          kind: 'resource', name: 'sub',
+          resourceType: 'oci:Core/subnet:Subnet', properties: [],
+        }],
+      }],
+    });
+    expect(hasNetworkingResources(graph)).toBe(true);
+  });
+});
+
 // ── Graph (visual mode) ─────────────────────────────────────────────────────
 
 describe('scaffoldNetworkingGraph', () => {
-  it('adds VCN + Subnet and compartmentId config to empty graph', () => {
+  it('adds VCN + IGW + Route Table + Subnet and compartmentId config to empty graph', () => {
     const graph = makeGraph();
     const result = scaffoldNetworkingGraph(graph);
 
@@ -27,10 +71,24 @@ describe('scaffoldNetworkingGraph', () => {
       .filter(i => i.kind === 'resource')
       .map(i => (i as any).name);
     expect(names).toContain('agent-vcn');
+    expect(names).toContain('agent-igw');
+    expect(names).toContain('agent-route-table');
     expect(names).toContain('agent-subnet');
   });
 
-  it('wires createVnicDetails.subnetId on a bare instance', () => {
+  it('scaffolded resources are in the correct order', () => {
+    const graph = makeGraph();
+    const result = scaffoldNetworkingGraph(graph);
+    const names = result.sections[0].items
+      .filter(i => i.kind === 'resource')
+      .map(i => (i as any).name);
+    expect(names[0]).toBe('agent-vcn');
+    expect(names[1]).toBe('agent-igw');
+    expect(names[2]).toBe('agent-route-table');
+    expect(names[3]).toBe('agent-subnet');
+  });
+
+  it('wires createVnicDetails.subnetId and assignPublicIp on a bare instance', () => {
     const graph = makeGraph({
       sections: [{
         id: 'main', label: 'Resources', items: [{
@@ -53,6 +111,9 @@ describe('scaffoldNetworkingGraph', () => {
     const subnetProp = instance.properties.find((p: any) => p.key === 'createVnicDetails.subnetId');
     expect(subnetProp).toBeDefined();
     expect(subnetProp.value).toBe('${agent-subnet.id}');
+    const publicIpProp = instance.properties.find((p: any) => p.key === 'createVnicDetails.assignPublicIp');
+    expect(publicIpProp).toBeDefined();
+    expect(publicIpProp.value).toBe('true');
   });
 
   it('overwrites existing subnetId value with agent-subnet reference', () => {
@@ -107,6 +168,29 @@ describe('scaffoldNetworkingGraph', () => {
     expect(subnetProp.value).toBe('${agent-subnet.id}');
   });
 
+  it('does not duplicate assignPublicIp if already present', () => {
+    const graph = makeGraph({
+      sections: [{
+        id: 'main', label: 'Resources', items: [{
+          kind: 'resource', name: 'my-instance',
+          resourceType: 'oci:Core/instance:Instance',
+          properties: [
+            { key: 'compartmentId', value: 'ocid1.compartment' },
+            { key: 'createVnicDetails.assignPublicIp', value: 'false' },
+          ],
+        }],
+      }],
+    });
+
+    const result = scaffoldNetworkingGraph(graph);
+    const instance = result.sections[0].items.find(
+      i => i.kind === 'resource' && i.name === 'my-instance'
+    ) as any;
+    const publicIpProps = instance.properties.filter((p: any) => p.key === 'createVnicDetails.assignPublicIp');
+    expect(publicIpProps).toHaveLength(1);
+    expect(publicIpProps[0].value).toBe('false');
+  });
+
   it('does not touch non-compute resources', () => {
     const graph = makeGraph({
       sections: [{
@@ -127,7 +211,7 @@ describe('scaffoldNetworkingGraph', () => {
     );
   });
 
-  it('prepends VCN + Subnet before existing resources', () => {
+  it('prepends networking resources before existing resources', () => {
     const graph = makeGraph({
       sections: [{
         id: 'main', label: 'Resources', items: [{
@@ -143,8 +227,10 @@ describe('scaffoldNetworkingGraph', () => {
       .filter(i => i.kind === 'resource')
       .map(i => (i as any).name);
     expect(names[0]).toBe('agent-vcn');
-    expect(names[1]).toBe('agent-subnet');
-    expect(names[2]).toBe('my-instance');
+    expect(names[1]).toBe('agent-igw');
+    expect(names[2]).toBe('agent-route-table');
+    expect(names[3]).toBe('agent-subnet');
+    expect(names[4]).toBe('my-instance');
   });
 
   it('returns graph unchanged when no sections exist', () => {
@@ -168,12 +254,24 @@ describe('scaffoldNetworkingGraph', () => {
     expect(graph.sections[0].items).toHaveLength(originalItemCount);
     expect(graph.configFields).toHaveLength(0);
   });
+
+  it('includes proper dependsOn chains', () => {
+    const graph = makeGraph();
+    const result = scaffoldNetworkingGraph(graph);
+    const resources = result.sections[0].items.filter(i => i.kind === 'resource') as any[];
+    const igw = resources.find((r: any) => r.name === 'agent-igw');
+    const rt = resources.find((r: any) => r.name === 'agent-route-table');
+    const sub = resources.find((r: any) => r.name === 'agent-subnet');
+    expect(igw.options?.dependsOn).toContain('agent-vcn');
+    expect(rt.options?.dependsOn).toContain('agent-igw');
+    expect(sub.options?.dependsOn).toContain('agent-route-table');
+  });
 });
 
 // ── YAML mode ───────────────────────────────────────────────────────────────
 
 describe('scaffoldNetworkingYaml', () => {
-  it('inserts VCN + Subnet after resources: line', () => {
+  it('inserts full networking stack after resources: line', () => {
     const yaml = `name: test
 runtime: yaml
 
@@ -190,6 +288,10 @@ resources:
     const result = scaffoldNetworkingYaml(yaml);
     expect(result).toContain('agent-vcn:');
     expect(result).toContain('type: oci:Core/vcn:Vcn');
+    expect(result).toContain('agent-igw:');
+    expect(result).toContain('type: oci:Core/internetGateway:InternetGateway');
+    expect(result).toContain('agent-route-table:');
+    expect(result).toContain('type: oci:Core/routeTable:RouteTable');
     expect(result).toContain('agent-subnet:');
     expect(result).toContain('type: oci:Core/subnet:Subnet');
     expect(result.indexOf('agent-vcn')).toBeLessThan(result.indexOf('my-instance'));
@@ -207,6 +309,21 @@ resources:
 
     const result = scaffoldNetworkingYaml(yaml);
     expect(result).toContain('createVnicDetails:');
+    expect(result).toContain('subnetId: ${agent-subnet.id}');
+  });
+
+  it('adds assignPublicIp to scaffolded createVnicDetails', () => {
+    const yaml = `name: test
+runtime: yaml
+
+resources:
+  instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.test`;
+
+    const result = scaffoldNetworkingYaml(yaml);
+    expect(result).toContain('assignPublicIp: true');
     expect(result).toContain('subnetId: ${agent-subnet.id}');
   });
 
@@ -258,9 +375,7 @@ resources:
 
     const result = scaffoldNetworkingYaml(yaml);
     const matches = result.match(/compartmentId:/g) ?? [];
-    // 1 in config + 2 in VCN/subnet properties
     expect(matches.length).toBeGreaterThanOrEqual(1);
-    // config section should still have exactly one compartmentId key
     const configSection = result.split('resources:')[0];
     expect((configSection.match(/compartmentId:/g) ?? []).length).toBe(1);
   });
@@ -292,11 +407,28 @@ resources:
       availabilityDomain: test-AD-1`;
 
     const result = scaffoldNetworkingYaml(yaml);
-    // No broken indentation — every indented line under resources uses 2-space multiples
     const resourceLines = result.split('resources:')[1]?.split('\n').filter(l => l.trim());
     for (const line of resourceLines ?? []) {
       const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
       expect(indent % 2).toBe(0);
     }
+  });
+
+  it('includes IGW and route table in YAML output', () => {
+    const yaml = `name: test
+runtime: yaml
+
+resources:
+  instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.test`;
+
+    const result = scaffoldNetworkingYaml(yaml);
+    expect(result).toContain('agent-igw');
+    expect(result).toContain('InternetGateway');
+    expect(result).toContain('agent-route-table');
+    expect(result).toContain('RouteTable');
+    expect(result).toContain('routeRules');
   });
 });

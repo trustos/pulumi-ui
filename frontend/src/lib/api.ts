@@ -1,4 +1,4 @@
-import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult } from './types';
+import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult } from './types';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -391,6 +391,18 @@ export async function listShapes(accountId: string): Promise<OciShape[]> {
 
 export async function listImages(accountId: string): Promise<OciImage[]> {
   const res = await fetch(`/api/accounts/${accountId}/images`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function listCompartments(accountId: string): Promise<OciCompartment[]> {
+  const res = await fetch(`/api/accounts/${accountId}/compartments`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function listAvailabilityDomains(accountId: string): Promise<OciAvailabilityDomain[]> {
+  const res = await fetch(`/api/accounts/${accountId}/availability-domains`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

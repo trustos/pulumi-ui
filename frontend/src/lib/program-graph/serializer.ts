@@ -8,7 +8,7 @@ import type { ProgramGraph, ProgramSection, ProgramItem, LoopSource, ConfigField
  * - Plain booleans/null are quoted so they remain strings when the user intends strings.
  * - Values containing ": " or " #" or starting with YAML flow characters are quoted.
  */
-function yamlValue(v: string): string {
+export function yamlValue(v: string): string {
   // Empty values are filtered out before calling this function (in serializeItem).
   // This guard handles any edge cases that reach here from outputs or other callers.
   if (v === '' || v == null) return '""';
@@ -16,10 +16,13 @@ function yamlValue(v: string): string {
   if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) return v;
   // Go template or Pulumi interpolation — rendered before YAML is parsed
   if (v.startsWith('{{') || v.startsWith('${')) return v;
+  // YAML flow mappings { ... } and flow sequences [ ... ] are kept as-is
+  // so Pulumi receives them as objects/arrays rather than quoted strings.
+  if ((v.startsWith('{') && v.endsWith('}')) || (v.startsWith('[') && v.endsWith(']'))) return v;
   // Bare boolean/null must be quoted to stay as strings
   if (/^(true|false|null|~)$/i.test(v.trim())) return `"${v}"`;
-  // Hazardous inline sequences
-  if (/: /.test(v) || / #/.test(v) || /^[{[\]>|&*!%@`]/.test(v) || /^- /.test(v)) {
+  // Hazardous inline characters that need quoting
+  if (/: /.test(v) || / #/.test(v) || /^[\]>|&*!%@`]/.test(v) || /^- /.test(v)) {
     return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   }
   return v;

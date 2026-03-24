@@ -60,3 +60,28 @@ func ImagesURL(region, compartmentID, operatingSystem string) string {
 		url.QueryEscape("VM.Standard.A1.Flex"),
 	)
 }
+
+// CompartmentsURL returns the endpoint to list compartments within a tenancy.
+// Uses compartmentIdInSubtree=true to return the full tree and accessLevel=ACCESSIBLE
+// to respect IAM policy. Only ACTIVE compartments are returned.
+//
+//	GET /compartments?compartmentId={id}&compartmentIdInSubtree=true&accessLevel=ACCESSIBLE&lifecycleState=ACTIVE&...
+func CompartmentsURL(region, compartmentID string) string {
+	return fmt.Sprintf(
+		"%s/compartments?compartmentId=%s&compartmentIdInSubtree=true&accessLevel=ACCESSIBLE&lifecycleState=ACTIVE&sortBy=NAME&sortOrder=ASC&limit=200",
+		identityBase(region),
+		url.QueryEscape(compartmentID),
+	)
+}
+
+// AvailabilityDomainsURL returns the endpoint to list availability domains for a tenancy.
+// Regions typically have 1-3 ADs.
+//
+//	GET /availabilityDomains?compartmentId={id}
+func AvailabilityDomainsURL(region, compartmentID string) string {
+	return fmt.Sprintf(
+		"%s/availabilityDomains?compartmentId=%s",
+		identityBase(region),
+		url.QueryEscape(compartmentID),
+	)
+}

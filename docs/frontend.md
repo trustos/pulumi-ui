@@ -93,7 +93,7 @@ ConfigForm does **not** fetch OCI resources. That responsibility belongs to pick
 - `OciImagePicker.svelte` — receives `accountId`, fetches images via `listImages()`, auto-selects Ubuntu Minimal if available.
 - `SshKeyPicker.svelte` — fetches SSH keys via `listSSHKeys()`, renders a combobox.
 
-ConfigForm renders these pickers when it encounters the corresponding `field.type`.
+ConfigForm also renders inline pickers for `oci-compartment` (via `listCompartments()`) and `oci-ad` (via `listAvailabilityDomains()`) field types, using the same Combobox pattern with loading/error/fallback states.
 
 ---
 
@@ -269,7 +269,7 @@ Logic is in `$lib/program-graph/rename-resource.ts`, with 23 Vitest unit tests i
 ### Promote to Variable
 `PropertyEditor` offers two promotion actions for empty required property values:
 
-- **`→ config`** — adds a `ConfigField` and sets the value to `{{ .Config.<key> }}`. Auto-detects `oci-shape`, `oci-image`, `ssh-public-key` types.
+- **`→ config`** — adds a `ConfigField` and sets the value to `{{ .Config.<key> }}`. Auto-detects `oci-shape`, `oci-image`, `oci-compartment`, `oci-ad`, `ssh-public-key` types.
 - **`→ variable`** — for keys with known OCI patterns (e.g. `availabilityDomain`), auto-scaffolds a `variables:` entry with the correct `fn::invoke` call and sets the property to the Pulumi interpolation (e.g. `${availabilityDomains[0].name}`). Uses `KNOWN_VARIABLE_TEMPLATES` in `ProgramEditor.svelte`. For unknown keys, sets value to `${key}`.
 
 ### Structured Object Property Editor
@@ -443,13 +443,44 @@ Do not try to reconnect the SSE stream — poll instead.
 
 ## UI Component Library
 
-The project uses a copy-paste shadcn-svelte component setup (`components.json` + `svelte.config.js`) with:
+The project uses **shadcn-svelte** with CLI-managed components:
+
+```bash
+# Install or update a component (run from frontend/)
+npx shadcn-svelte@latest add <component-name>
+
+# Overwrite an existing component to get the latest version
+npx shadcn-svelte@latest add <component-name> --overwrite
+```
+
+Configuration is in `frontend/components.json`. Never hand-edit component files in `src/lib/components/ui/` — always use the CLI to install/update them.
+
+### Dependencies
+
 - **bits-ui v2** — headless primitives (Select, Dialog, Tabs, Combobox, Tooltip)
-- **Tailwind CSS v4** — utility classes
+- **Tailwind CSS v4** — utility classes via `@theme inline` tokens
 - **lucide-svelte** — icons (ChevronsUpDown, Check, X)
 - **class-variance-authority (cva)** — variant management for Button
 
-The `Combobox` component (`src/lib/components/ui/combobox/`) is used for the OCI shape and image dropdowns in `ConfigForm`. It supports:
+### Theme Tokens (app.css)
+
+The project defines design tokens in `src/app.css` using `@theme inline`. Only token-based colors are available — **raw Tailwind color classes like `bg-amber-50` or `text-red-500` will not render** because they are not registered in the theme.
+
+Available color tokens:
+
+| Token | Light | Dark | Usage |
+|---|---|---|---|
+| `primary` / `primary-foreground` | Dark blue | Light blue | Primary actions, info banners |
+| `destructive` / `destructive-foreground` | Red | Dark red | Errors, delete buttons |
+| `warning` / `warning-foreground` | Amber | Amber | Warnings, degraded state |
+| `muted` / `muted-foreground` | Gray | Dark gray | Secondary text, disabled |
+| `accent` / `accent-foreground` | Light gray | Dark gray | Hover states |
+
+Use these tokens in Tailwind classes: `bg-warning/10`, `text-warning`, `border-destructive/50`, `text-muted-foreground`, etc.
+
+### Combobox
+
+The `Combobox` component (`src/lib/components/ui/combobox/`) is used for OCI shape, image, compartment, and availability domain dropdowns in `ConfigForm`. It supports:
 - Searchable filtering (label + sublabel)
 - Async item loading with `$effect(() => { if (!open) inputValue = selectedLabel; })` to keep the input in sync after items arrive
 - Optional `badge` field per item (used for "Always Free" shape tags)
@@ -485,14 +516,13 @@ A `Tooltip.Provider` wraps the entire app in `App.svelte`. Use shadcn `Tooltip` 
 
 Use the shadcn `Badge` component with consistent variant mapping:
 
-| Status | Badge variant | Extra class |
-|---|---|---|
-| succeeded | `default` | `bg-green-600 text-white border-green-600` |
-| failed | `destructive` | — |
-| running, cancelled, not deployed | `secondary` | — |
-| verified (accounts) | `default` | — |
-| error (accounts) | `destructive` | — |
-| unverified (accounts) | `secondary` | — |
+| Status | Badge variant |
+|---|---|
+| succeeded, verified | `default` |
+| failed, error | `destructive` |
+| running, cancelled, not deployed, unverified | `secondary` |
+
+> **Note:** If you need custom badge colors beyond the theme tokens (e.g. green for "succeeded"), those specific raw Tailwind classes must be safelisted or the colors added to `@theme inline` in `app.css`.
 
 ### Confirmation Dialogs
 
@@ -517,10 +547,27 @@ Pattern: store `confirmOpen` boolean in `$state`, open it from the action handle
 
 ### Alerts and Error Display
 
-Use shadcn `Alert` + `AlertDescription` for page-level warnings and errors:
-- `variant="destructive"` for errors
-- Default variant for informational warnings
-- Never use raw `<div>` with hand-written error styling
+Use shadcn `Alert` + `AlertTitle` + `AlertDescription` for all banners:
+
+| Variant | Usage |
+|---|---|
+| `destructive` | Validation errors, operation failures |
+| `warning` | Degraded state, scaffold removal prompt, non-blocking notices |
+| `info` | Agent Access ON banner, feature descriptions |
+| `default` | General informational messages |
+
+```svelte
+<Alert variant="warning">
+  <AlertTitle>Notice</AlertTitle>
+  <AlertDescription>Explanation of the warning.</AlertDescription>
+</Alert>
+```
+
+Rules:
+- **Never** use raw `<div>` with hand-crafted background/border/text color classes for banners
+- **Never** use raw Tailwind color classes (`bg-amber-50`, `text-red-500`) — use theme tokens instead
+- Use `class="rounded-none border-x-0 border-t-0"` for full-width section banners (no rounded corners, only bottom border)
+- Use `Button` components inside alerts for actions, not raw `<button>` elements
 
 ### Relative Times
 
@@ -587,7 +634,7 @@ interface StackInfo {
 interface ConfigField {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'textarea' | 'select' | 'oci-shape' | 'oci-image' | 'ssh-public-key';
+  type: 'text' | 'number' | 'textarea' | 'select' | 'oci-shape' | 'oci-image' | 'oci-compartment' | 'oci-ad' | 'ssh-public-key';
   required?: boolean;
   default?: string;
   description?: string;

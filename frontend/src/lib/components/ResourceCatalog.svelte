@@ -117,7 +117,7 @@
   const sourceBadgeClass: Record<string, string> = {
     live:     'text-green-600 bg-green-50 border-green-200',
     cache:    'text-blue-600 bg-blue-50 border-blue-200',
-    fallback: 'text-amber-600 bg-amber-50 border-amber-200',
+    fallback: 'text-warning bg-warning/10 border-warning/30',
   };
 </script>
 
@@ -232,7 +232,7 @@
           {:else}
             <p class="text-sm text-muted-foreground">Select a resource type from the left to see its properties.</p>
             {#if schema.source === 'fallback'}
-              <div class="mt-4 p-3 rounded-md border border-amber-200 bg-amber-50 text-xs text-amber-700">
+              <div class="mt-4 p-3 rounded-md border border-warning/30 bg-warning/10 text-xs text-warning-foreground dark:text-warning">
                 {#if refreshFailedFallback}
                   <p class="font-medium mb-1">Pulumi not found</p>
                   <p>Only {schema.count} hardcoded resource types are available. Install Pulumi and ensure it is in PATH, then click <strong>↻ Refresh</strong> to fetch the full OCI provider schema (~850 types).</p>

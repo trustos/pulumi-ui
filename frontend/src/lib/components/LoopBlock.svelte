@@ -149,7 +149,7 @@
         <div class="flex items-center gap-2 text-sm">
           <span class="text-muted-foreground text-xs">Count:</span>
           {#if integerFields.length === 0}
-            <span class="text-xs text-amber-600 dark:text-amber-400 italic">
+            <span class="text-xs text-warning italic">
               Add an integer config field first (e.g. nodeCount)
             </span>
           {:else}
@@ -264,8 +264,8 @@
             {onRenameResource}
           />
         {:else if item.kind === 'raw'}
-          <div class="border rounded bg-amber-50 dark:bg-amber-950/20 border-amber-200 p-2">
-            <p class="text-xs text-amber-700 dark:text-amber-300">Advanced YAML — edit in YAML mode</p>
+          <div class="border rounded bg-warning/10 border-warning/30 p-2">
+            <p class="text-xs text-warning-foreground dark:text-warning">Advanced YAML — edit in YAML mode</p>
           </div>
         {/if}
       {/each}

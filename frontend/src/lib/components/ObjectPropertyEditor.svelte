@@ -9,6 +9,7 @@
     parseArrayValue,
     serializeArrayValue,
   } from '$lib/program-graph/object-value';
+  import { stripHtml, cleanValue as stripQuotes } from '$lib/program-graph/typed-value';
 
   type ResourceRefItem = { name: string; attrs: string[] };
 
@@ -257,7 +258,7 @@
           {@const configRef = getConfigRef(val)}
           {@const resRef = getResourceRef(val)}
           <div class="flex gap-1 items-center group/field">
-            <span class="text-xs font-mono text-muted-foreground w-28 shrink-0 truncate" title={subDef?.description ?? key}>
+            <span class="text-xs font-mono text-muted-foreground w-28 shrink-0 truncate" title={subDef?.description ? stripHtml(subDef.description) : key}>
               {key}{#if subDef?.required}<span class="text-destructive">*</span>{/if}
             </span>
             <div class="relative flex-1">
@@ -281,7 +282,7 @@
                 <Input
                   value={val}
                   oninput={(e) => updateArrayItemField(itemIdx, key, (e.currentTarget as HTMLInputElement).value)}
-                  placeholder={subDef?.description ?? key}
+                  placeholder={subDef?.description ? stripHtml(subDef.description) : key}
                   class="h-7 text-xs font-mono w-full {hasAnySources && !readonly ? 'pr-7' : ''}"
                   {readonly}
                 />
@@ -314,7 +315,7 @@
                   class="text-[10px] text-muted-foreground hover:text-foreground border border-dashed rounded px-1.5 py-0.5"
                   onclick={() => addOptionalFieldToItem(itemIdx, k)}
                   type="button"
-                  title={def.description ?? ''}
+                  title={def.description ? stripHtml(def.description) : ''}
                 >+ {k}</button>
               {/each}
             </div>
@@ -340,7 +341,7 @@
             {key}{#if subDef?.required}<span class="text-destructive">*</span>{/if}
           </Tooltip.Trigger>
           {#if subDef?.description}
-            <Tooltip.Content>{subDef.description}</Tooltip.Content>
+            <Tooltip.Content>{stripHtml(subDef.description)}</Tooltip.Content>
           {/if}
         </Tooltip.Root>
         <div class="relative flex-1">
@@ -364,7 +365,7 @@
             <Input
               value={val}
               oninput={(e) => updateField(key, (e.currentTarget as HTMLInputElement).value)}
-              placeholder={subDef?.description ?? key}
+              placeholder={subDef?.description ? stripHtml(subDef.description) : key}
               class="h-7 text-xs font-mono w-full {hasAnySources && !readonly ? 'pr-7' : ''}"
               {readonly}
             />
@@ -397,7 +398,7 @@
               class="text-[10px] text-muted-foreground hover:text-foreground border border-dashed rounded px-1.5 py-0.5"
               onclick={() => addOptionalField(k)}
               type="button"
-              title={def.description ?? ''}
+              title={def.description ? stripHtml(def.description) : ''}
             >+ {k}</button>
           {/each}
         </div>

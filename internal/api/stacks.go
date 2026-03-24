@@ -263,15 +263,31 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(info)
 }
 
-// DeleteStack removes the stack config and all its operation history from SQLite.
+// DeleteStack removes the stack config, operation history, and Pulumi backend
+// state so that re-creating a stack with the same name starts completely fresh.
 func (h *Handler) DeleteStack(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
+
+	// Look up the program name before deleting the SQLite row — we need it
+	// to locate the correct Pulumi state directory on disk.
+	row, err := h.Stacks.Get(stackName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	if err := h.Stacks.Delete(stackName); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Remove operation logs so a new stack with the same name starts clean.
 	h.Ops.DeleteForStack(stackName)
+
+	if row != nil {
+		if err := h.Engine.RemoveStackState(stackName, row.Program); err != nil {
+			log.Printf("[warn] failed to remove Pulumi state for stack %s (program %s): %v", stackName, row.Program, err)
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 

@@ -101,6 +101,8 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Post("/accounts/{id}/verify", h.VerifyAccount)
 			r.Get("/accounts/{id}/shapes", h.ListShapes)
 			r.Get("/accounts/{id}/images", h.ListImages)
+			r.Get("/accounts/{id}/compartments", h.ListCompartments)
+			r.Get("/accounts/{id}/availability-domains", h.ListAvailabilityDomains)
 
 			// Programs (built-in + custom YAML)
 			r.Get("/programs", h.ListPrograms)

@@ -22,8 +22,8 @@
   const statusColor = $derived.by(() => {
     const colors: Record<string, string> = {
       synced: mode === 'yaml' ? 'text-blue-600 dark:text-blue-400' : 'text-green-600 dark:text-green-400',
-      'yaml-edited': 'text-amber-600 dark:text-amber-400',
-      partial: 'text-amber-600 dark:text-amber-400',
+      'yaml-edited': 'text-warning',
+      partial: 'text-warning',
     };
     return colors[syncStatus] ?? '';
   });

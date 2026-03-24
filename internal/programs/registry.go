@@ -10,7 +10,7 @@ import (
 type ConfigField struct {
 	Key         string   `json:"key"`
 	Label       string   `json:"label"`
-	Type        string   `json:"type"`        // text | number | textarea | select | oci-shape | oci-image
+	Type        string   `json:"type"`        // text | number | textarea | select | oci-shape | oci-image | oci-compartment | oci-ad
 	Required    bool     `json:"required"`
 	Default     string   `json:"default,omitempty"`
 	Description string   `json:"description,omitempty"`

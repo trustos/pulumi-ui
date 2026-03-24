@@ -4,6 +4,7 @@
   import { Input } from '$lib/components/ui/input';
   import * as Tooltip from '$lib/components/ui/tooltip';
   import ObjectPropertyEditor from './ObjectPropertyEditor.svelte';
+  import { cleanValue, parseSimpleArray, serializeSimpleArray, stripHtml, isRefOrTemplate, inferValidationHint, validatePropertyValue } from '$lib/program-graph/typed-value';
 
   type PropertyKeyItem = { value: string; type: string; required: boolean; description?: string; properties?: Record<string, PropertySchema>; items?: PropertySchema };
 
@@ -89,6 +90,43 @@
     if (item.type === 'object' && item.properties && Object.keys(item.properties).length > 0) return true;
     if (item.type === 'array' && item.items?.properties && Object.keys(item.items.properties).length > 0) return true;
     return false;
+  }
+
+  function isSimpleArray(key: string): boolean {
+    const item = propertyKeyItems.find(k => k.value === key);
+    if (!item || item.type !== 'array') return false;
+    return !item.items?.properties || Object.keys(item.items.properties).length === 0;
+  }
+
+  function isBooleanType(key: string): boolean {
+    return getPropertySchemaType(key) === 'boolean';
+  }
+
+  function isNumberType(key: string): boolean {
+    const t = getPropertySchemaType(key);
+    return t === 'integer' || t === 'number';
+  }
+
+  function getCleanDescription(key: string): string {
+    const desc = propertyKeyItems.find(k => k.value === key)?.description ?? '';
+    return desc ? stripHtml(desc) : '';
+  }
+
+  function getValidationError(prop: PropertyEntry): string | null {
+    if (!prop.key || !prop.value) return null;
+    const item = propertyKeyItems.find(k => k.value === prop.key);
+    if (!item) return null;
+    // Arrays and objects have per-item / per-field validation — skip the outer check
+    if (item.type === 'array' || item.type === 'object') return null;
+    const hint = inferValidationHint(prop.key, item.type, item.description ?? '');
+    return validatePropertyValue(prop.value, hint);
+  }
+
+  function getItemValidationHint(key: string): ReturnType<typeof inferValidationHint> {
+    const item = propertyKeyItems.find(k => k.value === key);
+    if (!item) return null;
+    const itemType = item.items?.type ?? 'string';
+    return inferValidationHint(key, itemType, item.description ?? '');
   }
 
   // Insert a value from the unified source picker
@@ -204,6 +242,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="space-y-1" onfocusout={onContainerFocusOut}>
   {#each properties as prop, i}
+    {@const validationError = getValidationError(prop)}
     <div class="flex gap-1 items-start group">
 
       <!-- Key column: autocomplete from schema when available -->
@@ -232,7 +271,7 @@
                 >
                   <span class="font-mono shrink-0">{k.value}</span>
                   {#if k.required}<span class="text-destructive text-[10px] shrink-0">*</span>{/if}
-                  <span class="text-muted-foreground truncate text-[10px]">{k.description ?? k.type}</span>
+                  <span class="text-muted-foreground truncate text-[10px]">{k.description ? stripHtml(k.description) : k.type}</span>
                 </button>
               {/each}
             </div>
@@ -250,13 +289,14 @@
 
       <span class="text-muted-foreground text-xs mt-1.5">:</span>
 
-      <!-- Value column: chip if config ref, textarea if object, else input + source picker -->
+      <!-- Value column: type-aware rendering based on schema -->
       <div class="relative flex-1">
-        {#if getConfigRef(prop.value) !== null}
+        {#if getConfigRef(prop.value) !== null || getConfigRef(cleanValue(prop.value)) !== null}
           <!-- Config field reference chip -->
+          {@const cfgKey = getConfigRef(prop.value) ?? getConfigRef(cleanValue(prop.value))}
           <div class="flex items-center gap-1 h-7 px-2 rounded-md border border-input bg-muted/40 text-xs font-mono">
             <span class="text-blue-500 text-[10px] shrink-0 font-sans">config</span>
-            <span class="text-foreground truncate flex-1">{getConfigRef(prop.value)}</span>
+            <span class="text-foreground truncate flex-1">{cfgKey}</span>
             {#if !readonly}
               <Tooltip.Root>
                 <Tooltip.Trigger
@@ -267,9 +307,10 @@
               </Tooltip.Root>
             {/if}
           </div>
-        {:else if /^\$\{[^}]+\}$/.test(prop.value)}
+        {:else if /^\$\{[^}]+\}$/.test(prop.value) || /^\$\{[^}]+\}$/.test(cleanValue(prop.value))}
           <!-- Resource / variable reference chip -->
-          {@const refContent = prop.value.slice(2, -1)}
+          {@const cleanV = cleanValue(prop.value)}
+          {@const refContent = (/^\$\{[^}]+\}$/.test(cleanV) ? cleanV : prop.value).slice(2, -1)}
           {@const isVar = variableNames.includes(refContent)}
           <div class="flex items-center gap-1 h-7 px-2 rounded-md border border-input bg-muted/40 text-xs font-mono">
             <span class="text-[10px] shrink-0 font-sans {isVar ? 'text-purple-500' : 'text-green-600 dark:text-green-400'}">{isVar ? 'var' : 'ref'}</span>
@@ -289,7 +330,7 @@
           {@const propSchema = getPropertySchema(prop.key)}
           {#if propSchema}
             <ObjectPropertyEditor
-              value={prop.value}
+              value={cleanValue(prop.value)}
               onvaluechange={(v) => updateValue(i, v)}
               schema={propSchema}
               {configFields}
@@ -299,11 +340,82 @@
               {readonly}
             />
           {/if}
+        {:else if isBooleanType(prop.key) && !isRefOrTemplate(prop.value)}
+          <!-- Boolean property: select dropdown -->
+          <select
+            value={cleanValue(prop.value)}
+            onchange={(e) => updateValue(i, (e.currentTarget as HTMLSelectElement).value)}
+            class="flex w-full rounded-md border border-input bg-transparent px-3 py-1 shadow-sm transition-colors text-xs font-mono h-7 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={readonly}
+          >
+            <option value="">—</option>
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+          {#if !readonly && hasAnySources && cleanValue(prop.value) === ''}
+            <Tooltip.Root>
+              <Tooltip.Trigger
+                class="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-muted-foreground hover:text-foreground rounded hover:bg-muted text-sm leading-none"
+                onclick={() => { sourcePicker = sourcePicker === i ? null : i; sourceFilter = ''; }}
+              >⊕</Tooltip.Trigger>
+              <Tooltip.Content>Insert a config field, variable, or resource reference</Tooltip.Content>
+            </Tooltip.Root>
+            {#if sourcePicker === i}
+              {@render sourcePickerDropdown(i)}
+            {/if}
+          {/if}
+        {:else if isSimpleArray(prop.key) && !isRefOrTemplate(prop.value)}
+          <!-- Simple array (e.g. cidrBlocks, statements): list editor -->
+          {@const items = parseSimpleArray(prop.value) ?? []}
+          {@const itemHint = getItemValidationHint(prop.key)}
+          <div class="space-y-1 border rounded-md p-2 bg-muted/10">
+            {#each items as item, itemIdx}
+              {@const itemError = item ? validatePropertyValue(item, itemHint) : null}
+              <div class="flex gap-1 items-center group/ai">
+                <div class="flex-1">
+                  <Input
+                    value={item}
+                    oninput={(e) => {
+                      const newItems = [...items];
+                      newItems[itemIdx] = (e.currentTarget as HTMLInputElement).value;
+                      updateValue(i, serializeSimpleArray(newItems));
+                    }}
+                    placeholder={getCleanDescription(prop.key) || 'value'}
+                    class="h-7 text-xs font-mono w-full {itemError ? 'border-destructive ring-1 ring-destructive' : ''}"
+                    {readonly}
+                  />
+                  {#if itemError}
+                    <p class="text-[10px] text-destructive mt-0.5 leading-tight">{itemError}</p>
+                  {/if}
+                </div>
+                {#if !readonly}
+                  <button
+                    class="text-muted-foreground hover:text-destructive text-xs opacity-0 group-hover/ai:opacity-100 shrink-0"
+                    onclick={() => {
+                      const newItems = items.filter((_, idx) => idx !== itemIdx);
+                      updateValue(i, serializeSimpleArray(newItems));
+                    }}
+                    type="button"
+                  >✕</button>
+                {/if}
+              </div>
+            {/each}
+            {#if !readonly}
+              <button
+                class="text-[10px] text-muted-foreground hover:text-foreground"
+                onclick={() => {
+                  const newItems = [...items, ''];
+                  updateValue(i, serializeSimpleArray(newItems));
+                }}
+                type="button"
+              >+ item</button>
+            {/if}
+          </div>
         {:else if getPropertySchemaType(prop.key) === 'object'}
           <!-- Object-type property without sub-field schema: multi-line textarea -->
           <div class="relative">
             <textarea
-              value={prop.value}
+              value={cleanValue(prop.value)}
               oninput={(e) => updateValue(i, (e.currentTarget as HTMLTextAreaElement).value)}
               placeholder={OBJECT_PLACEHOLDERS[prop.key] ?? 'key: value\nkey2: value2'}
               rows={prop.value ? Math.max(2, prop.value.split('\n').length) : 2}
@@ -313,14 +425,26 @@
             <span class="absolute right-1.5 top-1 text-[9px] text-muted-foreground/60 pointer-events-none select-none">YAML</span>
           </div>
         {:else}
+          <!-- Default: text input (also used for integer/number with appropriate input type) -->
           <div class="relative">
-            <Input
-              value={prop.value}
-              oninput={(e) => updateValue(i, (e.currentTarget as HTMLInputElement).value)}
-              placeholder="value"
-              class="h-7 text-xs font-mono w-full {hasAnySources && !readonly ? 'pr-7' : ''}"
-              {readonly}
-            />
+            {#if isNumberType(prop.key) && !isRefOrTemplate(prop.value)}
+              <Input
+                value={cleanValue(prop.value)}
+                oninput={(e) => updateValue(i, (e.currentTarget as HTMLInputElement).value)}
+                placeholder={getCleanDescription(prop.key) || 'number'}
+                type="number"
+                class="h-7 text-xs font-mono w-full {hasAnySources && !readonly ? 'pr-7' : ''} {validationError ? 'border-destructive ring-1 ring-destructive' : ''}"
+                {readonly}
+              />
+            {:else}
+              <Input
+                value={cleanValue(prop.value)}
+                oninput={(e) => updateValue(i, (e.currentTarget as HTMLInputElement).value)}
+                placeholder={getCleanDescription(prop.key) || 'value'}
+                class="h-7 text-xs font-mono w-full {hasAnySources && !readonly ? 'pr-7' : ''} {validationError ? 'border-destructive ring-1 ring-destructive' : ''}"
+                {readonly}
+              />
+            {/if}
             <!-- Unified source picker button -->
             {#if !readonly && hasAnySources}
               <Tooltip.Root>
@@ -331,63 +455,7 @@
                 <Tooltip.Content>Insert a config field, variable, or resource reference</Tooltip.Content>
               </Tooltip.Root>
               {#if sourcePicker === i}
-                <div class="absolute right-0 top-full z-50 mt-0.5 bg-popover border rounded-md shadow-md py-1 w-64 max-h-64 flex flex-col">
-                  <!-- Filter input -->
-                  {#if allSourceEntries().length > 6}
-                    <div class="px-2 pb-1 border-b">
-                      <input
-                        class="w-full text-xs px-1.5 py-1 rounded border border-input bg-background font-mono focus:outline-none focus:ring-1 focus:ring-ring"
-                        placeholder="filter..."
-                        value={sourceFilter}
-                        oninput={(e) => sourceFilter = (e.currentTarget as HTMLInputElement).value}
-                        type="text"
-                      />
-                    </div>
-                  {/if}
-                  <div class="overflow-y-auto flex-1">
-                    {#if filteredSourceEntries.some(e => e.kind === 'config')}
-                      <p class="px-2 pt-1.5 text-[10px] text-blue-500 font-medium uppercase tracking-wide">Config</p>
-                      {#each filteredSourceEntries.filter(e => e.kind === 'config') as entry}
-                        <button
-                          class="w-full text-left px-2 py-1 text-xs hover:bg-accent flex items-baseline gap-1.5 min-w-0"
-                          onmousedown={(e) => { e.preventDefault(); insertSource(i, entry.value); }}
-                          tabindex="-1"
-                          type="button"
-                        >
-                          <span class="font-mono truncate flex-1">{entry.label}</span>
-                          {#if entry.description}
-                            <span class="text-muted-foreground text-[10px] truncate shrink-0 max-w-[80px]">{entry.description}</span>
-                          {/if}
-                        </button>
-                      {/each}
-                    {/if}
-                    {#if filteredSourceEntries.some(e => e.kind === 'variable')}
-                      <p class="px-2 pt-1.5 text-[10px] text-purple-500 font-medium uppercase tracking-wide">Variables</p>
-                      {#each filteredSourceEntries.filter(e => e.kind === 'variable') as entry}
-                        <button
-                          class="w-full text-left px-2 py-1 text-xs hover:bg-accent font-mono"
-                          onmousedown={(e) => { e.preventDefault(); insertSource(i, entry.value); }}
-                          tabindex="-1"
-                          type="button"
-                        >{entry.label}</button>
-                      {/each}
-                    {/if}
-                    {#if filteredSourceEntries.some(e => e.kind === 'resource')}
-                      <p class="px-2 pt-1.5 text-[10px] text-green-600 dark:text-green-400 font-medium uppercase tracking-wide">Resources</p>
-                      {#each filteredSourceEntries.filter(e => e.kind === 'resource') as entry}
-                        <button
-                          class="w-full text-left px-2 py-1 text-xs hover:bg-accent font-mono"
-                          onmousedown={(e) => { e.preventDefault(); insertSource(i, entry.value); }}
-                          tabindex="-1"
-                          type="button"
-                        >{entry.label}</button>
-                      {/each}
-                    {/if}
-                    {#if filteredSourceEntries.length === 0}
-                      <p class="px-2 py-2 text-xs text-muted-foreground">No matches</p>
-                    {/if}
-                  </div>
-                </div>
+                {@render sourcePickerDropdown(i)}
               {/if}
             {/if}
           </div>
@@ -420,6 +488,9 @@
             </Tooltip.Root>
           {/if}
         {/if}
+        {#if validationError}
+          <p class="text-[10px] text-destructive mt-0.5 leading-tight">{validationError}</p>
+        {/if}
       </div>
 
       {#if !readonly}
@@ -439,3 +510,62 @@
     >+ property</button>
   {/if}
 </div>
+
+{#snippet sourcePickerDropdown(idx: number)}
+  <div class="absolute right-0 top-full z-50 mt-0.5 bg-popover border rounded-md shadow-md py-1 w-64 max-h-64 flex flex-col">
+    {#if allSourceEntries().length > 6}
+      <div class="px-2 pb-1 border-b">
+        <input
+          class="w-full text-xs px-1.5 py-1 rounded border border-input bg-background font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+          placeholder="filter..."
+          value={sourceFilter}
+          oninput={(e) => sourceFilter = (e.currentTarget as HTMLInputElement).value}
+          type="text"
+        />
+      </div>
+    {/if}
+    <div class="overflow-y-auto flex-1">
+      {#if filteredSourceEntries.some(e => e.kind === 'config')}
+        <p class="px-2 pt-1.5 text-[10px] text-blue-500 font-medium uppercase tracking-wide">Config</p>
+        {#each filteredSourceEntries.filter(e => e.kind === 'config') as entry}
+          <button
+            class="w-full text-left px-2 py-1 text-xs hover:bg-accent flex items-baseline gap-1.5 min-w-0"
+            onmousedown={(e) => { e.preventDefault(); insertSource(idx, entry.value); }}
+            tabindex="-1"
+            type="button"
+          >
+            <span class="font-mono truncate flex-1">{entry.label}</span>
+            {#if entry.description}
+              <span class="text-muted-foreground text-[10px] truncate shrink-0 max-w-[80px]">{entry.description}</span>
+            {/if}
+          </button>
+        {/each}
+      {/if}
+      {#if filteredSourceEntries.some(e => e.kind === 'variable')}
+        <p class="px-2 pt-1.5 text-[10px] text-purple-500 font-medium uppercase tracking-wide">Variables</p>
+        {#each filteredSourceEntries.filter(e => e.kind === 'variable') as entry}
+          <button
+            class="w-full text-left px-2 py-1 text-xs hover:bg-accent font-mono"
+            onmousedown={(e) => { e.preventDefault(); insertSource(idx, entry.value); }}
+            tabindex="-1"
+            type="button"
+          >{entry.label}</button>
+        {/each}
+      {/if}
+      {#if filteredSourceEntries.some(e => e.kind === 'resource')}
+        <p class="px-2 pt-1.5 text-[10px] text-green-600 dark:text-green-400 font-medium uppercase tracking-wide">Resources</p>
+        {#each filteredSourceEntries.filter(e => e.kind === 'resource') as entry}
+          <button
+            class="w-full text-left px-2 py-1 text-xs hover:bg-accent font-mono"
+            onmousedown={(e) => { e.preventDefault(); insertSource(idx, entry.value); }}
+            tabindex="-1"
+            type="button"
+          >{entry.label}</button>
+        {/each}
+      {/if}
+      {#if filteredSourceEntries.length === 0}
+        <p class="px-2 py-2 text-xs text-muted-foreground">No matches</p>
+      {/if}
+    </div>
+  </div>
+{/snippet}

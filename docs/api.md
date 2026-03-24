@@ -47,6 +47,8 @@ On success it stores the `*db.User` in the request context. On failure it return
 | POST | `/api/accounts/{id}/verify` | — | `{ status: "verified" }` or `{ error: string }` |
 | GET | `/api/accounts/{id}/shapes` | — | `OciShape[]` |
 | GET | `/api/accounts/{id}/images` | — | `OciImage[]` |
+| GET | `/api/accounts/{id}/compartments` | — | `OciCompartment[]` |
+| GET | `/api/accounts/{id}/availability-domains` | — | `OciAvailabilityDomain[]` |
 
 `OciAccount` response shape:
 ```json

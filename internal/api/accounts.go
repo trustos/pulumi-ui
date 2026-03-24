@@ -258,6 +258,60 @@ func (h *Handler) ListImages(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(images)
 }
 
+// ListCompartments returns active compartments for the account's tenancy.
+func (h *Handler) ListCompartments(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	account, err := h.Accounts.Get(id)
+	if err != nil || account == nil || account.UserID != user.ID {
+		http.Error(w, "account not found", http.StatusNotFound)
+		return
+	}
+
+	client, err := oci.NewClient(account.TenancyOCID, account.UserOCID, account.Fingerprint, account.PrivateKey, account.Region)
+	if err != nil {
+		http.Error(w, "invalid credentials: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	compartments, err := client.ListCompartments()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(compartments)
+}
+
+// ListAvailabilityDomains returns availability domains for the account's region.
+func (h *Handler) ListAvailabilityDomains(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	account, err := h.Accounts.Get(id)
+	if err != nil || account == nil || account.UserID != user.ID {
+		http.Error(w, "account not found", http.StatusNotFound)
+		return
+	}
+
+	client, err := oci.NewClient(account.TenancyOCID, account.UserOCID, account.Fingerprint, account.PrivateKey, account.Region)
+	if err != nil {
+		http.Error(w, "invalid credentials: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ads, err := client.ListAvailabilityDomains()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ads)
+}
+
 func toAccountResponse(id, name, tenancyName, tenancyOCID, region, userOCID, fingerprint, status string, verifiedAt *int64, createdAt int64) accountResponse {
 	resp := accountResponse{
 		ID:          id,

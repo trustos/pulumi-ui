@@ -16,7 +16,7 @@
   <div class="px-3 py-1.5 border-b flex items-center gap-2">
     <span class="text-xs font-medium text-muted-foreground">Advanced YAML (unstructured)</span>
     {#if readonly}
-      <span class="text-xs text-amber-600 dark:text-amber-400">read-only in visual mode</span>
+      <span class="text-xs text-warning">read-only in visual mode</span>
     {/if}
   </div>
   <MonacoEditor

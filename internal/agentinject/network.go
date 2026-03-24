@@ -2,9 +2,12 @@ package agentinject
 
 import (
 	"fmt"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
+
+var pulumiInterpRe = regexp.MustCompile(`\$\{[^}]+\}`)
 
 const AgentPort = 41820
 
@@ -19,6 +22,11 @@ var NetworkingResourceTypes = map[string]string{
 var ContextResourceTypes = map[string]string{
 	"oci:Core/vcn:Vcn":       "vcn",
 	"oci:Core/subnet:Subnet": "subnet",
+}
+
+type discoveredResource struct {
+	name     string
+	category string
 }
 
 // InjectNetworkingIntoYAML parses a rendered Pulumi YAML, detects existing
@@ -54,11 +62,6 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 		}
 	}
 
-	// Discover existing resources by type
-	type discoveredResource struct {
-		name     string
-		category string
-	}
 	var nsgs, nlbs, computes []discoveredResource
 	var vcns, subnets []discoveredResource
 
@@ -98,6 +101,7 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 	}
 
 	modified := false
+	publicIPInstances := allComputesHavePublicIP(resourcesNode, computes)
 
 	// When no VCN/subnet resources exist but compute does, try to extract
 	// subnetId from the first compute instance's createVnicDetails. Use
@@ -105,7 +109,6 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 	if len(vcns) == 0 && len(subnets) == 0 && len(computes) > 0 && len(nsgs) == 0 && len(nlbs) == 0 {
 		subnetRef, compartmentRef := extractSubnetFromCompute(resourcesNode, computes[0].name)
 		if subnetRef != "" {
-			// Inject a variables: block with fn::invoke to resolve the VCN
 			variablesNode := findMapValue(root, "variables")
 			if variablesNode == nil {
 				variablesNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
@@ -124,17 +127,19 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 				attachNSGToInstance(resourcesNode, compute.name, nsgName)
 			}
 
-			nlbName := "__agent_nlb"
-			addResource(resourcesNode, nlbName, buildNLBResourceFromSubnetRef(compartmentRef, subnetRef))
-			bsName := "__agent_bs"
-			lnName := "__agent_ln"
-			addResource(resourcesNode, bsName, buildNLBBackendSetResource(nlbName))
-			addResource(resourcesNode, lnName, buildNLBListenerResource(nlbName, bsName))
-			prevDep := lnName
-			for _, compute := range computes {
-				beName := fmt.Sprintf("__agent_be_%s", compute.name)
-				addResource(resourcesNode, beName, buildNLBBackendResource(nlbName, bsName, compute.name, prevDep))
-				prevDep = beName
+			if !publicIPInstances {
+				nlbName := "__agent_nlb"
+				addResource(resourcesNode, nlbName, buildNLBResourceFromSubnetRef(compartmentRef, subnetRef))
+				bsName := "__agent_bs"
+				lnName := "__agent_ln"
+				addResource(resourcesNode, bsName, buildNLBBackendSetResource(nlbName))
+				addResource(resourcesNode, lnName, buildNLBListenerResource(nlbName, bsName))
+				prevDep := lnName
+				for _, compute := range computes {
+					beName := fmt.Sprintf("__agent_be_%s", compute.name)
+					addResource(resourcesNode, beName, buildNLBBackendResource(nlbName, bsName, compute.name, prevDep))
+					prevDep = beName
+				}
 			}
 			modified = true
 		}
@@ -161,8 +166,9 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 		modified = true
 	}
 
-	// When no NLB exists but we have a subnet and compute, create one with agent backend set
-	if len(nlbs) == 0 && len(subnets) > 0 && len(computes) > 0 {
+	// When no NLB exists but we have a subnet and compute, create one with
+	// agent backend set — only needed when instances are private (no public IP).
+	if len(nlbs) == 0 && len(subnets) > 0 && len(computes) > 0 && !publicIPInstances {
 		subnet := subnets[0]
 		compartmentRef := resolveCompartmentId(resourcesNode, subnet.name)
 		nlbName := "__agent_nlb"
@@ -305,8 +311,56 @@ func buildNLBBackendResource(nlbName, bsName, computeName, prevDep string) *yaml
 	})
 }
 
+// computeHasPublicIP returns true if the named compute instance has
+// assignPublicIp set to true (or "true") inside createVnicDetails.
+// Handles both proper YAML mapping nodes and flow-mapping scalar strings.
+func computeHasPublicIP(resourcesNode *yaml.Node, instanceName string) bool {
+	for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
+		if resourcesNode.Content[i].Value != instanceName {
+			continue
+		}
+		resNode := resourcesNode.Content[i+1]
+		if resNode.Kind != yaml.MappingNode {
+			continue
+		}
+		props := findMapValue(resNode, "properties")
+		if props == nil || props.Kind != yaml.MappingNode {
+			continue
+		}
+		vnicDetails := findMapValue(props, "createVnicDetails")
+		if vnicDetails == nil {
+			return false
+		}
+		if vnicDetails.Kind == yaml.ScalarNode {
+			vnicDetails = promoteScalarToMapping(props, "createVnicDetails")
+		}
+		if vnicDetails == nil || vnicDetails.Kind != yaml.MappingNode {
+			return false
+		}
+		v := findMapValue(vnicDetails, "assignPublicIp")
+		return v != nil && v.Value == "true"
+	}
+	return false
+}
+
+// allComputesHavePublicIP returns true when every discovered compute instance
+// has assignPublicIp: true. When true, the engine skips NLB creation because
+// the Nebula lighthouse can be reached directly via the instance's public IP.
+func allComputesHavePublicIP(resourcesNode *yaml.Node, computes []discoveredResource) bool {
+	if len(computes) == 0 {
+		return false
+	}
+	for _, c := range computes {
+		if !computeHasPublicIP(resourcesNode, c.name) {
+			return false
+		}
+	}
+	return true
+}
+
 // extractSubnetFromCompute extracts the subnetId and compartmentId from a
 // compute instance's createVnicDetails. Returns empty strings if not found.
+// Handles both proper YAML mapping nodes and flow-mapping scalar strings.
 func extractSubnetFromCompute(resourcesNode *yaml.Node, instanceName string) (subnetRef, compartmentRef string) {
 	for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
 		if resourcesNode.Content[i].Value != instanceName {
@@ -326,6 +380,9 @@ func extractSubnetFromCompute(resourcesNode *yaml.Node, instanceName string) (su
 		}
 
 		vnicDetails := findMapValue(props, "createVnicDetails")
+		if vnicDetails != nil && vnicDetails.Kind == yaml.ScalarNode {
+			vnicDetails = promoteScalarToMapping(props, "createVnicDetails")
+		}
 		if vnicDetails != nil && vnicDetails.Kind == yaml.MappingNode {
 			if sid := findMapValue(vnicDetails, "subnetId"); sid != nil {
 				subnetRef = sid.Value
@@ -402,7 +459,9 @@ func resolveCompartmentId(resourcesNode *yaml.Node, resName string) string {
 }
 
 // attachNSGToInstance adds the given NSG to an instance's createVnicDetails.nsgIds.
-// If createVnicDetails doesn't exist, it's created.
+// If createVnicDetails doesn't exist, it's created. If it exists as a scalar
+// (YAML flow-mapping string like "{ subnetId: ..., assignPublicIp: true }"),
+// it's promoted to a proper mapping node before modification.
 func attachNSGToInstance(resourcesNode *yaml.Node, instanceName, nsgName string) {
 	for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
 		if resourcesNode.Content[i].Value != instanceName {
@@ -419,16 +478,17 @@ func attachNSGToInstance(resourcesNode *yaml.Node, instanceName, nsgName string)
 
 		nsgRef := fmt.Sprintf("${%s.id}", nsgName)
 
-		// Look for createVnicDetails
 		vnicDetails := findMapValue(props, "createVnicDetails")
+		if vnicDetails != nil && vnicDetails.Kind == yaml.ScalarNode {
+			vnicDetails = promoteScalarToMapping(props, "createVnicDetails")
+		}
+
 		if vnicDetails != nil && vnicDetails.Kind == yaml.MappingNode {
-			// Add nsgIds to existing createVnicDetails
 			nsgIds := findMapValue(vnicDetails, "nsgIds")
 			if nsgIds != nil && nsgIds.Kind == yaml.SequenceNode {
 				nsgIds.Content = append(nsgIds.Content,
 					&yaml.Node{Kind: yaml.ScalarNode, Value: nsgRef})
 			} else {
-				// Add nsgIds key
 				vnicDetails.Content = append(vnicDetails.Content,
 					&yaml.Node{Kind: yaml.ScalarNode, Value: "nsgIds"},
 					&yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{
@@ -437,7 +497,6 @@ func attachNSGToInstance(resourcesNode *yaml.Node, instanceName, nsgName string)
 				)
 			}
 		} else {
-			// Create createVnicDetails with nsgIds
 			props.Content = append(props.Content,
 				&yaml.Node{Kind: yaml.ScalarNode, Value: "createVnicDetails"},
 				buildMappingNode(map[string]interface{}{
@@ -447,6 +506,41 @@ func attachNSGToInstance(resourcesNode *yaml.Node, instanceName, nsgName string)
 		}
 		return
 	}
+}
+
+// promoteScalarToMapping parses a scalar value like "{ subnetId: x, assignPublicIp: true }"
+// as YAML, and replaces the scalar node in-place with the resulting mapping node.
+// Pulumi interpolations (${...}) are temporarily quoted so the YAML parser
+// can handle them, then restored to unquoted form in the result.
+// Returns the new mapping node, or nil if parsing fails.
+func promoteScalarToMapping(parent *yaml.Node, key string) *yaml.Node {
+	for i := 0; i < len(parent.Content)-1; i += 2 {
+		if parent.Content[i].Value != key {
+			continue
+		}
+		scalar := parent.Content[i+1]
+		if scalar.Kind != yaml.ScalarNode {
+			return scalar
+		}
+		// Quote ${...} interpolations so they survive YAML flow-mapping parsing.
+		safe := pulumiInterpRe.ReplaceAllStringFunc(scalar.Value, func(s string) string {
+			return `"` + s + `"`
+		})
+		var parsed yaml.Node
+		if err := yaml.Unmarshal([]byte(safe), &parsed); err != nil {
+			return nil
+		}
+		if parsed.Kind != yaml.DocumentNode || len(parsed.Content) == 0 {
+			return nil
+		}
+		promoted := parsed.Content[0]
+		if promoted.Kind != yaml.MappingNode {
+			return nil
+		}
+		parent.Content[i+1] = promoted
+		return promoted
+	}
+	return nil
 }
 
 // buildMappingNode constructs a yaml.Node tree from a Go map. Supports nested

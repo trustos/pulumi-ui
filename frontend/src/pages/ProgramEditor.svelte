@@ -6,7 +6,7 @@
   import { graphToYaml } from '$lib/program-graph/serializer';
   import { yamlToGraph } from '$lib/program-graph/parser';
   import { insertAgentAccess, removeAgentAccess } from '$lib/program-graph/agent-access';
-  import { scaffoldNetworkingGraph, scaffoldNetworkingYaml } from '$lib/program-graph/scaffold-networking';
+  import { scaffoldNetworkingGraph, scaffoldNetworkingYaml, hasNetworkingResources } from '$lib/program-graph/scaffold-networking';
   import { propagateRename, propagateRenameYaml } from '$lib/program-graph/rename-resource';
   import type { ProgramGraph, ProgramSection } from '$lib/types/program-graph';
   import type { ValidationError } from '$lib/types';
@@ -19,6 +19,7 @@
   import ProgramTemplateGallery from '$lib/components/ProgramTemplateGallery.svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import { Alert, AlertTitle, AlertDescription } from '$lib/components/ui/alert';
   import * as Tooltip from '$lib/components/ui/tooltip';
 
   let {
@@ -41,6 +42,7 @@
   let displayName = $state('');
   let description = $state('');
   let agentAccess = $state(false);
+  let showRemoveScaffoldPrompt = $state(false);
 
   let graph = $state<ProgramGraph>({
     metadata: { name: '', displayName: '', description: '' },
@@ -280,11 +282,21 @@
   }
 
   function toggleAgentAccess() {
+    const turningOff = agentAccess;
     agentAccess = !agentAccess;
-    if (mode !== 'yaml') return;
-    yamlText = agentAccess ? insertAgentAccess(yamlText) : removeAgentAccess(yamlText);
-    syncStatus = 'yaml-edited';
-    scheduleValidation();
+    if (mode === 'yaml') {
+      yamlText = agentAccess ? insertAgentAccess(yamlText) : removeAgentAccess(yamlText);
+      if (agentAccess && !yamlText.includes('oci:Core/vcn:Vcn') && !yamlText.includes('oci:Core/subnet:Subnet')) {
+        yamlText = scaffoldNetworkingYaml(yamlText);
+      }
+      syncStatus = 'yaml-edited';
+      scheduleValidation();
+    } else if (agentAccess && !hasNetworkingResources(graph)) {
+      graph = scaffoldNetworkingGraph(graph);
+    }
+    if (turningOff && hasScaffoldedResources()) {
+      showRemoveScaffoldPrompt = true;
+    }
   }
 
   function handleRenameResource(oldName: string, newName: string) {
@@ -300,6 +312,47 @@
       syncStatus = 'yaml-edited';
       scheduleValidation();
     }
+  }
+
+  const SCAFFOLD_NAMES = ['agent-vcn', 'agent-igw', 'agent-route-table', 'agent-subnet'];
+
+  function hasScaffoldedResources(): boolean {
+    if (mode === 'yaml') {
+      return SCAFFOLD_NAMES.some(n => yamlText.includes(`${n}:`));
+    }
+    for (const section of graph.sections) {
+      for (const item of section.items) {
+        if (item.kind === 'resource' && SCAFFOLD_NAMES.includes(item.name)) return true;
+      }
+    }
+    return false;
+  }
+
+  function removeScaffoldedResources() {
+    if (mode === 'yaml') {
+      for (const name of SCAFFOLD_NAMES) {
+        const re = new RegExp(`^  ${name}:[\\s\\S]*?(?=^  \\S|^\\S|$)`, 'gm');
+        yamlText = yamlText.replace(re, '');
+      }
+      yamlText = yamlText.replace(/\n{3,}/g, '\n\n');
+      syncStatus = 'yaml-edited';
+      scheduleValidation();
+    } else {
+      graph = {
+        ...graph,
+        sections: graph.sections.map(s => ({
+          ...s,
+          items: s.items.filter(item =>
+            item.kind !== 'resource' || !SCAFFOLD_NAMES.includes(item.name)
+          ),
+        })),
+      };
+    }
+    showRemoveScaffoldPrompt = false;
+  }
+
+  function keepScaffoldedResources() {
+    showRemoveScaffoldPrompt = false;
   }
 
   // ── Validation (debounced, YAML mode only) ────────────────────────────────
@@ -593,11 +646,11 @@
     onModeChange={handleModeChange}
   />
 
-  <!-- Validation errors panel -->
+  <!-- Validation errors -->
   {#if validationErrors.length > 0}
-    <div class="border-b bg-destructive/5 px-4 py-2 space-y-0.5 max-h-32 overflow-y-auto">
+    <Alert variant="destructive" class="rounded-none border-x-0 border-t-0 max-h-32 overflow-y-auto">
       {#each validationErrors as err}
-        <div class="flex items-start gap-2 text-xs text-destructive">
+        <div class="flex items-start gap-2 text-xs">
           {#if err.line}
             <span class="font-mono shrink-0">L{err.line}</span>
           {/if}
@@ -606,40 +659,46 @@
           {/if}
           <span>{err.message}</span>
           {#if err.level === 7 && err.message.includes('no networking context')}
-            <button
-              class="shrink-0 text-[11px] font-medium text-primary hover:text-primary/80 underline underline-offset-2"
-              onclick={scaffoldAgentNetworking}
-            >Add VCN + Subnet</button>
+            <Button variant="link" size="sm" class="h-auto p-0 text-[11px]" onclick={scaffoldAgentNetworking}>Add VCN + Subnet</Button>
           {/if}
         </div>
       {/each}
-    </div>
+    </Alert>
   {/if}
 
-  <!-- Agent access info banner -->
+  <!-- Agent access info -->
   {#if agentAccess}
-    <div class="bg-primary/5 border-b border-primary/20 px-4 py-2 text-xs text-primary/80">
-      <div class="flex items-start gap-2">
-        <span class="font-medium shrink-0">Agent Access ON</span>
-        <span class="text-muted-foreground">—</span>
-        <span>At deploy time, the engine will automatically inject the following into the final Pulumi YAML:</span>
-      </div>
-      <div class="mt-1 ml-0 grid grid-cols-2 gap-x-6 gap-y-0.5 text-[11px] text-muted-foreground">
-        <div><span class="font-mono text-primary/70">user_data</span> — Nebula mesh + agent bootstrap on each compute instance</div>
-        <div><span class="font-mono text-primary/70">NSG rule</span> — UDP ingress on port 41820 (adds to existing NSG, or creates one from VCN)</div>
-        <div><span class="font-mono text-primary/70">NLB</span> — creates a Network Load Balancer if none exists (uses first subnet)</div>
-        <div><span class="font-mono text-primary/70">NLB backend set</span> — agent health check on each NLB</div>
-        <div><span class="font-mono text-primary/70">NLB listener + backends</span> — UDP:41820 forwarding to each compute instance</div>
-        <div class="text-primary/60 italic">Injected resources use <span class="font-mono">__agent_</span> prefix — no manual setup needed</div>
-      </div>
-    </div>
+    <Alert variant="info" class="rounded-none border-x-0 border-t-0 text-xs">
+      <AlertDescription class="text-xs">
+        <strong>Agent Connect</strong> — at deploy time, the engine will inject a secure Nebula mesh agent, NSG rules, and a Network Load Balancer onto each compute instance. No manual setup needed.
+      </AlertDescription>
+    </Alert>
   {/if}
 
-  <!-- Degraded banner -->
+  <!-- Scaffold removal prompt -->
+  {#if showRemoveScaffoldPrompt}
+    <Alert variant="warning" class="rounded-none border-x-0 border-t-0">
+      <AlertDescription class="text-xs">
+        <div class="flex items-center gap-3">
+          <span>
+            Networking resources (<span class="font-mono">agent-vcn</span>, <span class="font-mono">agent-igw</span>, <span class="font-mono">agent-route-table</span>, <span class="font-mono">agent-subnet</span>) were added for Agent Connect. What would you like to do?
+          </span>
+          <div class="flex gap-2 shrink-0">
+            <Button variant="outline" size="sm" class="h-7 text-[11px]" onclick={keepScaffoldedResources}>Keep resources</Button>
+            <Button variant="destructive" size="sm" class="h-7 text-[11px]" onclick={removeScaffoldedResources}>Remove agent networking</Button>
+          </div>
+        </div>
+      </AlertDescription>
+    </Alert>
+  {/if}
+
+  <!-- Degraded mode notice -->
   {#if degraded && mode === 'visual'}
-    <div class="bg-amber-50 dark:bg-amber-950/20 border-b border-amber-200 dark:border-amber-800 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">
-      Some sections use advanced templating and are shown as code blocks. Switch to YAML mode to edit them.
-    </div>
+    <Alert variant="warning" class="rounded-none border-x-0 border-t-0 text-xs">
+      <AlertDescription class="text-xs">
+        Some sections use advanced templating and are shown as code blocks. Switch to YAML mode to edit them.
+      </AlertDescription>
+    </Alert>
   {/if}
 
   <!-- Editor area -->

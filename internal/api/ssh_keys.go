@@ -121,6 +121,7 @@ func (h *Handler) DeleteSSHKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // DownloadSSHPrivateKey serves the encrypted-then-decrypted private key as a file download.
+// A trailing newline is ensured because SSH tools reject PEM files without one.
 func (h *Handler) DownloadSSHPrivateKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
@@ -128,6 +129,10 @@ func (h *Handler) DownloadSSHPrivateKey(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
+	}
+
+	if !strings.HasSuffix(privKey, "\n") {
+		privKey += "\n"
 	}
 
 	filename := sshKeyFilename(name)

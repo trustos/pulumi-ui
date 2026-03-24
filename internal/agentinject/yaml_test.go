@@ -222,3 +222,73 @@ func TestInjectIntoYAML_InvalidYAML(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, result, "not: valid: yaml:")
 }
+
+func TestInjectIntoYAML_MultipleComputeResources(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  node-1:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+  node-2:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+`
+	result, err := InjectIntoYAML(yaml, testAgentVars)
+	require.NoError(t, err)
+	// Both instances should have user_data injected
+	count := strings.Count(result, "user_data:")
+	assert.Equal(t, 2, count, "each instance should get user_data")
+}
+
+func TestInjectIntoYAML_MixedComputeTypes(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+  my-config:
+    type: oci:Core/instanceConfiguration:InstanceConfiguration
+    properties:
+      compartmentId: ocid1.compartment
+      instanceDetails:
+        instanceType: compute
+        launchDetails:
+          shape: VM.Standard.A1.Flex
+`
+	result, err := InjectIntoYAML(yaml, testAgentVars)
+	require.NoError(t, err)
+	count := strings.Count(result, "user_data:")
+	assert.Equal(t, 2, count, "both Instance and InstanceConfiguration should get user_data")
+}
+
+func TestInjectIntoYAML_NonComputeUntouched(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  my-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+  my-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ocid1.compartment
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+`
+	result, err := InjectIntoYAML(yaml, testAgentVars)
+	require.NoError(t, err)
+	count := strings.Count(result, "user_data:")
+	assert.Equal(t, 1, count, "only compute resource should get user_data")
+}

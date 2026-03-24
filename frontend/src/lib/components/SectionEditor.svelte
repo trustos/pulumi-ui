@@ -150,11 +150,11 @@
               onRename={onRenameResource}
             />
           {:else if item.kind === 'raw'}
-            <div class="border rounded-md bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-3">
+            <div class="border rounded-md bg-warning/10 border-warning/30 p-3">
               <div class="flex items-center justify-between mb-1">
-                <p class="text-xs font-medium text-amber-700 dark:text-amber-300">Advanced YAML — not editable in visual mode</p>
+                <p class="text-xs font-medium text-warning-foreground dark:text-warning">Advanced YAML — not editable in visual mode</p>
                 {#if onSwitchToYaml}
-                  <button class="text-xs text-amber-600 dark:text-amber-400 hover:underline" onclick={onSwitchToYaml}>Edit in YAML mode →</button>
+                  <button class="text-xs text-warning hover:underline" onclick={onSwitchToYaml}>Edit in YAML mode →</button>
                 {/if}
               </div>
               <pre class="text-xs font-mono whitespace-pre-wrap text-muted-foreground select-all">{item.yaml}</pre>

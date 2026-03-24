@@ -2,7 +2,7 @@
   import { cn } from '$lib/utils';
   import type { HTMLAttributes } from 'svelte/elements';
 
-  type Variant = 'default' | 'destructive';
+  type Variant = 'default' | 'destructive' | 'warning' | 'info';
 
   let {
     class: className = '',
@@ -17,6 +17,8 @@
   const variantClasses: Record<Variant, string> = {
     default: 'bg-background text-foreground',
     destructive: 'border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive',
+    warning: 'border-warning/50 bg-warning/10 text-warning-foreground dark:text-warning [&>svg]:text-warning',
+    info: 'border-primary/30 bg-primary/5 text-foreground [&>svg]:text-primary',
   };
 </script>
 

@@ -210,10 +210,12 @@ Full detail: `docs/coding-principles.md`
 
 Full detail: `docs/frontend.md` → "UI/UX Design Guidelines" section
 
+- **shadcn-svelte CLI**: always use `npx shadcn-svelte@latest add <component>` to install/update UI components. Never hand-edit files in `src/lib/components/ui/`. Config is in `frontend/components.json`.
+- **Theme tokens only**: the project uses Tailwind v4 with `@theme inline`. Raw color classes like `bg-amber-50` or `text-red-500` **will not render**. Use theme tokens: `bg-warning/10`, `text-destructive`, `text-muted-foreground`, etc. Custom tokens (`warning`, `warning-foreground`) are defined in `src/app.css`.
 - **Tooltips**: use shadcn `Tooltip` (from `$lib/components/ui/tooltip`) on action buttons, disabled elements, status badges, and config/credential labels. `Tooltip.Provider` wraps the entire app in `App.svelte`.
-- **Status badges**: use shadcn `Badge` with consistent variant mapping — `default` + green class for succeeded, `destructive` for failed, `secondary` for other states.
+- **Status badges**: use shadcn `Badge` with consistent variant mapping — `default` for succeeded, `destructive` for failed, `secondary` for other states.
 - **Confirmations**: **never use `window.confirm()`** — always use shadcn `Dialog` with a `$state` boolean, clear title/description, and destructive action button.
-- **Errors/warnings**: use shadcn `Alert` + `AlertDescription` — never raw `<div>` with hand-written styling.
+- **Alerts/banners**: use shadcn `Alert` + `AlertTitle` + `AlertDescription`. Variants: `destructive` (errors), `warning` (notices), `info` (feature descriptions), `default` (general). Never use raw `<div>` with hand-written styling for banners.
 - **Relative times**: use "3h ago" / "just now" in compact contexts; full timestamps in detail views.
 
 ---

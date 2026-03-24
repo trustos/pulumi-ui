@@ -254,13 +254,72 @@ traefik-nlb-bs-{{ $port }}:
 
 ---
 
-## 10. Testing Requirements
+## 10. Frontend UI Components (shadcn-svelte)
+
+The project uses **shadcn-svelte** as the UI component library. Components live in
+`frontend/src/lib/components/ui/` and are managed exclusively through the CLI.
+
+### 10.1 Installation and updates
+
+```bash
+# Install a new component (run from frontend/)
+npx shadcn-svelte@latest add <component-name>
+
+# Update an existing component to the latest version
+npx shadcn-svelte@latest add <component-name> --overwrite
+```
+
+Configuration: `frontend/components.json`. Dependencies: `bits-ui` v2 (headless
+primitives), `class-variance-authority` (variant management), `tailwind-merge`.
+
+### 10.2 Rules
+
+1. **Never hand-edit** files inside `src/lib/components/ui/`. If a component needs
+   customization, add the variant/prop to the component properly (e.g. adding a
+   `warning` variant to Alert), or create a wrapper component outside of `ui/`.
+2. **Always use shadcn components** for standard UI patterns — Alert, Button, Dialog,
+   Badge, Input, Select, Tooltip, Tabs, etc. Never use raw `<div>` or `<button>` with
+   hand-crafted styling when a shadcn component exists.
+3. **Theme tokens only** — the project uses Tailwind CSS v4 with `@theme inline` in
+   `src/app.css`. Only colors defined as CSS variables and registered in the theme
+   block are available. Raw Tailwind color classes like `bg-amber-50`, `text-red-500`,
+   `bg-green-600` **will not render** — they produce transparent/invisible output.
+
+Available color tokens: `primary`, `destructive`, `warning`, `muted`, `accent`,
+`secondary`, `foreground`, `background`, plus their `-foreground` counterparts.
+Use them as: `bg-warning/10`, `text-destructive`, `border-primary/30`, etc.
+
+If a new semantic color is needed, add CSS variables in both `:root` and `.dark`
+in `src/app.css`, register in `@theme inline`, then use in components.
+
+### 10.3 Alert variants
+
+| Variant | When to use |
+|---|---|
+| `destructive` | Validation errors, operation failures |
+| `warning` | Non-blocking notices, degraded state, prompts needing user action |
+| `info` | Feature descriptions, informational banners (e.g. Agent Access ON) |
+| `default` | General messages |
+
+### 10.4 Component checklist for new features
+
+- Buttons → `<Button>` with `variant` and `size` props
+- Banners/alerts → `<Alert>` + `<AlertTitle>` + `<AlertDescription>` with appropriate variant
+- Confirmations → `<Dialog>` with `$state` boolean (never `window.confirm()`)
+- Tooltips → `<Tooltip.Root>` / `<Tooltip.Trigger>` / `<Tooltip.Content>`
+- Dropdowns → `<Select>` or `<Combobox>` (for searchable)
+- Text inputs → `<Input>` component
+- Badges → `<Badge>` with variant
+
+---
+
+## 11. Testing Requirements
 
 Every new feature — backend, frontend, or agent — **must** ship with tests. The
 following rules are the project-level contract; they apply to every contributor
 and every agent session.
 
-### 10.1 Mandatory coverage by area
+### 11.1 Mandatory coverage by area
 
 | Area | Test type | Tool | Where |
 |------|-----------|------|-------|
@@ -276,7 +335,7 @@ and every agent session.
 | **Frontend utilities** | Vitest unit test | `describe`/`it`/`expect` | Co-located `.test.ts` |
 | **Templates** | No new tests required | Existing Vitest suites must pass | — |
 
-### 10.2 Rules
+### 11.2 Rules
 
 1. **Every new feature must have tests.** No exception. If you add a function,
    endpoint, validation rule, or utility module, add a test file (or extend an
@@ -310,7 +369,7 @@ and every agent session.
 8. **Local pre-push check**: run `make test-all` before pushing. This executes
    Go tests, Vitest, and svelte-check in one command.
 
-### 10.3 Current test inventory
+### 11.3 Current test inventory
 
 - Agent injection: `yaml_test.go` (11 tests), `network_test.go` (12 tests).
 - API handlers: `programs_test.go` (5 tests) — `hasBlockingErrors` helper.

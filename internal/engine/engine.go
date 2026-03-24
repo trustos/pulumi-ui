@@ -90,12 +90,12 @@ func (e *Engine) backendURL() string {
 	return "file://" + e.stateDir
 }
 
-func (e *Engine) getOrCreateStack(ctx context.Context, stackName string, prog programs.Program, cfg map[string]string, envVars map[string]string) (auto.Stack, error) {
-	return auto.UpsertStackInlineSource(ctx, stackName, "pulumi-ui", prog.Run(cfg),
+func (e *Engine) getOrCreateStack(ctx context.Context, stackName, projectName string, prog programs.Program, cfg map[string]string, envVars map[string]string) (auto.Stack, error) {
+	return auto.UpsertStackInlineSource(ctx, stackName, projectName, prog.Run(cfg),
 		auto.WorkDir(os.TempDir()),
 		auto.EnvVars(envVars),
 		auto.Project(workspace.Project{
-			Name:    tokens.PackageName("pulumi-ui"),
+			Name:    tokens.PackageName(projectName),
 			Runtime: workspace.NewProjectRuntimeInfo("go", nil),
 			Backend: &workspace.ProjectBackend{URL: e.backendURL()},
 		}),
@@ -265,7 +265,7 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 // resolveStack returns the correct auto.Stack for the given program, using
 // either the inline Go path or the YAML local-source path depending on the
 // program type. The returned cleanup func must be called after the operation.
-func (e *Engine) resolveStack(ctx context.Context, stackName string, prog programs.Program, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
+func (e *Engine) resolveStack(ctx context.Context, stackName, programName string, prog programs.Program, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
 	if yp, ok := prog.(programs.YAMLProgramProvider); ok {
 		return e.getOrCreateYAMLStack(ctx, stackName, prog, yp, cfg, envVars, creds)
 	}
@@ -294,7 +294,7 @@ func (e *Engine) resolveStack(ctx context.Context, stackName string, prog progra
 		}
 	}
 
-	stack, err := e.getOrCreateStack(ctx, stackName, prog, goCfg, envVars)
+	stack, err := e.getOrCreateStack(ctx, stackName, programName, prog, goCfg, envVars)
 	return stack, func() {}, err
 }
 
@@ -351,7 +351,7 @@ func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[
 		cancel()
 	}()
 
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, programName, prog, cfg, envVars, creds)
 	if stackCleanup != nil {
 		defer stackCleanup()
 	}
@@ -404,7 +404,7 @@ func (e *Engine) Destroy(ctx context.Context, stackName, programName string, cfg
 		cancel()
 	}()
 
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, programName, prog, cfg, envVars, creds)
 	if stackCleanup != nil {
 		defer stackCleanup()
 	}
@@ -460,7 +460,7 @@ func (e *Engine) Refresh(ctx context.Context, stackName, programName string, cfg
 		cancel()
 	}()
 
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, programName, prog, cfg, envVars, creds)
 	if stackCleanup != nil {
 		defer stackCleanup()
 	}
@@ -520,7 +520,7 @@ func (e *Engine) Preview(ctx context.Context, stackName, programName string, cfg
 		cancel()
 	}()
 
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, prog, cfg, envVars, creds)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, programName, prog, cfg, envVars, creds)
 	if stackCleanup != nil {
 		defer stackCleanup()
 	}
@@ -651,21 +651,34 @@ func (e *Engine) Unlock(stackName string) error {
 	return nil
 }
 
-// ListPulumiStacks returns all stacks known to the Pulumi state backend.
-func (e *Engine) ListPulumiStacks(ctx context.Context) ([]auto.StackSummary, error) {
-	ws, err := auto.NewLocalWorkspace(ctx,
-		auto.WorkDir(os.TempDir()),
-		auto.EnvVars(map[string]string{"PULUMI_CONFIG_PASSPHRASE": ""}),
-		auto.Project(workspace.Project{
-			Name:    tokens.PackageName("pulumi-ui"),
-			Runtime: workspace.NewProjectRuntimeInfo("go", nil),
-			Backend: &workspace.ProjectBackend{URL: e.backendURL()},
-		}),
-	)
-	if err != nil {
-		return nil, err
+// RemoveStackState deletes all Pulumi backend state for the given stack,
+// including the state file, history, and backups. This ensures that
+// re-creating a stack with the same name starts completely fresh.
+func (e *Engine) RemoveStackState(stackName, programName string) error {
+	base := filepath.Join(e.stateDir, ".pulumi")
+	projects := []string{programName}
+
+	for _, proj := range projects {
+		paths := []string{
+			filepath.Join(base, "stacks", proj, stackName+".json"),
+			filepath.Join(base, "stacks", proj, stackName+".json.bak"),
+		}
+		dirs := []string{
+			filepath.Join(base, "history", proj, stackName),
+			filepath.Join(base, "backups", proj, stackName),
+		}
+		for _, p := range paths {
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("removing %s: %w", p, err)
+			}
+		}
+		for _, d := range dirs {
+			if err := os.RemoveAll(d); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("removing %s: %w", d, err)
+			}
+		}
 	}
-	return ws.ListStacks(ctx)
+	return nil
 }
 
 // GetStackOutputs returns the outputs for a deployed stack.
@@ -681,7 +694,7 @@ func (e *Engine) GetStackOutputs(ctx context.Context, stackName, programName str
 		return nil, fmt.Errorf("unknown program: %s", programName)
 	}
 
-	stack, stackCleanup, err := e.resolveStack(ctx, stackName, prog, cfg, envVars, creds)
+	stack, stackCleanup, err := e.resolveStack(ctx, stackName, programName, prog, cfg, envVars, creds)
 	if stackCleanup != nil {
 		defer stackCleanup()
 	}

@@ -16,6 +16,32 @@ const VCN_RESOURCE: ResourceItem = {
   ],
 };
 
+const IGW_RESOURCE: ResourceItem = {
+  kind: 'resource',
+  name: 'agent-igw',
+  resourceType: 'oci:Core/internetGateway:InternetGateway',
+  properties: [
+    { key: 'compartmentId', value: '{{ .Config.compartmentId }}' },
+    { key: 'vcnId', value: '${agent-vcn.id}' },
+    { key: 'displayName', value: 'agent-igw' },
+    { key: 'enabled', value: 'true' },
+  ],
+  options: { dependsOn: ['agent-vcn'] },
+};
+
+const ROUTE_TABLE_RESOURCE: ResourceItem = {
+  kind: 'resource',
+  name: 'agent-route-table',
+  resourceType: 'oci:Core/routeTable:RouteTable',
+  properties: [
+    { key: 'compartmentId', value: '{{ .Config.compartmentId }}' },
+    { key: 'vcnId', value: '${agent-vcn.id}' },
+    { key: 'displayName', value: 'agent-route-table' },
+    { key: 'routeRules', value: '[{ destination: "0.0.0.0/0", networkEntityId: "${agent-igw.id}" }]' },
+  ],
+  options: { dependsOn: ['agent-igw'] },
+};
+
 const SUBNET_RESOURCE: ResourceItem = {
   kind: 'resource',
   name: 'agent-subnet',
@@ -25,12 +51,40 @@ const SUBNET_RESOURCE: ResourceItem = {
     { key: 'vcnId', value: '${agent-vcn.id}' },
     { key: 'cidrBlock', value: '10.250.0.0/24' },
     { key: 'displayName', value: 'agent-subnet' },
+    { key: 'routeTableId', value: '${agent-route-table.id}' },
+    { key: 'prohibitPublicIpOnVnic', value: 'false' },
   ],
+  options: { dependsOn: ['agent-route-table'] },
 };
 
+const SCAFFOLDED_RESOURCES: ResourceItem[] = [
+  VCN_RESOURCE,
+  IGW_RESOURCE,
+  ROUTE_TABLE_RESOURCE,
+  SUBNET_RESOURCE,
+];
+
 /**
- * Adds VCN + Subnet resources to a ProgramGraph and wires
- * createVnicDetails.subnetId on all compute instances.
+ * Check whether the program graph already has networking resources.
+ */
+export function hasNetworkingResources(graph: ProgramGraph): boolean {
+  for (const section of graph.sections) {
+    for (const item of section.items) {
+      if (item.kind !== 'resource') continue;
+      if (
+        item.resourceType === 'oci:Core/vcn:Vcn' ||
+        item.resourceType === 'oci:Core/subnet:Subnet'
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Adds VCN + IGW + Route Table + Subnet resources to a ProgramGraph
+ * and wires createVnicDetails.subnetId on all compute instances.
  * Returns a new graph (does not mutate the input).
  */
 export function scaffoldNetworkingGraph(graph: ProgramGraph): ProgramGraph {
@@ -47,17 +101,26 @@ export function scaffoldNetworkingGraph(graph: ProgramGraph): ProgramGraph {
     if (!COMPUTE_TYPES.includes(item.resourceType)) return item;
 
     const hasSubnet = item.properties.some(p => p.key === 'createVnicDetails.subnetId');
+    const hasPublicIp = item.properties.some(p => p.key === 'createVnicDetails.assignPublicIp');
+    const extraProps = hasPublicIp ? [] : [{ key: 'createVnicDetails.assignPublicIp', value: 'true' }];
     if (hasSubnet) {
       return {
         ...item,
-        properties: item.properties.map(p =>
-          p.key === 'createVnicDetails.subnetId' ? { ...p, value: '${agent-subnet.id}' } : p
-        ),
+        properties: [
+          ...item.properties.map(p =>
+            p.key === 'createVnicDetails.subnetId' ? { ...p, value: '${agent-subnet.id}' } : p
+          ),
+          ...extraProps,
+        ],
       };
     }
     return {
       ...item,
-      properties: [...item.properties, { key: 'createVnicDetails.subnetId', value: '${agent-subnet.id}' }],
+      properties: [
+        ...item.properties,
+        { key: 'createVnicDetails.subnetId', value: '${agent-subnet.id}' },
+        ...extraProps,
+      ],
     };
   });
 
@@ -65,7 +128,7 @@ export function scaffoldNetworkingGraph(graph: ProgramGraph): ProgramGraph {
     ...graph,
     configFields,
     sections: graph.sections.map((s, i) =>
-      i === 0 ? { ...s, items: [{ ...VCN_RESOURCE }, { ...SUBNET_RESOURCE }, ...updatedItems] } : s
+      i === 0 ? { ...s, items: [...SCAFFOLDED_RESOURCES.map(r => ({ ...r })), ...updatedItems] } : s
     ),
   };
 }
@@ -78,6 +141,26 @@ const NETWORKING_YAML_LINES = [
   '      cidrBlocks:',
   '        - "10.250.0.0/16"',
   '      displayName: agent-vcn',
+  '  agent-igw:',
+  '    type: oci:Core/internetGateway:InternetGateway',
+  '    properties:',
+  '      compartmentId: {{ .Config.compartmentId }}',
+  '      vcnId: ${agent-vcn.id}',
+  '      displayName: agent-igw',
+  '      enabled: "true"',
+  '    options:',
+  '      dependsOn:',
+  '        - ${agent-vcn}',
+  '  agent-route-table:',
+  '    type: oci:Core/routeTable:RouteTable',
+  '    properties:',
+  '      compartmentId: {{ .Config.compartmentId }}',
+  '      vcnId: ${agent-vcn.id}',
+  '      displayName: agent-route-table',
+  '      routeRules: "[{ destination: \\"0.0.0.0/0\\", networkEntityId: \\"${agent-igw.id}\\" }]"',
+  '    options:',
+  '      dependsOn:',
+  '        - ${agent-igw}',
   '  agent-subnet:',
   '    type: oci:Core/subnet:Subnet',
   '    properties:',
@@ -85,10 +168,15 @@ const NETWORKING_YAML_LINES = [
   '      vcnId: ${agent-vcn.id}',
   '      cidrBlock: 10.250.0.0/24',
   '      displayName: agent-subnet',
+  '      routeTableId: ${agent-route-table.id}',
+  '      prohibitPublicIpOnVnic: "false"',
+  '    options:',
+  '      dependsOn:',
+  '        - ${agent-route-table}',
 ];
 
 /**
- * Inserts VCN + Subnet resource YAML after the `resources:` line,
+ * Inserts VCN + IGW + Route Table + Subnet resource YAML after the `resources:` line,
  * wires createVnicDetails.subnetId on instances that lack it,
  * and adds compartmentId config if missing.
  */
@@ -117,6 +205,7 @@ export function scaffoldNetworkingYaml(yamlText: string): string {
     lines.splice(insertAt, 0,
       `${propIndent}createVnicDetails:`,
       `${propIndent}  subnetId: \${agent-subnet.id}`,
+      `${propIndent}  assignPublicIp: true`,
     );
   }
 
