@@ -2,7 +2,8 @@
 pulumi-ui
 cmd/server/frontend/dist/
 server
-agent
+/agent
+/dist/
 
 # ── Go ────────────────────────────────────────────────────────────────────────
 *.test
