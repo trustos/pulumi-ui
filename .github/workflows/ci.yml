@@ -21,6 +21,9 @@ jobs:
       - name: Run tests
         run: go test ./internal/... -count=1 -race
 
+      - name: Create frontend embed placeholder
+        run: mkdir -p cmd/server/frontend/dist && echo "placeholder" > cmd/server/frontend/dist/index.html
+
       - name: Build binary
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/server
 
