@@ -172,9 +172,14 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 	if shouldInjectAgent {
 		if vars := e.agentVarsForStack(stackName); vars != nil {
 			injected, injErr := agentinject.InjectIntoYAML(sanitized, *vars)
-			if injErr == nil {
+			if injErr != nil {
+				log.Printf("[agent-inject] bootstrap injection error for stack %s: %v", stackName, injErr)
+			} else {
 				sanitized = injected
+				log.Printf("[agent-inject] bootstrap injected for stack %s", stackName)
 			}
+		} else {
+			log.Printf("[agent-inject] WARNING: no agent vars for stack %s — bootstrap NOT injected (check Nebula PKI)", stackName)
 		}
 	}
 
@@ -303,18 +308,26 @@ func (e *Engine) resolveStack(ctx context.Context, stackName, programName string
 // Returns nil if the stack has no connection record (agent injection skipped).
 func (e *Engine) agentVarsForStack(stackName string) *agentinject.AgentVars {
 	if e.connStore == nil {
+		log.Printf("[agent-vars] connStore is nil for stack %s", stackName)
 		return nil
 	}
 	conn, err := e.connStore.Get(stackName)
-	if err != nil || conn == nil {
+	if err != nil {
+		log.Printf("[agent-vars] connStore.Get error for stack %s: %v", stackName, err)
+		return nil
+	}
+	if conn == nil {
+		log.Printf("[agent-vars] no connection record for stack %s", stackName)
 		return nil
 	}
 
 	hostCert := string(conn.NebulaAgentCert)
 	hostKey := string(conn.NebulaAgentKey)
 	if hostCert == "" {
-		return nil // no agent certificate → skip agent injection
+		log.Printf("[agent-vars] NebulaAgentCert is empty for stack %s", stackName)
+		return nil
 	}
+	log.Printf("[agent-vars] loaded agent vars for stack %s (cert=%d bytes, key=%d bytes)", stackName, len(hostCert), len(hostKey))
 
 	token := conn.AgentToken
 	if token == "" {

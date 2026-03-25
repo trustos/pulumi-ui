@@ -92,9 +92,6 @@ func (p *NomadClusterProgram) ConfigFields() []ConfigField {
 		{Key: "bootVolSizeGb", Label: "Boot Volume (GB)", Type: "number",
 			Required: false, Default: "50",
 			Group: gComp, GroupLabel: lComp},
-		{Key: "sshPublicKey", Label: "SSH Public Key", Type: "ssh-public-key",
-			Required: true,
-			Group: gComp, GroupLabel: lComp},
 
 		// ── Software Versions ──────────────────────────────────────────────
 		{Key: "nomadVersion", Label: "Nomad Version", Type: "text",

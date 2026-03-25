@@ -27,7 +27,6 @@ const (
 // Tunnel wraps a userspace Nebula mesh connection to a single stack.
 type Tunnel struct {
 	svc       *service.Service
-	ctrl      *nebula.Control
 	stackName string
 	agentAddr string // e.g. "10.42.1.2:41820"
 	token     string
@@ -56,6 +55,10 @@ func NewManager(connStore *db.StackConnectionStore) *Manager {
 
 // GetTunnel returns a cached or freshly created tunnel for the given stack.
 func (m *Manager) GetTunnel(stackName string) (*Tunnel, error) {
+	if m.connStore == nil {
+		return nil, fmt.Errorf("mesh manager has no connection store")
+	}
+
 	m.mu.Lock()
 	if t, ok := m.tunnels[stackName]; ok {
 		t.mu.Lock()
@@ -155,13 +158,15 @@ firewall:
 
 	svc, err := service.New(ctrl)
 	if err != nil {
-		ctrl.Stop()
+		// ctrl.Stop() must NOT be called here — Nebula's main loop calls
+		// os.Exit(0) after "Goodbye", which would terminate the server process.
+		// Accept the goroutine leak on this rare error path.
+		log.Printf("[mesh] service.New failed for stack %s: %v (nebula goroutines may leak)", conn.StackName, err)
 		return nil, fmt.Errorf("create nebula service: %w", err)
 	}
 
 	return &Tunnel{
 		svc:       svc,
-		ctrl:      ctrl,
 		stackName: conn.StackName,
 		agentAddr: fmt.Sprintf("%s:%d", agentIP, agentTCPPort),
 		token:     conn.AgentToken,
@@ -194,13 +199,28 @@ func (t *Tunnel) AgentURL() string {
 	return "http://" + t.agentAddr
 }
 
+// AgentNebulaIP returns the Nebula VPN IP of the agent (without the port).
+func (t *Tunnel) AgentNebulaIP() string {
+	host, _, _ := net.SplitHostPort(t.agentAddr)
+	return host
+}
+
 // Token returns the per-stack auth token.
 func (t *Tunnel) Token() string {
 	return t.token
 }
 
 // Close tears down the Nebula tunnel.
+// Only svc.Close() is called — ctrl.Stop() must NOT be used here because
+// Nebula's main loop calls os.Exit(0) after logging "Goodbye", which would
+// terminate the entire server process. The service package manages the full
+// Nebula lifecycle in userspace mode and cleans up all goroutines on Close.
 func (t *Tunnel) Close() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mesh] recovered panic closing tunnel for stack %s: %v", t.stackName, r)
+		}
+	}()
 	if t.svc != nil {
 		t.svc.Close()
 	}

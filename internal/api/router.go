@@ -9,6 +9,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/auth"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
+	"github.com/trustos/pulumi-ui/internal/logbuffer"
 	"github.com/trustos/pulumi-ui/internal/mesh"
 	"github.com/trustos/pulumi-ui/internal/oci"
 	"github.com/trustos/pulumi-ui/internal/programs"
@@ -30,6 +31,7 @@ type Handler struct {
 	Registry       *programs.ProgramRegistry
 	ConnStore      *db.StackConnectionStore
 	MeshManager    *mesh.Manager
+	LogBuffer      *logbuffer.Buffer
 }
 
 func NewHandler(
@@ -157,6 +159,10 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Get("/settings/credentials", h.GetCredentials)
 			r.Put("/settings/credentials", h.PutCredentials)
 			r.Get("/settings/health", h.GetHealth)
+
+			// Application logs
+			r.Get("/logs", h.GetLogs)
+			r.Get("/logs/stream", h.StreamLogs)
 		})
 	})
 

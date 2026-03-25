@@ -156,7 +156,7 @@ func yamlTypeToFieldType(key, pulumiType string, uiTypeByField map[string]string
 	if t, ok := uiTypeByField[key]; ok {
 		return t
 	}
-	// Convention-based key overrides.
+	// Convention-based key overrides — OCI picker types.
 	switch key {
 	case "imageId":
 		return "oci-image"
@@ -168,6 +168,9 @@ func yamlTypeToFieldType(key, pulumiType string, uiTypeByField map[string]string
 		return "oci-compartment"
 	case "availabilityDomain":
 		return "oci-ad"
+	// Convention-based numeric fields — common OCI/infra integer parameters.
+	case "ocpus", "memoryInGbs", "bootVolSizeGb", "nodeCount":
+		return "number"
 	}
 	// Pulumi type → form field type.
 	switch strings.ToLower(pulumiType) {

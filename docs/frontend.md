@@ -24,7 +24,7 @@ The frontend is a pure Svelte 5 SPA built with Vite, embedded in the Go binary v
 | `frontend/src/lib/pages/Login.svelte` | Login form |
 | `frontend/src/lib/pages/Register.svelte` | First-run registration form |
 | `frontend/src/lib/components/Nav.svelte` | Top nav with Accounts, SSH Keys, Programs, Settings links and Sign out |
-| `frontend/src/lib/components/NewStackDialog.svelte` | Program + account + passphrase + SSH key selector + config form |
+| `frontend/src/lib/components/NewStackDialog.svelte` | Program + account + passphrase selector + config form (SSH key is a program config field in Step 3, not a wizard-level picker) |
 | `frontend/src/lib/components/EditStackDialog.svelte` | Edit an existing stack's config fields (same form as New, pre-filled) |
 | `frontend/src/lib/components/ConfigForm.svelte` | Dynamic form from `ProgramMeta.configFields` |
 | `frontend/src/lib/components/OciImportDialog.svelte` | Multi-step OCI config import wizard (file upload or ZIP) |
@@ -109,11 +109,10 @@ Fields: stack name, program selection.
 Purpose: define what you are creating. No security or infrastructure concerns here.
 
 ### Step 2 — Security & Access
-Fields: OCI account (required), passphrase (required), VM Access Key (optional).
+Fields: OCI account (required), passphrase (required).
 Purpose: define who can access the stack and how state is protected.
 - If no passphrases exist, show the inline passphrase creation panel prominently (not buried at the bottom).
 - Show a clear explanation of passphrase immutability: *"The passphrase cannot be changed after stack creation. It encrypts your Pulumi state — changing it would permanently break access to all deployed resources."*
-- SSH key is labelled **"VM Access Key"** with tooltip: *"Injected into OCI instance metadata for SSH access to VMs. Overrides the key stored in the OCI account."*
 
 ### Step 3 — Configure [Program Name]
 Renders ConfigForm for the selected program's config fields.
@@ -130,7 +129,6 @@ Shown only for programs with an `applications` catalog. Renders `ApplicationSele
   "description": "Production cluster",
   "ociAccountId": "uuid",
   "passphraseId": "uuid",
-  "sshKeyId": "uuid",
   "config": {
     "nodeCount": "3",
     "compartmentName": "nomad-prod"
@@ -159,14 +157,13 @@ The `Dashboard.svelte` loads passphrases at startup and passes them to `NewStack
 
 ## SSH Key Distinction
 
-Two separate SSH key mechanisms exist. Always distinguish them clearly in the UI:
+SSH public keys for VM access are provided as program config fields (type `ssh-public-key`) in the ConfigForm (Step 3 of the wizard). There is no longer a separate "VM Access Key" picker in Step 2 — the key is now part of the program's declared config.
 
 | Term | What it is | Where it appears |
 |---|---|---|
-| **VM Access Key** | Key injected into OCI instance metadata; used for `ssh user@host` | Step 2 of wizard, EditStackDialog |
-| **Program SSH Key** | A config field value passed into the Pulumi program template | ConfigForm (field type `ssh-public-key`) |
+| **Program SSH Key** | A config field value passed into the Pulumi program template | ConfigForm (field type `ssh-public-key`, Step 3) |
 
-These are different fields. Do not conflate them. If a program config has a `ssh-public-key` field, label it **"Program SSH Key"** with a tooltip explaining it is a program config value, not the VM access key.
+If a program config has a `ssh-public-key` field it renders as a key picker (combobox of named SSH keys from Settings). Label it clearly in the program's config field description.
 
 ---
 
@@ -720,7 +717,7 @@ cd frontend && npm install && npm run build
 # Outputs to cmd/server/frontend/dist/ (picked up by go:embed)
 ```
 
-`vite.config.ts` sets `outDir: '../cmd/server/frontend/dist'`. In dev mode, the Vite proxy (`/api → http://localhost:8080`) forwards API calls to the running Go server.
+`vite.config.ts` sets `outDir: '../cmd/server/frontend/dist'`. In dev mode, the Vite proxy forwards all `/api` traffic — both HTTP and WebSocket — to the running Go server (`target: http://localhost:8080, ws: true`). The `ws: true` flag is required for the agent shell terminal (`/api/stacks/{name}/agent/shell`) to work in dev mode.
 
 ### Development
 

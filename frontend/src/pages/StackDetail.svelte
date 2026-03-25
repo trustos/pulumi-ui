@@ -10,8 +10,8 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, listSSHKeys, streamDeployApps, getAgentHealth, getAgentServices, agentShellUrl } from '$lib/api';
-  import type { StackInfo, OciAccount, ProgramMeta, SshKey, ApplicationDef, AgentHealth, AgentService } from '$lib/types';
+  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, agentShellUrl } from '$lib/api';
+  import type { StackInfo, OciAccount, ProgramMeta, ApplicationDef, AgentHealth, AgentService } from '$lib/types';
   import EditStackDialog from '$lib/components/EditStackDialog.svelte';
   import WebTerminal from '$lib/components/WebTerminal.svelte';
 
@@ -27,7 +27,6 @@
   let unlockState = $state<'idle' | 'loading' | 'done'>('idle');
   let accounts = $state<OciAccount[]>([]);
   let programs = $state<ProgramMeta[]>([]);
-  let sshKeys = $state<SshKey[]>([]);
   let editOpen = $state(false);
   let copyState = $state<'idle' | 'copied'>('idle');
   let currentOp = $state<'up' | 'refresh' | 'destroy' | 'preview' | ''>('');
@@ -148,7 +147,6 @@
     loadPersistedLogs();
     listAccounts().then((a) => { accounts = a; }).catch(() => {});
     listPrograms().then((p) => { programs = p; }).catch(() => {});
-    listSSHKeys().then((k) => { sshKeys = k; }).catch(() => {});
   });
 
   $effect(() => {
@@ -774,17 +772,6 @@
                   <span class="text-destructive">Not set</span>
                 {/if}
               </div>
-              <div class="flex justify-between">
-                <Tooltip.Root>
-                  <Tooltip.Trigger class="text-muted-foreground cursor-default">SSH Key</Tooltip.Trigger>
-                  <Tooltip.Content>Injected into VM metadata for SSH access to provisioned instances</Tooltip.Content>
-                </Tooltip.Root>
-                {#if info.sshKeyId}
-                  <span>Configured</span>
-                {:else}
-                  <span class="text-muted-foreground italic">Not set</span>
-                {/if}
-              </div>
             </Card.Content>
           </Card.Root>
         </div>
@@ -895,7 +882,6 @@
     {info}
     program={currentProgram}
     {accounts}
-    {sshKeys}
     onSaved={loadInfo}
   />
 {/if}

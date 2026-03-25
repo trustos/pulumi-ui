@@ -5,6 +5,7 @@
   import { Input } from '$lib/components/ui/input';
   import { Button } from '$lib/components/ui/button';
   import type { ResourceItem } from '$lib/types/program-graph';
+  import { getResourceDefaults, getGraphExtras } from '$lib/program-graph/resource-defaults';
 
   let {
     onSelect,
@@ -89,23 +90,36 @@
     selectedType = type;
   }
 
+  let rootEl: HTMLDivElement;
+
   function confirm() {
     if (!selectedType) return;
     const typeParts = selectedType.split(':');
     const shortName = typeParts[typeParts.length - 1] ?? selectedType;
-    // Pre-populate required properties so the user only needs to fill in values.
+
     const resSchema = schema?.resources[selectedType];
-    const properties = resSchema
-      ? Object.entries(resSchema.inputs)
-          .filter(([, p]) => p.required)
-          .map(([key]) => ({ key, value: '' }))
+    const schemaRequired = resSchema
+      ? Object.entries(resSchema.inputs).filter(([, p]) => p.required).map(([key]) => key)
       : [];
+    const properties = getResourceDefaults(selectedType, schemaRequired);
+
     const resource: ResourceItem = {
       kind: 'resource',
       name: shortName.toLowerCase().replace(/[A-Z]/g, c => '-' + c.toLowerCase()).replace(/^-/, ''),
       resourceType: selectedType,
       properties,
     };
+
+    // Dispatch extras before onSelect — onSelect closes the catalog and
+    // destroys the DOM node, so the event must bubble while rootEl is alive.
+    const extras = getGraphExtras(selectedType);
+    if (extras && rootEl) {
+      rootEl.dispatchEvent(new CustomEvent('resource-graph-extras', {
+        bubbles: true,
+        detail: extras,
+      }));
+    }
+
     onSelect(resource);
   }
 
@@ -121,7 +135,7 @@
   };
 </script>
 
-<div class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
+<div bind:this={rootEl} class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
   <div class="bg-background border rounded-lg shadow-lg w-full max-w-3xl h-[80vh] flex flex-col">
     <div class="flex items-center justify-between p-4 border-b gap-2">
       <h2 class="font-semibold">Resource Catalog</h2>

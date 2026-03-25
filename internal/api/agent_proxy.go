@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
@@ -38,6 +39,15 @@ func (h *Handler) AgentHealth(w http.ResponseWriter, r *http.Request) {
 
 	if h.ConnStore != nil {
 		h.ConnStore.UpdateLastSeen(stackName)
+		// On first successful health check, record the agent's Nebula VPN IP so
+		// the UI shows "connected" and the mesh IP. AgentNebulaIP is nil until set.
+		if conn, err := h.ConnStore.Get(stackName); err == nil && conn != nil && conn.AgentNebulaIP == nil {
+			realIP := ""
+			if conn.AgentRealIP != nil {
+				realIP = *conn.AgentRealIP
+			}
+			h.ConnStore.UpdateAgentConnected(stackName, tunnel.AgentNebulaIP(), realIP, "")
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -174,6 +184,9 @@ func (h *Handler) AgentShell(w http.ResponseWriter, r *http.Request) {
 	agentURL.Scheme = "ws"
 	agentURL.Path = "/shell"
 
+	dialCtx, dialCancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer dialCancel()
+
 	dialer := websocket.Dialer{
 		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return tunnel.Dial(ctx)
@@ -182,7 +195,7 @@ func (h *Handler) AgentShell(w http.ResponseWriter, r *http.Request) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+tunnel.Token())
 
-	agentConn, _, err := dialer.DialContext(r.Context(), agentURL.String(), headers)
+	agentConn, _, err := dialer.DialContext(dialCtx, agentURL.String(), headers)
 	if err != nil {
 		log.Printf("[agent-shell] agent WebSocket dial failed: %v", err)
 		browserConn.WriteMessage(websocket.TextMessage, []byte("Agent connection failed: "+err.Error()))

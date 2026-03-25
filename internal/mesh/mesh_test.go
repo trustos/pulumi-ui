@@ -46,9 +46,9 @@ func TestGetTunnel_NilConnStore(t *testing.T) {
 	m := NewManager(nil)
 	defer m.Stop()
 
-	assert.Panics(t, func() {
-		_, _ = m.GetTunnel("some-stack")
-	}, "nil connStore should cause a panic")
+	_, err := m.GetTunnel("some-stack")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no connection store")
 }
 
 func TestManagerStop_Idempotent(t *testing.T) {
@@ -65,6 +65,11 @@ func TestTunnelToken(t *testing.T) {
 func TestTunnelAgentURL(t *testing.T) {
 	tunnel := &Tunnel{agentAddr: "10.42.1.2:41820"}
 	assert.Equal(t, "http://10.42.1.2:41820", tunnel.AgentURL())
+}
+
+func TestTunnelAgentNebulaIP(t *testing.T) {
+	tunnel := &Tunnel{agentAddr: "10.42.1.2:41820"}
+	assert.Equal(t, "10.42.1.2", tunnel.AgentNebulaIP())
 }
 
 func TestTunnelClose_NilSvc(t *testing.T) {

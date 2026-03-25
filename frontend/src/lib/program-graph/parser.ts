@@ -96,9 +96,15 @@ function parseConfigFields(yaml: string): ConfigFieldDef[] {
   while ((m = keyReGlobal.exec(configBlock)) !== null) {
     const key = m[1];
     const afterKey = configBlock.slice(m.index);
-    const typeMatch = afterKey.match(/^\s+type:\s*(\S+)/m);
-    const defaultMatch = afterKey.match(/^\s+default:\s*"?([^"\n]+)"?/m);
-    const descMatch = afterKey.match(/^\s+#(?!\s*\[group:)\s*(.+)/m);
+    // Bound to the current field's sub-block so regex matches don't bleed into
+    // the next field's attributes (e.g. compartmentId picking up shape's default).
+    const nextFieldIdx = afterKey.slice(m[0].length).search(/\n  [a-zA-Z]/);
+    const fieldBlock = nextFieldIdx >= 0
+      ? afterKey.slice(0, m[0].length + nextFieldIdx)
+      : afterKey;
+    const typeMatch = fieldBlock.match(/^\s+type:\s*(\S+)/m);
+    const defaultMatch = fieldBlock.match(/^\s+default:\s*"?([^"\n]+)"?/m);
+    const descMatch = fieldBlock.match(/^\s+#(?!\s*\[group:)\s*(.+)/m);
 
     // Find the corresponding position to get the group
     const pos = fieldPositions.find(p => p.key === key);

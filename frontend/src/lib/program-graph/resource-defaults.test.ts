@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { getResourceDefaults, getGraphExtras } from './resource-defaults';
 import { graphToYaml } from './serializer';
+import { yamlToGraph } from './parser';
 import type { ProgramGraph } from '$lib/types/program-graph';
 
 // ── getResourceDefaults ─────────────────────────────────────────────────────
@@ -10,7 +11,7 @@ describe('getResourceDefaults', () => {
 
   it('returns enriched properties for Instance', () => {
     const props = getResourceDefaults(INSTANCE_TYPE, ['availabilityDomain', 'compartmentId']);
-    expect(props.length).toBe(7);
+    expect(props.length).toBe(9);
 
     const byKey = new Map(props.map(p => [p.key, p.value]));
     expect(byKey.get('compartmentId')).toBe('{{ .Config.compartmentId }}');
@@ -20,6 +21,8 @@ describe('getResourceDefaults', () => {
     expect(byKey.get('sourceDetails')).toContain('sourceType: "image"');
     expect(byKey.get('shapeConfig')).toContain('ocpus');
     expect(byKey.get('metadata')).toContain('ssh_authorized_keys');
+    expect(byKey.get('createVnicDetails.subnetId')).toBe('${subnet.id}');
+    expect(byKey.get('createVnicDetails.assignPublicIp')).toBe('true');
   });
 
   it('does not duplicate keys already in the recipe', () => {
@@ -55,7 +58,7 @@ describe('getResourceDefaults', () => {
 // ── getGraphExtras ──────────────────────────────────────────────────────────
 
 describe('getGraphExtras', () => {
-  it('returns config fields, variable, and outputs for Instance', () => {
+  it('returns config fields, variable, outputs and dependent resources for Instance', () => {
     const extras = getGraphExtras('oci:Core/instance:Instance');
     expect(extras).not.toBeNull();
     expect(extras!.configFields.length).toBe(6);
@@ -78,6 +81,10 @@ describe('getGraphExtras', () => {
     expect(extras!.outputs.length).toBe(1);
     expect(extras!.outputs[0].key).toBe('instancePublicIp');
     expect(extras!.outputs[0].value).toBe('${instance.publicIp}');
+
+    expect(extras!.resources.length).toBe(4);
+    const resNames = extras!.resources.map(r => r.name);
+    expect(resNames).toEqual(['vcn', 'igw', 'route-table', 'subnet']);
   });
 
   it('returns null for unknown types', () => {
@@ -135,14 +142,36 @@ describe('Instance defaults + graphToYaml', () => {
     expect(yaml).toContain('instancePublicIp: ${instance.publicIp}');
   });
 
-  it('works alongside scaffold-networking dotted keys', () => {
+  it('roundtrip: fields without defaults do not inherit adjacent fields defaults', () => {
+    // Regression test for parser bug: afterKey was not bounded to the current
+    // field block, so compartmentId picked up shape's default, and imageId/
+    // sshPublicKey picked up ocpus's default.
+    const extras = getGraphExtras('oci:Core/instance:Instance')!;
+    const graph: ProgramGraph = {
+      metadata: { name: 'test', displayName: 'Test', description: '' },
+      configFields: extras.configFields,
+      variables: [],
+      sections: [{ id: 'main', label: 'Resources', items: [] }],
+      outputs: [],
+    };
+
+    const yaml = graphToYaml(graph);
+    const parsed = yamlToGraph(yaml);
+    const byKey = new Map(parsed.graph.configFields.map(f => [f.key, f]));
+
+    // Only 'shape' should have a default
+    expect(byKey.get('shape')?.default).toBe('VM.Standard.A1.Flex');
+    expect(byKey.get('ocpus')?.default).toBe('2');
+    expect(byKey.get('memoryInGbs')?.default).toBe('12');
+
+    // These should have NO default
+    expect(byKey.get('compartmentId')?.default).toBeUndefined();
+    expect(byKey.get('imageId')?.default).toBeUndefined();
+    expect(byKey.get('sshPublicKey')?.default).toBeUndefined();
+  });
+
+  it('serializes createVnicDetails as nested YAML from recipe defaults', () => {
     const props = getResourceDefaults('oci:Core/instance:Instance', ['availabilityDomain', 'compartmentId']);
-    // Simulate what scaffoldNetworkingGraph adds
-    const withScaffold = [
-      ...props,
-      { key: 'createVnicDetails.subnetId', value: '${agent-subnet.id}' },
-      { key: 'createVnicDetails.assignPublicIp', value: 'true' },
-    ];
 
     const graph: ProgramGraph = {
       metadata: { name: 'test', displayName: 'Test', description: '' },
@@ -155,7 +184,7 @@ describe('Instance defaults + graphToYaml', () => {
           kind: 'resource',
           name: 'instance',
           resourceType: 'oci:Core/instance:Instance',
-          properties: withScaffold,
+          properties: props,
         }],
       }],
       outputs: [],

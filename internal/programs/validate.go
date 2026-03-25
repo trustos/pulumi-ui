@@ -111,7 +111,8 @@ func validateTemplateRender(yamlBody string) (string, []ValidationError) {
 }
 
 // buildValidationConfig returns a config map populated with declared defaults,
-// filling zero values for fields that declare no default.
+// filling placeholder values for fields that declare no default so that
+// rendered YAML properties are non-null for structure validation.
 func buildValidationConfig(fields []ConfigField) map[string]string {
 	cfg := make(map[string]string, len(fields))
 	for _, f := range fields {
@@ -121,10 +122,10 @@ func buildValidationConfig(fields []ConfigField) map[string]string {
 			switch f.Type {
 			case "number":
 				cfg[f.Key] = "0"
-			case "select": // Boolean
+			case "select":
 				cfg[f.Key] = "false"
 			default:
-				cfg[f.Key] = ""
+				cfg[f.Key] = "placeholder"
 			}
 		}
 	}

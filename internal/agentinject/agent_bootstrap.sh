@@ -29,6 +29,37 @@ case "$ARCH" in
   *) echo "Unsupported arch: $ARCH"; exit 1 ;;
 esac
 
+# --- Host firewall ---
+# Oracle Cloud Ubuntu images ship with netfilter-persistent applying iptables
+# rules that REJECT all inbound traffic except SSH. Nebula needs UDP 41820
+# reachable from outside. Disable the service so the rules don't survive
+# reboots (OCI NSGs provide the external firewall boundary).
+setup_host_firewall() {
+  if [[ "$agent_os" == "ubuntu" ]]; then
+    # If Docker's NAT table isn't set up yet, flush Oracle's default REJECT rules
+    # by stopping netfilter-persistent. This removes the catch-all REJECT at the
+    # bottom of INPUT so all traffic is accepted (OCI NSGs are the perimeter).
+    if ! iptables -t nat -L DOCKER -n >/dev/null 2>&1; then
+      if [ -x /usr/sbin/netfilter-persistent ]; then
+        /usr/sbin/netfilter-persistent stop
+        /usr/sbin/netfilter-persistent flush
+        systemctl stop netfilter-persistent.service 2>/dev/null || true
+        systemctl disable netfilter-persistent.service 2>/dev/null || true
+      fi
+    fi
+    # Unconditionally open the two paths Nebula needs, regardless of whether
+    # netfilter-persistent was installed:
+    #   - UDP 41820: Nebula underlay handshake from the outside world
+    #   - nebula1 interface: all overlay traffic (Nebula app-layer firewall handles authz)
+    # iptables accepts rules for interfaces that don't exist yet, so the nebula1
+    # rule is valid even though the interface is created later by install_nebula.
+    iptables -C INPUT -p udp --dport 41820 -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT -p udp --dport 41820 -j ACCEPT
+    iptables -C INPUT -i nebula1 -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT -i nebula1 -j ACCEPT
+  fi
+}
+
 # --- Nebula mesh ---
 install_nebula() {
   echo "[agent-bootstrap] Installing Nebula mesh..."
@@ -102,6 +133,10 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# Re-apply iptables rules on every start so they survive reboots even if
+# another service (e.g. Docker) or a manual flush re-adds blocking rules.
+ExecStartPre=-/bin/sh -c 'iptables -C INPUT -p udp --dport 41820 -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport 41820 -j ACCEPT'
+ExecStartPre=-/bin/sh -c 'iptables -C INPUT -i nebula1 -j ACCEPT 2>/dev/null || iptables -I INPUT -i nebula1 -j ACCEPT'
 ExecStart=/usr/local/bin/nebula -config /etc/nebula/config.yml
 Restart=always
 RestartSec=5
@@ -158,6 +193,7 @@ EOF
   echo "[agent-bootstrap] pulumi-ui agent started."
 }
 
+setup_host_firewall
 install_nebula
 install_agent
 echo "[agent-bootstrap] Complete."

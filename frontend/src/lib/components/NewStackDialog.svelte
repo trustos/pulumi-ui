@@ -7,20 +7,18 @@
     import ApplicationSelector from "./ApplicationSelector.svelte";
     import { putStack, createPassphrase } from "$lib/api";
     import { navigate } from "$lib/router";
-    import type { ProgramMeta, OciAccount, Passphrase, SshKey } from "$lib/types";
+    import type { ProgramMeta, OciAccount, Passphrase } from "$lib/types";
 
     let {
         open = $bindable(false),
         programs,
         accounts = [],
         passphrases = $bindable([]),
-        sshKeys = [],
     }: {
         open: boolean;
         programs: ProgramMeta[];
         accounts: OciAccount[];
         passphrases: Passphrase[];
-        sshKeys: SshKey[];
     } = $props();
 
     let step = $state<1 | 2 | 3>(1);
@@ -28,7 +26,6 @@
     let selectedProgramName = $state("");
     let selectedAccountId = $state("");
     let selectedPassphraseId = $state("");
-    let selectedSshKeyId = $state("");
     let selectedProgram = $derived(
         programs.find((p) => p.name === selectedProgramName) ?? null,
     );
@@ -41,15 +38,11 @@
     const passphraseTrigger = $derived(
         passphrases.find((p) => p.id === selectedPassphraseId)?.name ?? "Select a passphrase...",
     );
-    const sshKeyTrigger = $derived(
-        selectedSshKeyId
-            ? (sshKeys.find((k) => k.id === selectedSshKeyId)?.name ?? "Select an SSH key...")
-            : "None (use account default)",
-    );
     let isSaving = $state(false);
     let saveError = $state("");
     let selectedApps = $state<Record<string, boolean>>({});
     let pendingConfig = $state<Record<string, string>>({});
+    let configFormKey = $state(0);
 
     const hasCatalog = $derived(
         (selectedProgram?.applications?.length ?? 0) > 0,
@@ -89,7 +82,10 @@
     }
 
     function goToStep2() {
-        if (canProceed()) step = 2;
+        if (canProceed()) {
+            configFormKey++;
+            step = 2;
+        }
     }
 
     function handleConfigNext(config: Record<string, string>) {
@@ -122,7 +118,7 @@
                 "",
                 selectedAccountId,
                 selectedPassphraseId,
-                selectedSshKeyId || undefined,
+                undefined,
                 Object.keys(apps).length > 0 ? apps : undefined,
             );
             open = false;
@@ -140,7 +136,6 @@
         selectedProgramName = "";
         selectedAccountId = "";
         selectedPassphraseId = "";
-        selectedSshKeyId = "";
         saveError = "";
         inlineName = "";
         inlineValue = "";
@@ -370,41 +365,6 @@
                 </div>
             </div>
 
-                <div class="space-y-1">
-                    <p class="text-sm font-medium">SSH Key</p>
-                    <p class="text-xs text-muted-foreground">
-                        SSH key pair for VM access. Optional — falls back to the account's stored key if not set.
-                    </p>
-                    <Select.Root type="single" bind:value={selectedSshKeyId}>
-                        <Select.Trigger>
-                            {sshKeyTrigger}
-                        </Select.Trigger>
-                        <Select.Content>
-                            <Select.Item value="" label="None (use account default)">
-                                <span class="text-muted-foreground">None (use account default)</span>
-                            </Select.Item>
-                            {#each sshKeys as key}
-                                <Select.Item value={key.id} label={key.name}>
-                                    <div>
-                                        <div class="font-medium">{key.name}</div>
-                                        <div class="text-xs text-muted-foreground truncate max-w-48">
-                                            {key.publicKey.slice(0, 48)}…
-                                        </div>
-                                    </div>
-                                </Select.Item>
-                            {/each}
-                        </Select.Content>
-                    </Select.Root>
-                    {#if sshKeys.length === 0}
-                        <p class="text-xs text-muted-foreground">
-                            No SSH keys yet.
-                            <button
-                                type="button"
-                                class="underline text-foreground"
-                                onclick={() => { open = false; navigate("/ssh-keys"); }}>Add one in SSH Keys.</button>
-                        </p>
-                    {/if}
-                </div>
             <Dialog.Footer>
                 <Button
                     variant="outline"
@@ -425,9 +385,11 @@
                         {saveError}
                     </div>
                 {/if}
+                {#key configFormKey}
                 <ConfigForm
                     fields={selectedProgram.configFields}
                     accountId={selectedAccountId}
+                    resetVersion={configFormKey}
                     onSubmit={handleConfigNext}
                     submitLabel={hasCatalog
                         ? "Next: Applications"
@@ -435,6 +397,7 @@
                           ? "Saving..."
                           : "Save & Configure"}
                 />
+                {/key}
             </div>
             <Dialog.Footer>
                 <Button

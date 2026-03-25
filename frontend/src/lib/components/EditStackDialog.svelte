@@ -5,48 +5,41 @@
   import ConfigForm from './ConfigForm.svelte';
   import ApplicationSelector from './ApplicationSelector.svelte';
   import { putStack } from '$lib/api';
-  import type { StackInfo, ProgramMeta, OciAccount, SshKey } from '$lib/types';
+  import type { StackInfo, ProgramMeta, OciAccount } from '$lib/types';
 
   let {
     open = $bindable(false),
     info,
     program,
     accounts = [],
-    sshKeys = [],
     onSaved,
   }: {
     open: boolean;
     info: StackInfo;
     program: ProgramMeta | null;
     accounts: OciAccount[];
-    sshKeys: SshKey[];
     onSaved?: () => void;
   } = $props();
 
   let step = $state<1 | 2>(1);
   let selectedAccountId = $state('');
-  let selectedSshKeyId = $state('');
   let isSaving = $state(false);
   let saveError = $state('');
   let pendingConfig = $state<Record<string, string>>({});
   let selectedApps = $state<Record<string, boolean>>({});
+  /** Bumped each time the dialog opens so ConfigForm re-syncs from initialValues. */
+  let editFormKey = $state(0);
 
   const hasCatalog = $derived((program?.applications?.length ?? 0) > 0);
 
   const accountTrigger = $derived(
     accounts.find(a => a.id === selectedAccountId)?.name ?? 'Select an account...'
   );
-  const sshKeyTrigger = $derived(
-    selectedSshKeyId
-      ? (sshKeys.find(k => k.id === selectedSshKeyId)?.name ?? 'Select an SSH key...')
-      : 'None (use account default)'
-  );
 
   $effect(() => {
     if (open) {
       step = 1;
       selectedAccountId = info.ociAccountId ?? '';
-      selectedSshKeyId = info.sshKeyId ?? '';
       saveError = '';
       selectedApps = info.applications ? { ...info.applications } : {};
       pendingConfig = {};
@@ -73,7 +66,7 @@
         '',
         selectedAccountId,
         info.passphraseId ?? '',
-        selectedSshKeyId || undefined,
+        undefined,
         Object.keys(apps).length > 0 ? apps : undefined,
       );
       open = false;
@@ -86,7 +79,12 @@
   }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root
+  bind:open
+  onOpenChange={(o) => {
+    if (o) editFormKey++;
+  }}
+>
   <Dialog.Content class="max-w-lg">
     <Dialog.Header>
       <Dialog.Title>Edit Stack — {info.name}</Dialog.Title>
@@ -120,34 +118,17 @@
           </Select.Root>
         </div>
 
-        <div class="space-y-1">
-          <p class="text-sm font-medium">SSH Key</p>
-          <Select.Root type="single" bind:value={selectedSshKeyId}>
-            <Select.Trigger>{sshKeyTrigger}</Select.Trigger>
-            <Select.Content>
-              <Select.Item value="" label="None (use account default)">
-                <span class="text-muted-foreground">None (use account default)</span>
-              </Select.Item>
-              {#each sshKeys as key}
-                <Select.Item value={key.id} label={key.name}>
-                  <div>
-                    <div class="font-medium">{key.name}</div>
-                    <div class="text-xs text-muted-foreground truncate max-w-48">{key.publicKey.slice(0, 48)}…</div>
-                  </div>
-                </Select.Item>
-              {/each}
-            </Select.Content>
-          </Select.Root>
-        </div>
-
         {#if program}
+          {#key info.name}
           <ConfigForm
             fields={program.configFields}
             accountId={selectedAccountId}
             initialValues={info.config}
+            resetVersion={editFormKey}
             onSubmit={handleConfigNext}
             submitLabel={hasCatalog ? 'Next: Applications' : (isSaving ? 'Saving...' : 'Save Changes')}
           />
+          {/key}
         {:else}
           <p class="text-sm text-muted-foreground">Loading program config...</p>
         {/if}

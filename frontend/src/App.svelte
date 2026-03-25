@@ -10,6 +10,7 @@
   import Programs from './pages/Programs.svelte';
   import ProgramDocs from './pages/ProgramDocs.svelte';
   import ProgramEditor from './pages/ProgramEditor.svelte';
+  import Logs from './pages/Logs.svelte';
   import Login from '$lib/pages/Login.svelte';
   import Register from '$lib/pages/Register.svelte';
   import * as Tooltip from '$lib/components/ui/tooltip';
@@ -70,6 +71,8 @@
     } else if (path.endsWith('/fork')) {
       const n = path.slice('/programs/'.length, -'/fork'.length);
       document.title = `Fork ${n} · Programs | Pulumi UI`;
+    } else if (path === '/logs') {
+      document.title = 'Logs | Pulumi UI';
     } else if (path === '/settings') {
       document.title = 'Settings | Pulumi UI';
     } else if (path === '/login') {
@@ -109,6 +112,8 @@
         <ProgramEditor name={forkName} fork={true} />
       {:else if path === '/programs/docs'}
         <ProgramDocs />
+      {:else if path === '/logs'}
+        <Logs />
       {:else if path === '/settings'}
         <Settings />
       {:else}

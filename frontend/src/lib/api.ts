@@ -541,3 +541,27 @@ export function agentShellUrl(stackName: string): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${location.host}/api/stacks/${encodeURIComponent(stackName)}/agent/shell`;
 }
+
+// Application logs
+
+export interface LogEntry {
+  time: string;
+  message: string;
+}
+
+export async function getLogs(): Promise<LogEntry[]> {
+  const res = await fetch('/api/logs');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export function streamLogs(onEntry: (entry: LogEntry) => void, onError?: (err: Error) => void): () => void {
+  const es = new EventSource('/api/logs/stream');
+  es.onmessage = (e) => {
+    try { onEntry(JSON.parse(e.data)); } catch {}
+  };
+  es.onerror = () => {
+    if (onError) onError(new Error('Log stream connection lost'));
+  };
+  return () => es.close();
+}

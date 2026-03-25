@@ -18,6 +18,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
 	"github.com/trustos/pulumi-ui/internal/keystore"
+	"github.com/trustos/pulumi-ui/internal/logbuffer"
 	"github.com/trustos/pulumi-ui/internal/mesh"
 	"github.com/trustos/pulumi-ui/internal/oci"
 	"github.com/trustos/pulumi-ui/internal/programs"
@@ -30,6 +31,10 @@ import (
 var frontendDist embed.FS
 
 func main() {
+	// Application log buffer — captures the last 2000 entries for the UI log viewer.
+	logBuf := logbuffer.New(2000)
+	log.SetOutput(logBuf.MultiWriter(os.Stderr))
+
 	// The OCI v4 provider schema contains ArrayType/MapType entries with a nil
 	// ElementType that causes a nil-pointer SIGSEGV inside pulumi-yaml's
 	// DisplayTypeWithAdhock function. Setting this env var at process startup
@@ -129,6 +134,7 @@ func main() {
 	// HTTP handler
 	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customPrograms, eng, registry, connStore)
 	h.MeshManager = meshMgr
+	h.LogBuffer = logBuf
 
 	// Embedded frontend — serve from the embed.FS sub-tree
 	sub, err := fs.Sub(frontendDist, "frontend/dist")

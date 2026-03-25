@@ -57,7 +57,7 @@ Both pulumi-ui and the agent embed [Nebula](https://github.com/slackhq/nebula) (
 1. **Stack creation** (`internal/api/stacks.go`): pulumi-ui generates a per-stack Nebula CA and issues two certificates — a **UI cert** (`.1` address, group "server") and a **dedicated agent cert** (`.2` address, group "agent"). A `crypto/rand` 32-byte hex **auth token** is also generated. All are stored in `stack_connections`. PKI generation is triggered for both `ApplicationProvider` programs and `AgentAccessProvider` programs (YAML with `meta.agentAccess: true`).
 2. **Infrastructure deploys**: The agent cert, CA cert, and auth token are injected into cloud-init via multipart MIME composition. The agent bootstrap script installs the Nebula binary from GitHub releases, configures `nebula.service` (systemd), and starts Nebula on port 41820.
 3. **Post-deploy discovery** (`internal/engine/engine.go`): After successful `Up`, the engine scans Pulumi stack outputs for IP patterns and stores the public/NLB IP in `agent_real_ip`. This IP is used in Nebula's `static_host_map` for direct tunnel establishment.
-4. **On-demand tunnels** (`internal/mesh/mesh.go`): `mesh.Manager` creates userspace Nebula tunnels per stack using the gvisor-based `service.Service` — no TUN device, no root privileges. Tunnels are cached with a 5-minute idle timeout and reaped by a background goroutine.
+4. **On-demand tunnels** (`internal/mesh/mesh.go`): `mesh.Manager` creates userspace Nebula tunnels per stack using the gvisor-based `service.Service` — no TUN device, no root privileges. Tunnels are cached with a 5-minute idle timeout and reaped by a background goroutine. `Tunnel.Close()` calls only `svc.Close()` — `ctrl.Stop()` is explicitly avoided because Nebula's main loop calls `os.Exit(0)` after shutdown, which would terminate the server process.
 5. **Agent proxy** (`internal/api/agent_proxy.go`): All agent communication routes through the mesh — `GET /health`, `/services`, `POST /exec`, `/upload`, and `GET /shell` (WebSocket terminal with PTY). The proxy uses `tunnel.HTTPClient()` for HTTP requests and `tunnel.Dial()` for WebSocket connections.
 
 **Security layers:**
@@ -649,6 +649,7 @@ Programs without a catalog omit the `applications` field (or return an empty arr
 3. **Per-stack secure token** — `crypto/rand` 32-byte hex token stored in `stack_connections`
 4. **Agent binary endpoint** — `GET /api/agent/binary/{os}/{arch}` serves cross-compiled binaries from `dist/`
 5. **Migration 012** — adds `agent_cert`, `agent_key`, `agent_token`, `agent_real_ip` columns
+6. **Host firewall hardening** — `setup_host_firewall()` added to `agent_bootstrap.sh`: stops `netfilter-persistent` (Oracle Cloud Ubuntu ships with it applying a catch-all `INPUT REJECT`), opens UDP 41820 (Nebula underlay) and `nebula1` interface (Nebula overlay TCP) with idempotent `iptables -C`/`-I` rules. `ExecStartPre` in `nebula.service` re-applies both rules on every reboot, surviving Docker iptables flushes.
 
 ### Phase 2 — Nebula Mesh ✓ DONE
 
@@ -656,11 +657,14 @@ Programs without a catalog omit the `applications` field (or return an empty arr
 2. **Embedded Nebula in server** — `internal/mesh/` uses Nebula's gvisor-based userspace service. On-demand tunnels per stack, cached with 5-minute idle timeout.
 3. **Post-deploy discovery** — after successful `Up`, engine scans Pulumi outputs for IP patterns and stores in `agent_real_ip`
 4. **Agent proxy layer** — all agent communication routes through Nebula: health, services, exec, upload
+5. **Tunnel lifecycle fix** — `Tunnel.Close()` calls only `svc.Close()` (not `ctrl.Stop()`). Nebula's `ctrl.Stop()` signals the main loop which calls `os.Exit(0)` after logging "Goodbye" — this would terminate the server process. The `service.Service` wrapper handles full lifecycle in userspace mode. Panic recovery added to `Close()` for additional safety.
+6. **Connected status tracking** — `AgentHealth` handler calls `UpdateAgentConnected` on the first successful health check, storing the agent's Nebula VPN IP. This enables the UI to show "Connected" and the mesh IP.
 
 ### Phase 3 — Interactive Web Terminal ✓ DONE
 
 1. **Agent `/shell` endpoint** — WebSocket with PTY allocation (using `github.com/creack/pty` and `github.com/gorilla/websocket`). Supports resize messages.
 2. **WebSocket proxy** — `GET /api/stacks/{name}/agent/shell` proxies browser WebSocket through Nebula tunnel to agent
+3. **Dial timeout** — `AgentShell` uses a 10-second context deadline on the agent WebSocket dial. Without this, a failed/unreachable agent would leave the goroutine hanging indefinitely. On timeout the browser receives a text error frame before the connection closes.
 
 ### Phase 4 (Future)
 

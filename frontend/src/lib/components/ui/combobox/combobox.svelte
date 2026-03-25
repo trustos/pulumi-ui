@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { Combobox as ComboboxPrimitive } from 'bits-ui';
   import { Check, ChevronsUpDown } from 'lucide-svelte';
   import { cn } from '$lib/utils';
+  import { inputTextWhenClosed } from './combobox-input-sync';
 
   type Item = {
     value: string;
@@ -16,28 +18,39 @@
     placeholder = 'Select...',
     emptyText = 'No results found.',
     class: className = '',
+    inputId = undefined as string | undefined,
+    inputName = undefined as string | undefined,
   }: {
     items: Item[];
     value?: string;
     placeholder?: string;
     emptyText?: string;
     class?: string;
+    /** Stable id for label[for] and to avoid browser autofill heuristics. */
+    inputId?: string;
+    inputName?: string;
   } = $props();
 
   let open = $state(false);
 
-  const selectedLabel = $derived(items.find(i => i.value === value)?.label ?? '');
-
-  let inputValue = $state(value ?? '');
+  let inputValue = $state(untrack(() => inputTextWhenClosed(value, items)));
 
   // Keep the input text in sync whenever the dropdown closes, the selected
   // value changes, or items arrive asynchronously after a default was set.
+  // Track value/items explicitly so external clears (e.g. form reset) always
+  // refresh the visible text. bits-ui clears the input on deselect only when
+  // clearOnDeselect is true (see combobox-input.svelte).
   $effect(() => {
-    if (!open) inputValue = selectedLabel || value;
+    void value;
+    void items;
+    if (open) return;
+    inputValue = inputTextWhenClosed(value, items);
   });
 
+  const closedDisplayText = $derived(inputTextWhenClosed(value, items));
+
   const filtered = $derived(
-    inputValue === '' || inputValue === selectedLabel
+    inputValue === '' || inputValue === closedDisplayText
       ? items
       : items.filter(
           item =>
@@ -56,6 +69,10 @@
 >
   <div class={cn('relative', className)}>
     <ComboboxPrimitive.Input
+      id={inputId}
+      name={inputName}
+      autocomplete="off"
+      clearOnDeselect={true}
       {placeholder}
       oninput={(e: Event) => (inputValue = (e.currentTarget as HTMLInputElement).value)}
       class="flex h-9 w-full items-center rounded-md border border-input bg-transparent px-3 py-2 pr-9 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"

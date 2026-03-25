@@ -48,6 +48,12 @@
           Programs
         </button>
         <button
+          onclick={() => navigate('/logs')}
+          class={path === '/logs' ? 'text-foreground font-medium' : 'text-muted-foreground hover:text-foreground'}
+        >
+          Logs
+        </button>
+        <button
           onclick={() => navigate('/settings')}
           class={path === '/settings' ? 'text-foreground font-medium' : 'text-muted-foreground hover:text-foreground'}
         >

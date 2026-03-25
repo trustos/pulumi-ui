@@ -190,17 +190,67 @@
     }
   }
 
+  function handleResourceExtras(e: CustomEvent) {
+    const { configFields: newCfg, variables: newVars, outputs: newOutputs, resources: newResources } = e.detail as {
+      configFields: { key: string; type: string; default?: string; description?: string }[];
+      variables: { name: string; yaml: string }[];
+      outputs: { key: string; value: string }[];
+      resources: import('$lib/types/program-graph').ResourceItem[];
+    };
+    const existingCfgKeys = new Set(graph.configFields.map(f => f.key));
+    const addedCfg = newCfg
+      .filter(f => !existingCfgKeys.has(f.key))
+      .map(f => ({
+        key: f.key,
+        type: (f.type === 'integer' ? 'integer' : 'string') as 'string' | 'integer',
+        ...(f.default ? { default: f.default } : {}),
+        ...(f.description ? { description: f.description } : {}),
+      }));
+
+    const existingVarNames = new Set((graph.variables ?? []).map(v => v.name));
+    const addedVars = newVars.filter(v => !existingVarNames.has(v.name));
+
+    const existingOutputKeys = new Set((graph.outputs ?? []).map(o => o.key));
+    const addedOutputs = newOutputs.filter(o => !existingOutputKeys.has(o.key));
+
+    // Collect existing resource names across all sections to avoid duplicates
+    const existingNames = new Set(
+      graph.sections.flatMap(s => s.items.filter(i => i.kind === 'resource').map(i => i.name))
+    );
+    const addedResources = (newResources ?? []).filter(r => !existingNames.has(r.name));
+
+    const hasChanges = addedCfg.length || addedVars.length || addedOutputs.length || addedResources.length;
+    if (hasChanges) {
+      const sections = addedResources.length
+        ? graph.sections.map((s, i) =>
+            i === 0 ? { ...s, items: [...addedResources.map(r => ({ ...r })), ...s.items] } : s
+          )
+        : graph.sections;
+
+      graph = {
+        ...graph,
+        configFields: [...graph.configFields, ...addedCfg],
+        variables: [...(graph.variables ?? []), ...addedVars],
+        outputs: [...(graph.outputs ?? []), ...addedOutputs],
+        sections,
+      };
+    }
+  }
+
   // Attach custom event listeners to the visual editor container
   let editorDiv = $state<HTMLElement | null>(null);
   $effect(() => {
     if (!editorDiv) return;
     const onPromote = (e: Event) => handlePromoteToConfig(e as CustomEvent);
     const onVariable = (e: Event) => handlePromoteToVariable(e as CustomEvent);
+    const onExtras = (e: Event) => handleResourceExtras(e as CustomEvent);
     editorDiv.addEventListener('promote-to-config', onPromote);
     editorDiv.addEventListener('promote-to-variable', onVariable);
+    editorDiv.addEventListener('resource-graph-extras', onExtras);
     return () => {
       editorDiv?.removeEventListener('promote-to-config', onPromote);
       editorDiv?.removeEventListener('promote-to-variable', onVariable);
+      editorDiv?.removeEventListener('resource-graph-extras', onExtras);
     };
   });
 
