@@ -3,7 +3,8 @@ DATA_DIR := ./dev-data
 ADDR     := :8080
 
 .PHONY: all build frontend backend backend-static build-agent dev run watch-frontend dev-watch \
-        docker docker-push deploy clean clean-all help test test-frontend lint test-all
+        docker docker-push deploy clean clean-all help test test-frontend lint test-all \
+        release _release-preflight
 
 # ── Default ───────────────────────────────────────────────────────────────────
 
@@ -116,6 +117,57 @@ clean:
 ## clean-all: clean + remove frontend node_modules
 clean-all: clean
 	rm -rf frontend/node_modules
+
+# ── Release ────────────────────────────────────────────────────────────────────
+#
+# Usage:
+#   make release VERSION=v0.2.0        Explicit version
+#   make release                        Auto patch-bump from latest git tag
+#
+# What it does:
+#   1. Determines version (from VERSION= or auto patch-bump)
+#   2. Patches AgentVersion in engine.go, agent_bootstrap.sh, and test
+#   3. Runs full test suite (Go + frontend + svelte-check)
+#   4. Commits, tags, and pushes to origin (triggers release workflow)
+
+CURRENT_TAG := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+
+ifndef VERSION
+  _MAJOR := $(shell echo $(CURRENT_TAG) | sed 's/^v//' | cut -d. -f1)
+  _MINOR := $(shell echo $(CURRENT_TAG) | sed 's/^v//' | cut -d. -f2)
+  _PATCH := $(shell echo $(CURRENT_TAG) | sed 's/^v//' | cut -d. -f3)
+  VERSION := v$(_MAJOR).$(_MINOR).$(shell echo $$(( $(_PATCH) + 1 )))
+endif
+
+_release-preflight:
+	@if [ -n "$$(git status --porcelain)" ]; then \
+	  echo "Error: working tree is dirty. Commit or stash changes first."; exit 1; \
+	fi
+	@echo "Releasing $(VERSION) (current: $(CURRENT_TAG))"
+
+## release: Bump agent version, test, commit, tag, and push
+release: _release-preflight
+	@# Patch version in source files
+	sed -i'' -e 's/AgentVersion:.*"v[0-9]*\.[0-9]*\.[0-9]*"/AgentVersion:     "$(VERSION)"/' \
+	  internal/engine/engine.go
+	sed -i'' -e 's/assert\.Equal(t, "v[0-9]*\.[0-9]*\.[0-9]*", vars\.AgentVersion)/assert.Equal(t, "$(VERSION)", vars.AgentVersion)/' \
+	  internal/engine/agent_vars_test.go
+	sed -i'' -e 's/AGENT_VERSION="v[0-9]*\.[0-9]*\.[0-9]*"/AGENT_VERSION="$(VERSION)"/' \
+	  internal/agentinject/agent_bootstrap.sh
+	@# Run full test suite
+	@echo "Running tests..."
+	go test ./internal/... -count=1
+	cd frontend && npx vitest run
+	cd frontend && npx svelte-check --threshold warning
+	@# Commit, tag, push
+	git add internal/engine/engine.go internal/engine/agent_vars_test.go internal/agentinject/agent_bootstrap.sh
+	git commit -m "release: $(VERSION)"
+	git tag $(VERSION)
+	git push origin main
+	git push origin $(VERSION)
+	@echo ""
+	@echo "Released $(VERSION) — watch the workflow at:"
+	@echo "  https://github.com/trustos/pulumi-ui/actions"
 
 ## help: List all available targets
 help:
