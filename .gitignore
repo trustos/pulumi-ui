@@ -16,8 +16,12 @@ frontend/node_modules/
 # ── Local dev data ────────────────────────────────────────────────────────────
 dev-data/
 
-# ── Secrets (encryption key lives in dev-data/, already ignored above) ────────
-# No .env files needed — key is auto-generated into the data directory.
+# ── Secrets ───────────────────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+mb-pro
 
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store

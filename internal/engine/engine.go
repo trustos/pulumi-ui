@@ -313,8 +313,7 @@ func (e *Engine) agentVarsForStack(stackName string) *agentinject.AgentVars {
 	hostCert := string(conn.NebulaAgentCert)
 	hostKey := string(conn.NebulaAgentKey)
 	if hostCert == "" {
-		hostCert = string(conn.NebulaUICert)
-		hostKey = string(conn.NebulaUIKey)
+		return nil // no agent certificate → skip agent injection
 	}
 
 	token := conn.AgentToken
@@ -323,17 +322,18 @@ func (e *Engine) agentVarsForStack(stackName string) *agentinject.AgentVars {
 	}
 
 	downloadURL := ""
-	if addr := os.Getenv("PULUMI_UI_ADDR"); addr != "" {
-		downloadURL = fmt.Sprintf("http://localhost%s/api/agent/binary/linux", addr)
+	if extURL := os.Getenv("PULUMI_UI_EXTERNAL_URL"); extURL != "" {
+		downloadURL = strings.TrimRight(extURL, "/") + "/api/agent/binary/linux"
 	}
 
 	return &agentinject.AgentVars{
-		NebulaCACert:    string(conn.NebulaCACert),
-		NebulaHostCert:  hostCert,
-		NebulaHostKey:   hostKey,
-		AgentVersion:    "v1.10.3",
+		NebulaCACert:     string(conn.NebulaCACert),
+		NebulaHostCert:   hostCert,
+		NebulaHostKey:    hostKey,
+		NebulaVersion:    "v1.10.3",
+		AgentVersion:     "v0.1.0",
 		AgentDownloadURL: downloadURL,
-		AgentToken:      token,
+		AgentToken:       token,
 	}
 }
 

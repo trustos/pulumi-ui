@@ -12,6 +12,7 @@ var testAgentVars = AgentVars{
 	NebulaCACert:     "test-ca-cert",
 	NebulaHostCert:   "test-host-cert",
 	NebulaHostKey:    "test-host-key",
+	NebulaVersion:    "v1.10.3",
 	AgentVersion:     "latest",
 	AgentDownloadURL: "",
 	AgentToken:       "test-token",

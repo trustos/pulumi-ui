@@ -49,8 +49,7 @@
   <Combobox
     {items}
     bind:value
-    placeholder="Select a shape..."
-    searchPlaceholder="Search shapes..."
+    placeholder="Search shapes..."
     emptyText="No shapes match your search."
   />
 {:else}

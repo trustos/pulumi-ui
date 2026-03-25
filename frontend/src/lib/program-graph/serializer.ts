@@ -125,6 +125,50 @@ export function graphToYaml(graph: ProgramGraph): string {
   return lines.join('\n');
 }
 
+/**
+ * Emit a list of properties, nesting dotted keys (e.g. "createVnicDetails.subnetId")
+ * as proper YAML sub-mappings instead of flat keys with literal dots.
+ * A flat key takes precedence over dotted children with the same parent.
+ */
+function emitProperties(lines: string[], props: {key: string; value: string}[], indent: string): void {
+  const flatKeys = new Set(props.filter(p => !p.key.includes('.')).map(p => p.key));
+
+  const dottedGroups = new Map<string, {child: string; value: string}[]>();
+  for (const p of props) {
+    const dotIdx = p.key.indexOf('.');
+    if (dotIdx < 0) continue;
+    const parent = p.key.substring(0, dotIdx);
+    if (flatKeys.has(parent)) continue;
+    if (!dottedGroups.has(parent)) dottedGroups.set(parent, []);
+    dottedGroups.get(parent)!.push({ child: p.key.substring(dotIdx + 1), value: p.value });
+  }
+
+  const emittedParents = new Set<string>();
+  for (const p of props) {
+    const dotIdx = p.key.indexOf('.');
+    if (dotIdx >= 0) {
+      const parent = p.key.substring(0, dotIdx);
+      if (flatKeys.has(parent)) continue;
+      if (emittedParents.has(parent)) continue;
+      emittedParents.add(parent);
+      const children = dottedGroups.get(parent)!;
+      lines.push(`${indent}${parent}:`);
+      for (const c of children) {
+        lines.push(`${indent}  ${c.child}: ${yamlValue(c.value)}`);
+      }
+    } else {
+      if (p.value.includes('\n')) {
+        lines.push(`${indent}${p.key}:`);
+        for (const rawLine of p.value.split('\n')) {
+          if (rawLine.trim()) lines.push(`${indent}  ${rawLine}`);
+        }
+      } else {
+        lines.push(`${indent}${p.key}: ${yamlValue(p.value)}`);
+      }
+    }
+  }
+}
+
 function serializeItem(lines: string[], item: ProgramItem, indent: string, loopVar?: string): void {
   if (item.kind === 'resource') {
     const rawName = item.name.trim() || 'unnamed-resource';
@@ -141,17 +185,7 @@ function serializeItem(lines: string[], item: ProgramItem, indent: string, loopV
     const filledProps = item.properties.filter(p => p.key.trim() && p.value.trim() !== '');
     if (filledProps.length > 0) {
       lines.push(`${indent}  properties:`);
-      for (const p of filledProps) {
-        if (p.value.includes('\n')) {
-          // Multi-line value (e.g. object-type property entered as YAML sub-mapping)
-          lines.push(`${indent}    ${p.key}:`);
-          for (const rawLine of p.value.split('\n')) {
-            if (rawLine.trim()) lines.push(`${indent}      ${rawLine}`);
-          }
-        } else {
-          lines.push(`${indent}    ${p.key}: ${yamlValue(p.value)}`);
-        }
-      }
+      emitProperties(lines, filledProps, `${indent}    `);
     }
     if (item.options?.dependsOn && item.options.dependsOn.length > 0) {
       lines.push(`${indent}  options:`);

@@ -10,12 +10,13 @@ var agentBootstrapScript string
 
 // AgentVars holds the values injected into agent_bootstrap.sh at deploy time.
 type AgentVars struct {
-	NebulaCACert    string
-	NebulaHostCert  string
-	NebulaHostKey   string
-	AgentVersion    string
+	NebulaCACert     string
+	NebulaHostCert   string
+	NebulaHostKey    string
+	NebulaVersion    string // Nebula binary version (e.g. "v1.10.3")
+	AgentVersion     string // pulumi-ui-agent binary version (e.g. "v0.1.0")
 	AgentDownloadURL string
-	AgentToken      string
+	AgentToken       string
 }
 
 // RenderAgentBootstrap replaces @@PLACEHOLDER@@ markers in the embedded
@@ -25,6 +26,7 @@ func RenderAgentBootstrap(vars AgentVars) []byte {
 	s = strings.ReplaceAll(s, "@@NEBULA_CA_CERT@@", vars.NebulaCACert)
 	s = strings.ReplaceAll(s, "@@NEBULA_HOST_CERT@@", vars.NebulaHostCert)
 	s = strings.ReplaceAll(s, "@@NEBULA_HOST_KEY@@", vars.NebulaHostKey)
+	s = strings.ReplaceAll(s, "@@NEBULA_VERSION@@", vars.NebulaVersion)
 	s = strings.ReplaceAll(s, "@@AGENT_VERSION@@", vars.AgentVersion)
 	s = strings.ReplaceAll(s, "@@AGENT_DOWNLOAD_URL@@", vars.AgentDownloadURL)
 	s = strings.ReplaceAll(s, "@@AGENT_TOKEN@@", vars.AgentToken)

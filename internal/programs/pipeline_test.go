@@ -92,6 +92,7 @@ resources:
 		NebulaCACert:   "test-ca",
 		NebulaHostCert: "test-cert",
 		NebulaHostKey:  "test-key",
+		NebulaVersion:  "v1.10.3",
 		AgentVersion:   "latest",
 		AgentToken:     "test-token",
 	}
@@ -189,6 +190,7 @@ resources:
 		NebulaCACert:   "test-ca",
 		NebulaHostCert: "test-cert",
 		NebulaHostKey:  "test-key",
+		NebulaVersion:  "v1.10.3",
 		AgentVersion:   "latest",
 		AgentToken:     "test-token",
 	}

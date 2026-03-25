@@ -6,6 +6,7 @@
     "lib": ["ESNext", "DOM"],
     "strict": true,
     "noEmit": true,
+    "skipLibCheck": true,
     "paths": {
       "$lib/*": ["./src/lib/*"]
     }

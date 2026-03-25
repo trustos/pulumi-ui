@@ -34,8 +34,8 @@ install_nebula() {
   echo "[agent-bootstrap] Installing Nebula mesh..."
   mkdir -p /etc/nebula
 
-  NEBULA_VERSION="@@AGENT_VERSION@@"
-  if [ "$NEBULA_VERSION" = "latest" ]; then
+  NEBULA_VERSION="@@NEBULA_VERSION@@"
+  if [ -z "$NEBULA_VERSION" ] || [ "$NEBULA_VERSION" = "latest" ]; then
     NEBULA_VERSION="v1.10.3"
   fi
 
@@ -124,8 +124,8 @@ install_agent() {
   AGENT_URL="@@AGENT_DOWNLOAD_URL@@"
   if [ -z "$AGENT_URL" ]; then
     AGENT_VERSION="@@AGENT_VERSION@@"
-    if [ "$AGENT_VERSION" = "latest" ]; then
-      AGENT_VERSION="v1.10.3"
+    if [ -z "$AGENT_VERSION" ] || [ "$AGENT_VERSION" = "latest" ]; then
+      AGENT_VERSION="v0.1.0"
     fi
     AGENT_URL="https://github.com/trustos/pulumi-ui/releases/download/${AGENT_VERSION}/agent_linux_${AGENT_ARCH}"
   fi

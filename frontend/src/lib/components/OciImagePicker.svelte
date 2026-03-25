@@ -56,8 +56,7 @@
   <Combobox
     {items}
     bind:value
-    placeholder="Select an image..."
-    searchPlaceholder="Search by name or OS (Ubuntu, Oracle Linux...)"
+    placeholder="Search by name or OS (Ubuntu, Oracle Linux...)"
     emptyText="No images match your search."
   />
 {:else}

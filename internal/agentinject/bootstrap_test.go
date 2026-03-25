@@ -11,6 +11,7 @@ func TestRenderAgentBootstrap_ReplacesPlaceholders(t *testing.T) {
 		NebulaCACert:     "ca-cert-data",
 		NebulaHostCert:   "host-cert-data",
 		NebulaHostKey:    "host-key-data",
+		NebulaVersion:    "v1.10.3",
 		AgentVersion:     "v1.2.3",
 		AgentDownloadURL: "https://example.com/agent",
 		AgentToken:       "secret-token-123",
@@ -21,6 +22,7 @@ func TestRenderAgentBootstrap_ReplacesPlaceholders(t *testing.T) {
 	assert.Contains(t, result, "ca-cert-data")
 	assert.Contains(t, result, "host-cert-data")
 	assert.Contains(t, result, "host-key-data")
+	assert.Contains(t, result, "v1.10.3")
 	assert.Contains(t, result, "v1.2.3")
 	assert.Contains(t, result, "https://example.com/agent")
 	assert.Contains(t, result, "secret-token-123")
@@ -28,6 +30,7 @@ func TestRenderAgentBootstrap_ReplacesPlaceholders(t *testing.T) {
 	assert.NotContains(t, result, "@@NEBULA_CA_CERT@@")
 	assert.NotContains(t, result, "@@NEBULA_HOST_CERT@@")
 	assert.NotContains(t, result, "@@NEBULA_HOST_KEY@@")
+	assert.NotContains(t, result, "@@NEBULA_VERSION@@")
 	assert.NotContains(t, result, "@@AGENT_VERSION@@")
 	assert.NotContains(t, result, "@@AGENT_DOWNLOAD_URL@@")
 	assert.NotContains(t, result, "@@AGENT_TOKEN@@")
@@ -39,7 +42,7 @@ func TestRenderAgentBootstrap_ContainsMarker(t *testing.T) {
 }
 
 func TestRenderAgentBootstrap_InstallsNebulaBinary(t *testing.T) {
-	result := string(RenderAgentBootstrap(AgentVars{AgentVersion: "v1.10.3"}))
+	result := string(RenderAgentBootstrap(AgentVars{NebulaVersion: "v1.10.3"}))
 	assert.Contains(t, result, "nebula-linux-")
 	assert.Contains(t, result, "tar xz -C /usr/local/bin nebula nebula-cert")
 	assert.Contains(t, result, "chmod +x /usr/local/bin/nebula")
