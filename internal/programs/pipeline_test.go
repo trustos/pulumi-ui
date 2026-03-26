@@ -283,10 +283,13 @@ resources:
       shape: VM.Standard.A1.Flex
       createVnicDetails:
         subnetId: {{ .Config.subnetId }}
+
+outputs:
+  instance-0-publicIp: ${my-instance.publicIp}
 `
 	assert.True(t, ParseAgentAccess(yamlTemplate))
 
-	// Validation should pass (has createVnicDetails.subnetId)
+	// Validation should pass (has createVnicDetails.subnetId + instance-0-publicIp output)
 	errs := ValidateProgram(yamlTemplate)
 	for _, e := range errs {
 		if e.Level == LevelAgentAccess {

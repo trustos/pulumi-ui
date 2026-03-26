@@ -66,9 +66,10 @@ func ValidateProgram(yamlBody string) []ValidationError {
 	// Level 6 — variable reference integrity (needs rendered body).
 	errs = append(errs, validateVariableReferences(rendered)...)
 
-	// Level 7 — agent access networking context (needs rendered body + meta).
+	// Level 7 — agent access networking context + required outputs (needs rendered body + meta).
 	if ParseAgentAccess(yamlBody) {
 		errs = append(errs, validateAgentAccessContext(rendered)...)
+		errs = append(errs, validateAgentAccessOutputs(rendered)...)
 	}
 
 	return errs
@@ -435,6 +436,60 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 	}
 
 	return nil
+}
+
+// validateAgentAccessOutputs checks that at least one IP output is present so
+// the engine can populate stack_node_certs.agent_real_ip after deploy.
+// The engine scans instance-{i}-publicIp sequentially, falling back to a set
+// of legacy single-agent key names (instancePublicIp, publicIp, etc.).
+// Returns a Level 7 warning when agentAccess is enabled, compute resources
+// exist, and no recognised IP output key is defined.
+func validateAgentAccessOutputs(rendered string) []ValidationError {
+	var doc struct {
+		Resources map[string]struct {
+			Type string `yaml:"type"`
+		} `yaml:"resources"`
+		Outputs map[string]interface{} `yaml:"outputs"`
+	}
+	if err := yaml.Unmarshal([]byte(rendered), &doc); err != nil {
+		return nil
+	}
+
+	hasCompute := false
+	for _, res := range doc.Resources {
+		if isComputeType(res.Type) {
+			hasCompute = true
+			break
+		}
+	}
+	if !hasCompute {
+		return nil
+	}
+
+	legacyKeys := []string{
+		"instancePublicIp", "instancePublicIP",
+		"nlbPublicIp", "nlbPublicIP",
+		"publicIp", "publicIP",
+		"serverPublicIp", "serverPublicIP",
+	}
+	instanceOutputRe := regexp.MustCompile(`^instance-\d+-publicIp$`)
+
+	for _, key := range legacyKeys {
+		if _, ok := doc.Outputs[key]; ok {
+			return nil
+		}
+	}
+	for key := range doc.Outputs {
+		if instanceOutputRe.MatchString(key) {
+			return nil
+		}
+	}
+
+	return []ValidationError{{
+		Level:   LevelAgentAccess,
+		Field:   "outputs",
+		Message: "agentAccess is enabled but no instance IP outputs are defined — add instance-0-publicIp (and instance-N-publicIp for each additional node) to outputs so the engine can discover agent addresses after deploy",
+	}}
 }
 
 func isComputeType(t string) bool {

@@ -9,7 +9,7 @@
   import { insertAgentAccess, removeAgentAccess } from '$lib/program-graph/agent-access';
   import { scaffoldNetworkingGraph, scaffoldNetworkingYaml, hasNetworkingResources } from '$lib/program-graph/scaffold-networking';
   import { propagateRename, propagateRenameYaml } from '$lib/program-graph/rename-resource';
-  import { collectAllResources } from '$lib/program-graph/collect-resources';
+  import { collectAllResources, getMissingAgentOutputs, INSTANCE_TYPE as _INSTANCE_TYPE } from '$lib/program-graph/collect-resources';
   import { getGraphExtras } from '$lib/program-graph/resource-defaults';
   import type { ProgramGraph, ProgramSection } from '$lib/types/program-graph';
   import type { ValidationError } from '$lib/types';
@@ -224,7 +224,7 @@
   }
 
   // ── Networking warning ────────────────────────────────────────────────────
-  const INSTANCE_TYPE = 'oci:Core/instance:Instance';
+  const INSTANCE_TYPE = _INSTANCE_TYPE;
   const NETWORKING_RESOURCE_NAMES = ['vcn', 'igw', 'route-table', 'subnet'];
 
   const hasInstanceResource = $derived(
@@ -234,6 +234,24 @@
     NETWORKING_RESOURCE_NAMES.some(n => allProgramResourceNames.includes(n))
   );
   const showNetworkingWarning = $derived(hasInstanceResource && !hasRecipeNetworking);
+
+  // ── Agent outputs warning ─────────────────────────────────────────────────
+  // When agentAccess is on, every compute instance needs a corresponding
+  // instance-{i}-publicIp output so the engine can discover IPs after deploy.
+  const instanceResources = $derived(
+    allProgramResources.filter(r => r.type === INSTANCE_TYPE)
+  );
+  const missingAgentOutputs = $derived(
+    agentAccess && instanceResources.length > 0
+      ? getMissingAgentOutputs(instanceResources, graph.outputs ?? [])
+      : []
+  );
+  const showAgentOutputsWarning = $derived(missingAgentOutputs.length > 0);
+
+  function addAgentOutputs() {
+    if (missingAgentOutputs.length === 0) return;
+    graph = { ...graph, outputs: [...(graph.outputs ?? []), ...missingAgentOutputs] };
+  }
 
   function addNetworkingForInstance() {
     const extras = getGraphExtras(INSTANCE_TYPE, allProgramResourceNames);
@@ -611,6 +629,13 @@
       }
     }
 
+    // Block save when Agent Connect is on but IP outputs are missing (visual mode).
+    // In YAML mode the backend validator catches this at Level 7.
+    if (mode === 'visual' && showAgentOutputsWarning) {
+      saveError = 'Agent Connect requires IP outputs for each instance. Click "Add Outputs" to fix.';
+      return;
+    }
+
     // Get current YAML — serialize from graph if in visual mode
     let yaml = mode === 'yaml' ? yamlText : graphToYaml({
       ...graph,
@@ -701,10 +726,10 @@
     </Tooltip.Root>
     <Tooltip.Root>
       <Tooltip.Trigger
-        class="h-8 px-3 text-xs rounded border shrink-0 inline-flex items-center gap-1.5 {agentAccess ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-input hover:text-foreground'}"
+        class="h-8 px-3 text-xs rounded border shrink-0 inline-flex items-center gap-1.5 {agentAccess ? (showAgentOutputsWarning ? 'bg-warning/15 text-warning-foreground border-warning' : 'bg-primary text-primary-foreground border-primary') : 'bg-background text-muted-foreground border-input hover:text-foreground'}"
         onclick={toggleAgentAccess}
-      ><span class="inline-block w-1.5 h-1.5 rounded-full {agentAccess ? 'bg-primary-foreground' : 'bg-muted-foreground/50'}"></span>Agent Connect</Tooltip.Trigger>
-      <Tooltip.Content>Toggle automatic agent bootstrap + networking injection. When ON, the engine injects Nebula mesh, agent, NSG rules, and NLB resources at deploy time.</Tooltip.Content>
+      ><span class="inline-block w-1.5 h-1.5 rounded-full {agentAccess ? (showAgentOutputsWarning ? 'bg-warning-foreground' : 'bg-primary-foreground') : 'bg-muted-foreground/50'}"></span>Agent Connect</Tooltip.Trigger>
+      <Tooltip.Content>{showAgentOutputsWarning ? 'Agent Connect is on but IP outputs are missing — see warning below.' : 'Toggle automatic agent bootstrap + networking injection. When ON, the engine injects Nebula mesh, agent, NSG rules, and NLB resources at deploy time.'}</Tooltip.Content>
     </Tooltip.Root>
     <div class="flex items-center gap-2 shrink-0">
       {#if saveError}
@@ -765,10 +790,28 @@
   {/if}
 
   <!-- Agent access info -->
-  {#if agentAccess}
+  {#if agentAccess && !showAgentOutputsWarning}
     <Alert variant="info" class="rounded-none border-x-0 border-t-0 text-xs">
       <AlertDescription class="text-xs">
         <strong>Agent Connect</strong> — at deploy time, the engine will inject a secure Nebula mesh agent, NSG rules, and a Network Load Balancer onto each compute instance. No manual setup needed.
+      </AlertDescription>
+    </Alert>
+  {/if}
+
+  <!-- Agent outputs missing warning -->
+  {#if showAgentOutputsWarning}
+    <Alert variant="warning" class="rounded-none border-x-0 border-t-0">
+      <AlertDescription class="text-xs">
+        <div class="flex items-center gap-3">
+          <span>
+            <strong>Agent Connect</strong> requires an IP output for each instance so the engine can establish the Nebula mesh after deploy. Missing: <span class="font-mono">{missingAgentOutputs.map(o => o.key).join(', ')}</span>.
+          </span>
+          {#if mode === 'visual'}
+            <Button variant="outline" size="sm" class="h-7 text-[11px] shrink-0" onclick={addAgentOutputs}>
+              Add Outputs
+            </Button>
+          {/if}
+        </div>
       </AlertDescription>
     </Alert>
   {/if}

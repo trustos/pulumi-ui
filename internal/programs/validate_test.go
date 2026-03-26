@@ -1,6 +1,7 @@
 package programs
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -323,6 +324,9 @@ resources:
     properties:
       compartmentId: ocid1.compartment
       shape: VM.Standard.A1.Flex
+
+outputs:
+  instance-0-publicIp: ${my-instance.publicIp}
 `
 	errs := ValidateProgram(yaml)
 	for _, e := range errs {
@@ -347,6 +351,9 @@ resources:
       shape: VM.Standard.A1.Flex
       createVnicDetails:
         subnetId: ocid1.subnet.existing
+
+outputs:
+  instance-0-publicIp: ${my-instance.publicIp}
 `
 	errs := ValidateProgram(yaml)
 	for _, e := range errs {
@@ -401,9 +408,11 @@ resources:
 	}
 	assert.Equal(t, 0, blocking, "should have no blocking errors")
 	assert.Greater(t, warnings, 0, "should have at least one Level 7 warning")
+	hasNetworkingWarning := false
 	for _, e := range errs {
-		if e.Level == LevelAgentAccess {
-			assert.Contains(t, e.Message, "no networking context")
+		if e.Level == LevelAgentAccess && strings.Contains(e.Message, "no networking context") {
+			hasNetworkingWarning = true
 		}
 	}
+	assert.True(t, hasNetworkingWarning, "should include 'no networking context' warning")
 }
