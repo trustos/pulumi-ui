@@ -4,6 +4,73 @@ import { graphToYaml } from './serializer';
 import { yamlToGraph } from './parser';
 import type { ProgramGraph } from '$lib/types/program-graph';
 
+// ── loop config ref rewriting ────────────────────────────────────────────────
+
+describe('graphToYaml — loop config ref rewriting', () => {
+  it('rewrites .Config.* to $.Config.* inside a range loop', () => {
+    const graph: ProgramGraph = {
+      metadata: { name: 'multi-instance', displayName: 'Multi', description: '' },
+      configFields: [{ key: 'compartmentId', type: 'string', default: '' }],
+      variables: [],
+      sections: [{
+        id: 'main',
+        label: 'Resources',
+        items: [{
+          kind: 'loop',
+          variable: '$i',
+          source: { type: 'list', values: ['1', '2'] },
+          serialized: false,
+          items: [{
+            kind: 'resource',
+            name: 'instance',
+            resourceType: 'oci:Core/instance:Instance',
+            properties: [
+              { key: 'compartmentId', value: '{{ .Config.compartmentId }}' },
+              { key: 'shape', value: '"{{ .Config.shape }}"' },
+            ],
+          }],
+        }],
+      }],
+      outputs: [],
+    };
+
+    const yaml = graphToYaml(graph);
+    // Inside the range block, .Config.* must be $.Config.*
+    expect(yaml).toContain('{{ $.Config.compartmentId }}');
+    expect(yaml).toContain('"{{ $.Config.shape }}"');
+    // Plain .Config. must NOT appear inside the range block
+    const rangeStart = yaml.indexOf('{{- range');
+    const rangeEnd = yaml.indexOf('{{- end }}');
+    const insideRange = yaml.slice(rangeStart, rangeEnd);
+    expect(insideRange).not.toContain('{{ .Config.');
+  });
+
+  it('does not rewrite .Config.* outside a loop', () => {
+    const graph: ProgramGraph = {
+      metadata: { name: 'single', displayName: 'Single', description: '' },
+      configFields: [],
+      variables: [],
+      sections: [{
+        id: 'main',
+        label: 'Resources',
+        items: [{
+          kind: 'resource',
+          name: 'instance',
+          resourceType: 'oci:Core/instance:Instance',
+          properties: [
+            { key: 'compartmentId', value: '{{ .Config.compartmentId }}' },
+          ],
+        }],
+      }],
+      outputs: [],
+    };
+
+    const yaml = graphToYaml(graph);
+    expect(yaml).toContain('{{ .Config.compartmentId }}');
+    expect(yaml).not.toContain('{{ $.Config.compartmentId }}');
+  });
+});
+
 // ── getResourceDefaults ─────────────────────────────────────────────────────
 
 describe('getResourceDefaults', () => {
@@ -11,18 +78,18 @@ describe('getResourceDefaults', () => {
 
   it('returns enriched properties for Instance', () => {
     const props = getResourceDefaults(INSTANCE_TYPE, ['availabilityDomain', 'compartmentId']);
-    expect(props.length).toBe(9);
+    expect(props.length).toBe(8);
 
     const byKey = new Map(props.map(p => [p.key, p.value]));
     expect(byKey.get('compartmentId')).toBe('{{ .Config.compartmentId }}');
-    expect(byKey.get('availabilityDomain')).toBe('${availabilityDomains[0].name}');
+    expect(byKey.get('availabilityDomain')).toBe('@auto');
     expect(byKey.get('shape')).toBe('"{{ .Config.shape }}"');
     expect(byKey.get('displayName')).toBe('"instance"');
     expect(byKey.get('sourceDetails')).toContain('sourceType: "image"');
     expect(byKey.get('shapeConfig')).toContain('ocpus');
     expect(byKey.get('metadata')).toContain('ssh_authorized_keys');
-    expect(byKey.get('createVnicDetails.subnetId')).toBe('${subnet.id}');
-    expect(byKey.get('createVnicDetails.assignPublicIp')).toBe('true');
+    expect(byKey.get('createVnicDetails')).toContain('subnetId');
+    expect(byKey.get('createVnicDetails')).toContain('assignPublicIp');
   });
 
   it('does not duplicate keys already in the recipe', () => {
@@ -53,6 +120,18 @@ describe('getResourceDefaults', () => {
     const props = getResourceDefaults('oci:SomeUnknown/thing:Thing', []);
     expect(props).toEqual([]);
   });
+
+  it('uses ${compartment.id} ref when compartment resource already exists', () => {
+    const props = getResourceDefaults(INSTANCE_TYPE, ['availabilityDomain', 'compartmentId'], ['compartment']);
+    const byKey = new Map(props.map(p => [p.key, p.value]));
+    expect(byKey.get('compartmentId')).toBe('${compartment.id}');
+  });
+
+  it('uses {{ .Config.compartmentId }} template when compartment does not exist', () => {
+    const props = getResourceDefaults(INSTANCE_TYPE, ['availabilityDomain', 'compartmentId']);
+    const byKey = new Map(props.map(p => [p.key, p.value]));
+    expect(byKey.get('compartmentId')).toBe('{{ .Config.compartmentId }}');
+  });
 });
 
 // ── getGraphExtras ──────────────────────────────────────────────────────────
@@ -61,7 +140,7 @@ describe('getGraphExtras', () => {
   it('returns config fields, variable, outputs and dependent resources for Instance', () => {
     const extras = getGraphExtras('oci:Core/instance:Instance');
     expect(extras).not.toBeNull();
-    expect(extras!.configFields.length).toBe(6);
+    expect(extras!.configFields.length).toBe(7);
 
     const keys = extras!.configFields.map(f => f.key);
     expect(keys).toContain('compartmentId');
@@ -90,6 +169,56 @@ describe('getGraphExtras', () => {
   it('returns null for unknown types', () => {
     expect(getGraphExtras('oci:Core/vcn:Vcn')).toBeNull();
     expect(getGraphExtras('oci:SomeUnknown/thing:Thing')).toBeNull();
+  });
+
+  it('omits compartmentId config field when compartment resource already exists', () => {
+    const extras = getGraphExtras('oci:Core/instance:Instance', ['compartment']);
+    expect(extras).not.toBeNull();
+    const keys = extras!.configFields.map(f => f.key);
+    expect(keys).not.toContain('compartmentId');
+  });
+
+  it('omits compartment dependent resource when compartment already exists', () => {
+    const extras = getGraphExtras('oci:Core/instance:Instance', ['compartment']);
+    expect(extras).not.toBeNull();
+    const resNames = extras!.resources.map(r => r.name);
+    // compartment resource not re-added; networking resources still present
+    expect(resNames).not.toContain('compartment');
+    expect(resNames).toContain('vcn');
+    expect(resNames).toContain('subnet');
+  });
+});
+
+// ── Deferred networking add (addNetworkingForInstance pattern) ───────────────
+//
+// ProgramEditor does NOT auto-add networking when an Instance is dropped.
+// Instead it shows a warning and lets the user click "Add Networking".
+// addNetworkingForInstance calls getGraphExtras, then filters out resources
+// already present in the graph before prepending.
+
+describe('getGraphExtras — deferred networking add', () => {
+  it('returns all 4 networking resources regardless of whether some already exist (caller filters)', () => {
+    // getGraphExtras only filters out 'compartment'; networking dedup is the caller's job
+    const extras = getGraphExtras('oci:Core/instance:Instance', ['vcn'])!;
+    const resNames = extras.resources.map(r => r.name);
+    expect(resNames).toContain('vcn');
+    expect(resNames).toContain('igw');
+    expect(resNames).toContain('route-table');
+    expect(resNames).toContain('subnet');
+  });
+
+  it('caller filter skips resources already in the graph', () => {
+    const extras = getGraphExtras('oci:Core/instance:Instance')!;
+    const existingNames = new Set(['vcn', 'igw']);
+    const toAdd = extras.resources.filter(r => !existingNames.has(r.name));
+    expect(toAdd.map(r => r.name)).toEqual(['route-table', 'subnet']);
+  });
+
+  it('caller filter returns empty when all networking already present', () => {
+    const extras = getGraphExtras('oci:Core/instance:Instance')!;
+    const existingNames = new Set(['vcn', 'igw', 'route-table', 'subnet']);
+    const toAdd = extras.resources.filter(r => !existingNames.has(r.name));
+    expect(toAdd).toHaveLength(0);
   });
 });
 
@@ -192,10 +321,10 @@ describe('Instance defaults + graphToYaml', () => {
 
     const yaml = graphToYaml(graph);
 
-    // createVnicDetails should be a nested mapping, not flat dotted keys
+    // createVnicDetails should be an inline mapping (recipe uses inline object format)
     expect(yaml).toContain('createVnicDetails:');
-    expect(yaml).toMatch(/createVnicDetails:\s*\n\s+subnetId:/);
-    expect(yaml).toMatch(/assignPublicIp:/);
+    expect(yaml).toContain('subnetId: "${subnet.id}"');
+    expect(yaml).toMatch(/assignPublicIp: true/);
 
     // Other recipe properties should still be present
     expect(yaml).toContain('shape: "{{ .Config.shape }}"');

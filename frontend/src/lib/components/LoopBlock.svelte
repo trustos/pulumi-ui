@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { LoopItem, LoopSource, ResourceItem, ConditionalItem } from '$lib/types/program-graph';
   import type { ConfigFieldDef } from '$lib/types/program-graph';
   import ResourceCard from './ResourceCard.svelte';
@@ -19,6 +20,9 @@
       items: [],
     }),
     configFields = [] as ConfigFieldDef[],
+    allProgramResourceNames = [] as string[],
+    allResourceRefs = [] as { name: string; attrs: string[] }[],
+    variableNames = [] as string[],
     onRemove,
     onMoveUp,
     onMoveDown,
@@ -26,11 +30,38 @@
   }: {
     loop?: LoopItem;
     configFields?: ConfigFieldDef[];
+    allProgramResourceNames?: string[];
+    allResourceRefs?: { name: string; attrs: string[] }[];
+    variableNames?: string[];
     onRemove?: () => void;
     onMoveUp?: () => void;
     onMoveDown?: () => void;
     onRenameResource?: (oldName: string, newName: string) => void;
   } = $props();
+
+  // Local text for the list values input — driven by the user, not by state.
+  // Re-synced from state only when the source TYPE changes (e.g. switching to 'list' mode).
+  let listValuesText = $state(
+    loop?.source.type === 'list'
+      ? (loop.source as { type: 'list'; values: string[] }).values.join(' ')
+      : ''
+  );
+  // Track the previous source type as a plain variable (not reactive).
+  // The effect re-runs whenever loop?.source.type changes, but the body only
+  // executes when the TYPE actually changes (not when just the values change).
+  // This prevents the text from being overwritten while the user is typing.
+  let prevSourceType = loop?.source.type;
+  $effect(() => {
+    const type = loop?.source.type;
+    if (type !== prevSourceType) {
+      prevSourceType = type;
+      if (type === 'list') {
+        listValuesText = untrack(() =>
+          (loop?.source as { type: 'list'; values: string[] })?.values?.join(' ') ?? ''
+        );
+      }
+    }
+  });
 
   const sourceTypeLabels: Record<LoopSource['type'], string> = {
     'until-config': 'N times (from config field)',
@@ -189,8 +220,8 @@
         <div class="flex items-center gap-2 text-sm">
           <span class="text-muted-foreground text-xs">Values:</span>
           <Input
-            value={loop.source.values.join(' ')}
-            oninput={(e) => { if (loop) loop = { ...loop, source: { type: 'list', values: (e.currentTarget as HTMLInputElement).value.split(/\s+/).filter(Boolean) } }; }}
+            bind:value={listValuesText}
+            oninput={() => { if (loop) loop = { ...loop, source: { type: 'list', values: listValuesText.split(/\s+/).filter(Boolean) } }; }}
             class="h-7 text-xs font-mono"
             placeholder="80 443 8080"
           />
@@ -241,6 +272,8 @@
           <ResourceCard
             bind:resource={loop.items[i] as ResourceItem}
             allResourceNames={loopResourceNames}
+            {allResourceRefs}
+            {variableNames}
             {configFields}
             onRemove={() => removeNestedItem(i)}
             onMoveUp={i > 0 ? () => moveNestedItem(i, -1) : undefined}
@@ -251,6 +284,9 @@
           <LoopBlockSelf
             bind:loop={loop.items[i] as LoopItem}
             {configFields}
+            {allProgramResourceNames}
+            {allResourceRefs}
+            {variableNames}
             onRemove={() => removeNestedItem(i)}
             onMoveUp={i > 0 ? () => moveNestedItem(i, -1) : undefined}
             onMoveDown={i < loop.items.length - 1 ? () => moveNestedItem(i, 1) : undefined}
@@ -298,6 +334,7 @@
   <ResourceCatalog
     onSelect={addResourceToLoop}
     onClose={() => showCatalog = false}
+    existingResourceNames={allProgramResourceNames}
   />
 {/if}
 {/if}

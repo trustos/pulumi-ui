@@ -1,0 +1,129 @@
+name: dev-environment
+runtime: yaml
+description: "Single instance with SSH and outbound internet — remote dev box for VS Code, Gitpod-style workflows, or CI runners"
+
+meta:
+  displayName: Development Environment
+  agentAccess: true
+
+config:
+  compartmentName:
+    type: string
+    default: "my-dev"
+  imageId:
+    type: string
+    default: ""
+  sshPublicKey:
+    type: string
+    default: ""
+  shape:
+    type: string
+    default: "VM.Standard.A1.Flex"
+  ocpus:
+    type: string
+    default: "4"
+  memoryInGbs:
+    type: string
+    default: "24"
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+
+resources:
+  # --- section: networking ---
+  compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: "{{ .Config.compartmentName }}"
+      description: "Created by Pulumi"
+      enableDelete: "true"
+  vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${compartment.id}
+      cidrBlocks: ["10.0.0.0/16"]
+      displayName: "dev-vcn"
+      dnsLabel: "dev"
+    options:
+      dependsOn:
+        - ${compartment}
+  igw:
+    type: oci:Core/internetGateway:InternetGateway
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "igw"
+      enabled: "true"
+    options:
+      dependsOn:
+        - ${vcn}
+  route-table:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "dev-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
+    options:
+      dependsOn:
+        - ${igw}
+  nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "dev-nsg"
+    options:
+      dependsOn:
+        - ${vcn}
+  nsg-ssh:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${nsg.id}
+      direction: "INGRESS"
+      protocol: "6"
+      source: "0.0.0.0/0"
+      sourceType: "CIDR_BLOCK"
+      tcpOptions: { destinationPortRange: { min: 22, max: 22 } }
+    options:
+      dependsOn:
+        - ${nsg}
+  subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.1.0/24"
+      displayName: "dev-subnet"
+      dnsLabel: "devsub"
+      routeTableId: ${route-table.id}
+      prohibitPublicIpOnVnic: "false"
+    options:
+      dependsOn:
+        - ${route-table}
+  # --- section: compute ---
+  dev-box:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${compartment.id}
+      availabilityDomain: ${availabilityDomains[0].name}
+      shape: "{{ .Config.shape }}"
+      displayName: "dev-box"
+      sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
+      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: true, nsgIds: ["${nsg.id}"] }
+      metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
+      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+    options:
+      dependsOn:
+        - ${subnet}
+        - ${nsg-ssh}
+
+outputs:
+  devBoxIp: ${dev-box.publicIp}
+  sshCommand: "ssh opc@${dev-box.publicIp}"

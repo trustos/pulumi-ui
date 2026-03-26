@@ -10,11 +10,18 @@ import (
 // detects compute resource types via ComputeResources, and composes their
 // user_data with the agent bootstrap via multipart MIME.
 //
+// agentVarsList provides per-node bootstrap configuration. The i-th compute
+// resource (in document order) uses agentVarsList[i]; if i ≥ len(agentVarsList)
+// the last entry is reused (fallback / single-node mode). Pass a single-element
+// slice for the legacy single-agent behaviour.
+//
 // Resources that already contain the agent bootstrap marker are skipped.
 // Resources without any existing user_data get the agent bootstrap as their
 // sole user_data. The modified YAML string is returned.
-func InjectIntoYAML(yamlBody string, agentVars AgentVars) (string, error) {
-	agentScript := RenderAgentBootstrap(agentVars)
+func InjectIntoYAML(yamlBody string, agentVarsList []AgentVars) (string, error) {
+	if len(agentVarsList) == 0 {
+		return yamlBody, nil
+	}
 
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(yamlBody), &doc); err != nil {
@@ -35,6 +42,7 @@ func InjectIntoYAML(yamlBody string, agentVars AgentVars) (string, error) {
 	}
 
 	modified := false
+	computeIndex := 0
 	for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
 		valueNode := resourcesNode.Content[i+1]
 		if valueNode.Kind != yaml.MappingNode {
@@ -53,12 +61,21 @@ func InjectIntoYAML(yamlBody string, agentVars AgentVars) (string, error) {
 
 		propsNode := findMapValue(valueNode, "properties")
 		if propsNode == nil || propsNode.Kind != yaml.MappingNode {
+			computeIndex++
 			continue
 		}
+
+		// Pick the vars for this node; clamp to last entry for extra instances.
+		idx := computeIndex
+		if idx >= len(agentVarsList) {
+			idx = len(agentVarsList) - 1
+		}
+		agentScript := RenderAgentBootstrap(agentVarsList[idx])
 
 		if injectUserData(propsNode, udPath.PropertyPath, agentScript) {
 			modified = true
 		}
+		computeIndex++
 	}
 
 	if !modified {

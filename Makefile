@@ -55,16 +55,18 @@ watch-frontend:
 	cd frontend && npm run dev
 
 ## dev-watch: Build the Go binary, then run Go server + Vite HMR in parallel (Ctrl-C stops both)
+# Server runs in foreground so startup errors are always visible.
+# Vite runs in background; its PID is captured and killed on exit.
 dev-watch: backend
 	@mkdir -p $(DATA_DIR)/state
-	@echo "Starting Go server on $(ADDR) and Vite dev server on http://localhost:5173 ..."
-	@trap 'kill 0' INT TERM; \
+	@echo "Starting Vite HMR on http://localhost:5173 and Go server on $(ADDR) ..."
+	@cd frontend && npm run dev & \
+	 VITE_PID=$$!; \
+	 trap "kill $$VITE_PID 2>/dev/null; exit" INT TERM EXIT; \
 	 PULUMI_UI_DATA_DIR=$(DATA_DIR) \
 	 PULUMI_UI_STATE_DIR=$(DATA_DIR)/state \
 	 PULUMI_UI_ADDR=$(ADDR) \
-	 ./$(BINARY) & \
-	 cd frontend && npm run dev & \
-	 wait
+	 ./$(BINARY)
 
 # Internal guards
 _require-binary:

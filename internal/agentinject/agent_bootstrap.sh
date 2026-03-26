@@ -71,8 +71,13 @@ install_nebula() {
   fi
 
   echo "[agent-bootstrap] Downloading Nebula ${NEBULA_VERSION} for ${AGENT_ARCH}..."
-  curl -fsSL "https://github.com/slackhq/nebula/releases/download/${NEBULA_VERSION}/nebula-linux-${AGENT_ARCH}.tar.gz" \
-    | tar xz -C /usr/local/bin nebula nebula-cert
+  local nebula_tar
+  nebula_tar=$(mktemp)
+  curl -fsSL --retry 5 --retry-delay 5 --retry-connrefused \
+    "https://github.com/slackhq/nebula/releases/download/${NEBULA_VERSION}/nebula-linux-${AGENT_ARCH}.tar.gz" \
+    -o "$nebula_tar"
+  tar xz -C /usr/local/bin -f "$nebula_tar" nebula nebula-cert
+  rm -f "$nebula_tar"
   chmod +x /usr/local/bin/nebula /usr/local/bin/nebula-cert
 
   cat > /etc/nebula/ca.crt <<'NEBULA_CA'
@@ -165,7 +170,7 @@ install_agent() {
     AGENT_URL="https://github.com/trustos/pulumi-ui/releases/download/${AGENT_VERSION}/agent_linux_${AGENT_ARCH}"
   fi
 
-  curl -fsSL "$AGENT_URL" -o /usr/local/bin/pulumi-ui-agent
+  curl -fsSL --retry 5 --retry-delay 5 --retry-connrefused "$AGENT_URL" -o /usr/local/bin/pulumi-ui-agent
   chmod +x /usr/local/bin/pulumi-ui-agent
 
   mkdir -p /etc/pulumi-ui-agent
@@ -194,6 +199,28 @@ EOF
 }
 
 setup_host_firewall
+
+# --- DNS fallback ---
+# OCI's VCN DNS (169.254.169.254) sometimes cannot resolve GitHub's CDN domain
+# (release-assets.githubusercontent.com) even when the instance has internet access.
+# Append public resolvers ONLY if the VCN DNS can't resolve github.com.
+ensure_dns() {
+  local retries=5
+  local delay=3
+  for i in $(seq 1 $retries); do
+    if getent hosts github.com >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "[agent-bootstrap] DNS not ready (attempt $i/$retries), retrying in ${delay}s..."
+    sleep $delay
+  done
+  echo "[agent-bootstrap] Falling back to public DNS resolvers..."
+  # Prepend so public resolvers are tried first, keeping OCI metadata DNS as fallback
+  { echo "nameserver 8.8.8.8"; echo "nameserver 1.1.1.1"; cat /etc/resolv.conf; } > /tmp/resolv.conf.new
+  cp /tmp/resolv.conf.new /etc/resolv.conf
+}
+ensure_dns
+
 install_nebula
 install_agent
 echo "[agent-bootstrap] Complete."

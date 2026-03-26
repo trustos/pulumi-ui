@@ -1,0 +1,70 @@
+name: private-subnet
+runtime: yaml
+description: "VCN with a private subnet routed through a NAT gateway — outbound-only internet access"
+
+meta:
+  displayName: Private Network with NAT Gateway
+
+config:
+  compartmentName:
+    type: string
+    default: "my-compartment"
+  vcnCidr:
+    type: string
+    default: "10.0.0.0/16"
+
+resources:
+  # --- section: networking ---
+  compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: "{{ .Config.compartmentName }}"
+      description: "Created by Pulumi"
+      enableDelete: "true"
+  vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${compartment.id}
+      cidrBlocks: ["{{ .Config.vcnCidr }}"]
+      displayName: "vcn"
+      dnsLabel: "vcn"
+    options:
+      dependsOn:
+        - ${compartment}
+  nat-gw:
+    type: oci:Core/natGateway:NatGateway
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "nat-gw"
+    options:
+      dependsOn:
+        - ${vcn}
+  route-table:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "private-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${nat-gw.id}" }]
+    options:
+      dependsOn:
+        - ${nat-gw}
+  private-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.1.0/24"
+      displayName: "private-subnet"
+      dnsLabel: "private"
+      routeTableId: ${route-table.id}
+      prohibitPublicIpOnVnic: "true"
+    options:
+      dependsOn:
+        - ${route-table}
+
+outputs:
+  vcnId: ${vcn.id}
+  subnetId: ${private-subnet.id}

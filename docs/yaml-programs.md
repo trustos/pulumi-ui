@@ -146,6 +146,17 @@ meta:
 
 Fields not listed in any group appear at the bottom ungrouped.
 
+### Display Name (meta.displayName)
+
+Set `displayName` in the `meta:` block to give the program a human-readable title separate from its machine-friendly `name` identifier:
+
+```yaml
+meta:
+  displayName: My Production Cluster
+```
+
+The display name appears in the template gallery and program list. It survives full YAML roundtrips through the visual editor. If absent, the `name` field is used as the display name.
+
 ### Agent Access (meta.agentAccess)
 
 Set `agentAccess: true` in the `meta:` block to opt into automatic agent connectivity injection. You can also toggle this via the **Agent Connect** button in the program editor header (works in both visual and YAML modes):
@@ -668,13 +679,40 @@ variables:
       arguments:
         compartmentId: ${oci:tenancyOcid}
       return: availabilityDomains
+```
+
+#### Static index
+
+Use `${availabilityDomains[0].name}` for the first domain, `[1]` for the second, and so on.
+
+#### Round-robin in loops (adCount)
+
+For clusters where nodes should be distributed across availability domains, use `mod` to cycle the index:
+
+```yaml
+config:
+  nodeCount:
+    type: integer
+    default: "3"
+  adCount:
+    type: integer
+    default: "1"
+    description: "Number of availability domains to spread nodes across"
 
 resources:
-  my-instance:
+  {{- range $i := until (atoi $.Config.nodeCount) }}
+  node-{{ $i }}:
     type: oci:Core/instance:Instance
     properties:
-      availabilityDomain: ${availabilityDomains[0].name}
+      availabilityDomain: ${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}
+  {{- end }}
 ```
+
+Set `adCount: 3` (or however many ADs your region has) to spread nodes across all three domains. `adCount: 1` (the default) keeps all nodes in AD-1.
+
+#### Visual editor (@auto)
+
+In the visual editor, set `availabilityDomain` to the `@auto` value (shown as a chip labeled **availabilityDomains** with *auto assign* text). The editor assigns ordinal indices to standalone resources and generates the `mod` form inside loops. See `docs/visual-editor.md` for details.
 
 > `return: availabilityDomains` extracts the top-level array directly. Use `${availabilityDomains[0].name}` to access the first domain. Do not use array indexing inside the `return:` field — only top-level property names are accepted.
 
@@ -808,6 +846,7 @@ Two complete programs are available in the `docs/` directory:
 
 | File | Description |
 |---|---|
+| `frontend/src/lib/program-graph/templates/*.yaml` | 11 built-in template programs (VCN, subnets, single instance, HA pair, cluster, etc.) |
 | `docs/nomad-cluster-program.yaml` | v1 — short-form type aliases. Functional but does not benefit from schema autocomplete. |
 | `docs/nomad-cluster-v2-program.yaml` | v2 — canonical type names, 13 IAM policy statements, NLB NSG association, configurable backup retention, `getInstancePoolInstances` for NLB backend target IDs. |
 

@@ -30,6 +30,7 @@ type Handler struct {
 	Engine         *engine.Engine
 	Registry       *programs.ProgramRegistry
 	ConnStore      *db.StackConnectionStore
+	NodeCertStore  *db.NodeCertStore
 	MeshManager    *mesh.Manager
 	LogBuffer      *logbuffer.Buffer
 }

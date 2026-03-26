@@ -1,0 +1,130 @@
+name: load-balanced-cluster
+runtime: yaml
+description: "N instances behind a Network Load Balancer with health checks — deploy web apps, APIs, or microservices (inspired by Kubernetes Deployment + Service)"
+
+meta:
+  displayName: Load-Balanced Application Cluster
+  agentAccess: true
+
+config:
+  compartmentName:
+    type: string
+    default: "my-compartment"
+  nodeCount:
+    type: integer
+    default: "3"
+    description: "Number of backend instances"
+  imageId:
+    type: string
+    default: ""
+  sshPublicKey:
+    type: string
+    default: ""
+  shape:
+    type: string
+    default: "VM.Standard.A1.Flex"
+  ocpus:
+    type: string
+    default: "2"
+  memoryInGbs:
+    type: string
+    default: "12"
+  appPort:
+    type: string
+    default: "8080"
+    description: "TCP port the application listens on"
+  adCount:
+    type: integer
+    default: "1"
+    description: "Number of availability domains to round-robin across"
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+
+resources:
+  # --- section: networking ---
+  compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: "{{ .Config.compartmentName }}"
+      description: "Created by Pulumi"
+      enableDelete: "true"
+  vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${compartment.id}
+      cidrBlocks: ["10.0.0.0/16"]
+      displayName: "app-vcn"
+      dnsLabel: "appvcn"
+    options:
+      dependsOn:
+        - ${compartment}
+  igw:
+    type: oci:Core/internetGateway:InternetGateway
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "igw"
+      enabled: "true"
+    options:
+      dependsOn:
+        - ${vcn}
+  route-table:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "app-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
+    options:
+      dependsOn:
+        - ${igw}
+  subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.1.0/24"
+      displayName: "app-subnet"
+      dnsLabel: "app"
+      routeTableId: ${route-table.id}
+      prohibitPublicIpOnVnic: "false"
+    options:
+      dependsOn:
+        - ${route-table}
+  nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ${compartment.id}
+      displayName: "app-nlb"
+      subnetId: ${subnet.id}
+      isPrivate: "false"
+    options:
+      dependsOn:
+        - ${subnet}
+  # --- section: compute ---
+{{- range $i := until (atoi $.Config.nodeCount) }}
+  node-{{ $i }}:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${compartment.id}
+      availabilityDomain: ${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}
+      shape: "{{ $.Config.shape }}"
+      displayName: "node-{{ $i }}"
+      sourceDetails: { sourceType: "image", sourceId: "{{ $.Config.imageId }}" }
+      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: false }
+      metadata: { ssh_authorized_keys: "{{ $.Config.sshPublicKey }}" }
+      shapeConfig: { ocpus: {{ $.Config.ocpus }}, memoryInGbs: {{ $.Config.memoryInGbs }} }
+    options:
+      dependsOn:
+        - ${subnet}
+{{- end }}
+
+outputs:
+  nlbIp: ${nlb.ipAddresses[0].ipAddress}

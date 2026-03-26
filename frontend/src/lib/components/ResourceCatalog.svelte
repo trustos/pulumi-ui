@@ -10,9 +10,11 @@
   let {
     onSelect,
     onClose,
+    existingResourceNames = [] as string[],
   }: {
     onSelect: (resource: ResourceItem) => void;
     onClose: () => void;
+    existingResourceNames?: string[];
   } = $props();
 
   let schema = $state<OciSchema | null>(null);
@@ -101,7 +103,7 @@
     const schemaRequired = resSchema
       ? Object.entries(resSchema.inputs).filter(([, p]) => p.required).map(([key]) => key)
       : [];
-    const properties = getResourceDefaults(selectedType, schemaRequired);
+    const properties = getResourceDefaults(selectedType, schemaRequired, existingResourceNames);
 
     const resource: ResourceItem = {
       kind: 'resource',
@@ -112,7 +114,7 @@
 
     // Dispatch extras before onSelect — onSelect closes the catalog and
     // destroys the DOM node, so the event must bubble while rootEl is alive.
-    const extras = getGraphExtras(selectedType);
+    const extras = getGraphExtras(selectedType, existingResourceNames);
     if (extras && rootEl) {
       rootEl.dispatchEvent(new CustomEvent('resource-graph-extras', {
         bubbles: true,

@@ -8,6 +8,12 @@
 
   type PropertyKeyItem = { value: string; type: string; required: boolean; description?: string; properties?: Record<string, PropertySchema>; items?: PropertySchema };
 
+  // Variables that are arrays — the autocomplete should insert an indexed path
+  // rather than the bare variable reference (which would pass the whole array).
+  const KNOWN_VARIABLE_REFS: Record<string, string> = {
+    availabilityDomains: '@auto',
+  };
+
   type ResourceRefItem = { name: string; attrs: string[] }; // resource name + known output attrs
 
   let {
@@ -37,8 +43,8 @@
   let keyPicker = $state<number | null>(null);
   let keyFilter = $state('');
 
-  // Detect {{ .Config.KEY }} references — with or without wrapping quotes
-  const CONFIG_REF_RE = /^"?\{\{\s*\.Config\.(\w+)\s*\}\}"?$/;
+  // Detect {{ .Config.KEY }} or {{ $.Config.KEY }} (loop context) — with or without wrapping quotes
+  const CONFIG_REF_RE = /^"?\{\{\s*\$?\.Config\.(\w+)\s*\}\}"?$/;
   function getConfigRef(value: string): string | null {
     return CONFIG_REF_RE.exec(value)?.[1] ?? null;
   }
@@ -90,6 +96,21 @@
     if (item.type === 'object' && item.properties && Object.keys(item.properties).length > 0) return true;
     if (item.type === 'array' && item.items?.properties && Object.keys(item.items.properties).length > 0) return true;
     return false;
+  }
+
+  // Returns true for schema-backed structured properties AND for unschema'd object properties
+  // whose value is already an inline object (e.g. metadata: { ssh_authorized_keys: "..." }).
+  function canUseStructuredEditor(prop: PropertyEntry): boolean {
+    if (hasStructuredSchema(prop.key)) return true;
+    if (getPropertySchemaType(prop.key) !== 'object') return false;
+    const v = cleanValue(prop.value).trim();
+    return v.startsWith('{') && v.endsWith('}');
+  }
+
+  // Returns a PropertySchema for the structured editor.
+  // Falls back to a bare object schema when the property has no sub-properties defined.
+  function getSchemaForStructured(key: string): PropertySchema {
+    return getPropertySchema(key) ?? { type: 'object', required: false };
   }
 
   function isSimpleArray(key: string): boolean {
@@ -164,7 +185,9 @@
       });
     }
     for (const v of variableNames) {
-      entries.push({ kind: 'variable', label: v, value: `\${${v}}` });
+      // Array-typed variables need an indexed path, not the bare variable reference.
+      const ref = KNOWN_VARIABLE_REFS[v] ?? `\${${v}}`;
+      entries.push({ kind: 'variable', label: v, value: ref });
     }
     const refs = allResourceRefs.length > 0
       ? allResourceRefs
@@ -193,12 +216,15 @@
     allResourceNames.length > 0 || allResourceRefs.length > 0
   );
 
-  // Whether to show "→ config" chip for this property row
+  // Whether to show "→ config" chip for this property row.
+  // Shows when: schema-required property is empty, OR a matching config field already exists and the value is empty.
   function showConfigChip(prop: PropertyEntry): boolean {
     if (readonly || prop.value !== '') return false;
     if (prop.key === 'availabilityDomain') return false;
     if (getPropertySchemaType(prop.key) === 'object') return false;
-    return propertyKeyItems.find(k => k.value === prop.key)?.required === true;
+    const schemaRequired = propertyKeyItems.find(k => k.value === prop.key)?.required === true;
+    const hasMatchingConfigField = configFields.some(f => f.key === prop.key);
+    return schemaRequired || hasMatchingConfigField;
   }
 
   // Whether to show "→ variable" chip (availabilityDomain only)
@@ -211,6 +237,7 @@
     sourceDetails:           'sourceType: image\nimageId: {{ .Config.imageId }}',
     shapeConfig:             'ocpus: {{ .Config.ocpusPerNode }}\nmemoryInGbs: {{ .Config.memoryGbPerNode }}',
     createVnicDetails:       'subnetId: ${subnet.id}\nassignPublicIp: false',
+    metadata:                'ssh_authorized_keys: "{{ .Config.sshPublicKey }}"',
     instanceDetails:         'instanceType: compute',
     healthChecker:           'protocol: TCP\nport: 80',
     placementConfigurations: '- availabilityDomain: ${availabilityDomain}\n  primarySubnetId: ${subnet.id}',
@@ -291,7 +318,23 @@
 
       <!-- Value column: type-aware rendering based on schema -->
       <div class="relative flex-1">
-        {#if getConfigRef(prop.value) !== null || getConfigRef(cleanValue(prop.value)) !== null}
+        {#if prop.value === '@auto'}
+          <!-- @auto chip: AD round-robin assignment — styled as a var chip with "auto assign" hint -->
+          <div class="flex items-center gap-1 h-7 px-2 rounded-md border border-input bg-muted/40 text-xs font-mono">
+            <span class="text-[10px] shrink-0 font-sans text-purple-500">var</span>
+            <span class="text-foreground truncate flex-1">availabilityDomains</span>
+            <span class="text-[10px] shrink-0 font-sans text-muted-foreground/60 italic">auto assign</span>
+            {#if !readonly}
+              <Tooltip.Root>
+                <Tooltip.Trigger
+                  class="text-muted-foreground hover:text-destructive leading-none shrink-0"
+                  onclick={() => updateValue(i, '')}
+                >×</Tooltip.Trigger>
+                <Tooltip.Content>AD auto-assigned: index 0 for standalone instances, round-robin via adCount inside loops. Click × to set manually.</Tooltip.Content>
+              </Tooltip.Root>
+            {/if}
+          </div>
+        {:else if getConfigRef(prop.value) !== null || getConfigRef(cleanValue(prop.value)) !== null}
           <!-- Config field reference chip -->
           {@const cfgKey = getConfigRef(prop.value) ?? getConfigRef(cleanValue(prop.value))}
           <div class="flex items-center gap-1 h-7 px-2 rounded-md border border-input bg-muted/40 text-xs font-mono">
@@ -311,7 +354,7 @@
           <!-- Resource / variable reference chip -->
           {@const cleanV = cleanValue(prop.value)}
           {@const refContent = (/^\$\{[^}]+\}$/.test(cleanV) ? cleanV : prop.value).slice(2, -1)}
-          {@const isVar = variableNames.includes(refContent)}
+          {@const isVar = variableNames.includes(refContent.replace(/[.\[].*$/, ''))}
           <div class="flex items-center gap-1 h-7 px-2 rounded-md border border-input bg-muted/40 text-xs font-mono">
             <span class="text-[10px] shrink-0 font-sans {isVar ? 'text-purple-500' : 'text-green-600 dark:text-green-400'}">{isVar ? 'var' : 'ref'}</span>
             <span class="text-foreground truncate flex-1">{refContent}</span>
@@ -325,21 +368,18 @@
               </Tooltip.Root>
             {/if}
           </div>
-        {:else if hasStructuredSchema(prop.key)}
+        {:else if canUseStructuredEditor(prop)}
           <!-- Structured object/array property with sub-field editing -->
-          {@const propSchema = getPropertySchema(prop.key)}
-          {#if propSchema}
-            <ObjectPropertyEditor
-              value={cleanValue(prop.value)}
-              onvaluechange={(v) => updateValue(i, v)}
-              schema={propSchema}
-              {configFields}
-              {allResourceNames}
-              {allResourceRefs}
-              {variableNames}
-              {readonly}
-            />
-          {/if}
+          <ObjectPropertyEditor
+            value={cleanValue(prop.value)}
+            onvaluechange={(v) => updateValue(i, v)}
+            schema={getSchemaForStructured(prop.key)}
+            {configFields}
+            {allResourceNames}
+            {allResourceRefs}
+            {variableNames}
+            {readonly}
+          />
         {:else if isBooleanType(prop.key) && !isRefOrTemplate(prop.value)}
           <!-- Boolean property: select dropdown -->
           <select

@@ -20,6 +20,9 @@
       items: [],
     }),
     configFields = [] as ConfigFieldDef[],
+    allProgramResourceNames = [] as string[],
+    allResourceRefs = [] as { name: string; attrs: string[] }[],
+    variableNames = [] as string[],
     onRemove,
     onMoveUp,
     onMoveDown,
@@ -27,6 +30,9 @@
   }: {
     conditional?: ConditionalItem;
     configFields?: ConfigFieldDef[];
+    allProgramResourceNames?: string[];
+    allResourceRefs?: { name: string; attrs: string[] }[];
+    variableNames?: string[];
     onRemove?: () => void;
     onMoveUp?: () => void;
     onMoveDown?: () => void;
@@ -119,6 +125,9 @@
             <ResourceCard
               bind:resource={conditional.items[i] as ResourceItem}
               allResourceNames={thenNames}
+              {allResourceRefs}
+              {variableNames}
+              {configFields}
               onRemove={() => removeFromBranch(i, 'then')}
               onRename={onRenameResource}
             />
@@ -127,6 +136,9 @@
             <LoopBlock
               bind:loop={conditional.items[i] as LoopItem}
               {configFields}
+              {allProgramResourceNames}
+              {allResourceRefs}
+              {variableNames}
               onRemove={() => removeFromBranch(i, 'then')}
               {onRenameResource}
             />
@@ -166,6 +178,9 @@
               <ResourceCard
                 bind:resource={conditional.elseItems[i] as ResourceItem}
                 allResourceNames={elseNames}
+                {allResourceRefs}
+                {variableNames}
+                {configFields}
                 onRemove={() => removeFromBranch(i, 'else')}
                 onRename={onRenameResource}
               />
@@ -174,6 +189,9 @@
               <LoopBlock
                 bind:loop={conditional.elseItems[i] as LoopItem}
                 {configFields}
+                {allProgramResourceNames}
+                {allResourceRefs}
+                {variableNames}
                 onRemove={() => removeFromBranch(i, 'else')}
                 {onRenameResource}
               />
@@ -211,6 +229,7 @@
   <ResourceCatalog
     onSelect={addResourceToBranch}
     onClose={() => showCatalogFor = null}
+    existingResourceNames={allProgramResourceNames}
   />
 {/if}
 {/if}

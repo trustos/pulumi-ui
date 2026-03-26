@@ -1,0 +1,152 @@
+name: database-server
+runtime: yaml
+description: "Compute instance in a private subnet with block volume storage — host PostgreSQL, MySQL, MongoDB, or any database engine"
+
+meta:
+  displayName: Private Database Server
+  agentAccess: true
+
+config:
+  compartmentName:
+    type: string
+    default: "my-compartment"
+  imageId:
+    type: string
+    default: ""
+  sshPublicKey:
+    type: string
+    default: ""
+  shape:
+    type: string
+    default: "VM.Standard.A1.Flex"
+  ocpus:
+    type: string
+    default: "2"
+  memoryInGbs:
+    type: string
+    default: "16"
+  volumeSizeGbs:
+    type: string
+    default: "100"
+    description: "Block volume size in GB for data storage"
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+
+resources:
+  # --- section: networking ---
+  compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: "{{ .Config.compartmentName }}"
+      description: "Created by Pulumi"
+      enableDelete: "true"
+  vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${compartment.id}
+      cidrBlocks: ["10.0.0.0/16"]
+      displayName: "db-vcn"
+      dnsLabel: "dbvcn"
+    options:
+      dependsOn:
+        - ${compartment}
+  nat-gw:
+    type: oci:Core/natGateway:NatGateway
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "nat-gw"
+    options:
+      dependsOn:
+        - ${vcn}
+  route-table:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "db-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${nat-gw.id}" }]
+    options:
+      dependsOn:
+        - ${nat-gw}
+  nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "db-nsg"
+    options:
+      dependsOn:
+        - ${vcn}
+  nsg-db:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${nsg.id}
+      direction: "INGRESS"
+      protocol: "6"
+      source: "10.0.0.0/16"
+      sourceType: "CIDR_BLOCK"
+      tcpOptions: { destinationPortRange: { min: 5432, max: 5432 } }
+    options:
+      dependsOn:
+        - ${nsg}
+  subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.1.0/24"
+      displayName: "db-subnet"
+      dnsLabel: "db"
+      routeTableId: ${route-table.id}
+      prohibitPublicIpOnVnic: "true"
+    options:
+      dependsOn:
+        - ${route-table}
+  # --- section: compute ---
+  db-server:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${compartment.id}
+      availabilityDomain: ${availabilityDomains[0].name}
+      shape: "{{ .Config.shape }}"
+      displayName: "db-server"
+      sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
+      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: false, nsgIds: ["${nsg.id}"] }
+      metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
+      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+    options:
+      dependsOn:
+        - ${subnet}
+        - ${nsg-db}
+  data-volume:
+    type: oci:Core/volume:Volume
+    properties:
+      compartmentId: ${compartment.id}
+      availabilityDomain: ${availabilityDomains[0].name}
+      displayName: "data-volume"
+      sizeInGbs: {{ .Config.volumeSizeGbs }}
+    options:
+      dependsOn:
+        - ${compartment}
+  volume-attach:
+    type: oci:Core/volumeAttachment:VolumeAttachment
+    properties:
+      instanceId: ${db-server.id}
+      volumeId: ${data-volume.id}
+      attachmentType: "paravirtualized"
+      displayName: "data-attach"
+    options:
+      dependsOn:
+        - ${db-server}
+        - ${data-volume}
+
+outputs:
+  dbPrivateIp: ${db-server.privateIp}

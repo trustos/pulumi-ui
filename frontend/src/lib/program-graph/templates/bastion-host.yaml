@@ -1,0 +1,152 @@
+name: bastion-host
+runtime: yaml
+description: "Jump box in a public subnet with a private instance behind it — secure SSH access pattern (inspired by AWS Bastion / Azure Jump Box)"
+
+meta:
+  displayName: Bastion Host + Private Instance
+  agentAccess: true
+
+config:
+  compartmentName:
+    type: string
+    default: "my-compartment"
+  imageId:
+    type: string
+    default: ""
+  sshPublicKey:
+    type: string
+    default: ""
+  shape:
+    type: string
+    default: "VM.Standard.A1.Flex"
+  ocpus:
+    type: string
+    default: "1"
+  memoryInGbs:
+    type: string
+    default: "6"
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+
+resources:
+  # --- section: networking ---
+  compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: "{{ .Config.compartmentName }}"
+      description: "Created by Pulumi"
+      enableDelete: "true"
+  vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${compartment.id}
+      cidrBlocks: ["10.0.0.0/16"]
+      displayName: "bastion-vcn"
+      dnsLabel: "bastion"
+    options:
+      dependsOn:
+        - ${compartment}
+  igw:
+    type: oci:Core/internetGateway:InternetGateway
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "igw"
+      enabled: "true"
+    options:
+      dependsOn:
+        - ${vcn}
+  nat-gw:
+    type: oci:Core/natGateway:NatGateway
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "nat-gw"
+    options:
+      dependsOn:
+        - ${vcn}
+  public-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "public-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
+    options:
+      dependsOn:
+        - ${igw}
+  private-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "private-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${nat-gw.id}" }]
+    options:
+      dependsOn:
+        - ${nat-gw}
+  public-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.1.0/24"
+      displayName: "public-subnet"
+      dnsLabel: "pub"
+      routeTableId: ${public-rt.id}
+      prohibitPublicIpOnVnic: "false"
+    options:
+      dependsOn:
+        - ${public-rt}
+  private-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.2.0/24"
+      displayName: "private-subnet"
+      dnsLabel: "priv"
+      routeTableId: ${private-rt.id}
+      prohibitPublicIpOnVnic: "true"
+    options:
+      dependsOn:
+        - ${private-rt}
+  # --- section: compute ---
+  bastion:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${compartment.id}
+      availabilityDomain: ${availabilityDomains[0].name}
+      shape: "{{ .Config.shape }}"
+      displayName: "bastion"
+      sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
+      createVnicDetails: { subnetId: "${public-subnet.id}", assignPublicIp: true }
+      metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
+      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+    options:
+      dependsOn:
+        - ${public-subnet}
+  private-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${compartment.id}
+      availabilityDomain: ${availabilityDomains[0].name}
+      shape: "{{ .Config.shape }}"
+      displayName: "private-instance"
+      sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
+      createVnicDetails: { subnetId: "${private-subnet.id}", assignPublicIp: false }
+      metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
+      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+    options:
+      dependsOn:
+        - ${private-subnet}
+
+outputs:
+  bastionPublicIp: ${bastion.publicIp}

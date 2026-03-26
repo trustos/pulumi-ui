@@ -1,0 +1,108 @@
+name: single-instance
+runtime: yaml
+description: "One VM with public IP in its own VCN — the simplest compute deployment"
+
+meta:
+  displayName: Single Compute Instance
+
+config:
+  compartmentName:
+    type: string
+    default: "my-compartment"
+  imageId:
+    type: string
+    default: ""
+    description: "OCI image OCID for the boot volume"
+  sshPublicKey:
+    type: string
+    default: ""
+    description: "SSH public key for instance access"
+  shape:
+    type: string
+    default: "VM.Standard.A1.Flex"
+    description: "Compute shape"
+  ocpus:
+    type: string
+    default: "2"
+  memoryInGbs:
+    type: string
+    default: "12"
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+
+resources:
+  # --- section: networking ---
+  compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: "{{ .Config.compartmentName }}"
+      description: "Created by Pulumi"
+      enableDelete: "true"
+  vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${compartment.id}
+      cidrBlocks: ["10.0.0.0/16"]
+      displayName: "vcn"
+      dnsLabel: "vcn"
+    options:
+      dependsOn:
+        - ${compartment}
+  igw:
+    type: oci:Core/internetGateway:InternetGateway
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "igw"
+      enabled: "true"
+    options:
+      dependsOn:
+        - ${vcn}
+  route-table:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "route-table"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
+    options:
+      dependsOn:
+        - ${igw}
+  subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.1.0/24"
+      displayName: "subnet"
+      dnsLabel: "subnet"
+      routeTableId: ${route-table.id}
+      prohibitPublicIpOnVnic: "false"
+    options:
+      dependsOn:
+        - ${route-table}
+  # --- section: compute ---
+  instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${compartment.id}
+      availabilityDomain: ${availabilityDomains[0].name}
+      shape: "{{ .Config.shape }}"
+      displayName: "instance"
+      sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
+      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: true }
+      metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
+      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+    options:
+      dependsOn:
+        - ${subnet}
+
+outputs:
+  instancePublicIp: ${instance.publicIp}

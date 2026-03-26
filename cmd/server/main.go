@@ -121,12 +121,14 @@ func main() {
 		}
 	}
 
-	// Stack connections
+	// Stack connections + per-node certs
 	connStore := db.NewStackConnectionStore(database, enc)
+	nodeCertStore := db.NewNodeCertStore(database, enc)
 
 	// Application deployer + engine
 	deployer := applications.NewDeployer(connStore)
 	eng := engine.New(stateDir, registry, deployer, connStore)
+	eng.WithNodeCertStore(nodeCertStore)
 
 	// Nebula mesh tunnel manager — creates on-demand userspace tunnels to agents
 	meshMgr := mesh.NewManager(connStore)
@@ -134,6 +136,7 @@ func main() {
 	// HTTP handler
 	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customPrograms, eng, registry, connStore)
 	h.MeshManager = meshMgr
+	h.NodeCertStore = nodeCertStore
 	h.LogBuffer = logBuf
 
 	// Embedded frontend — serve from the embed.FS sub-tree

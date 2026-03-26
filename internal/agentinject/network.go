@@ -186,8 +186,12 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 		modified = true
 	}
 
-	// For each existing NLB, add a backend set + listener + backends for each compute
+	// For each existing NLB, add a backend set + listener + backends for each compute.
+	// Skipped when all instances have public IPs — Nebula reaches them directly.
 	for _, nlb := range nlbs {
+		if publicIPInstances {
+			continue
+		}
 		bsName := fmt.Sprintf("__agent_bs_%s", nlb.name)
 		lnName := fmt.Sprintf("__agent_ln_%s", nlb.name)
 

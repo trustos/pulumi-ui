@@ -6,28 +6,33 @@
 
   let {
     outputs = $bindable<OutputDef[]>([]),
-    resourceNames = [] as string[],
+    resourceRefs = [] as { name: string; attrs: string[] }[],
   }: {
     outputs?: OutputDef[];
-    resourceNames?: string[];
+    resourceRefs?: { name: string; attrs: string[] }[];
   } = $props();
 
   let editingIndex = $state<number | null>(null);
   let draft = $state<OutputDef>({ key: '', value: '' });
 
-  // Suggested resources: static names (no template expressions) not already in outputs
+  // One suggestion per (resource, attr) pair not already in outputs
   const suggestions = $derived(
-    resourceNames
-      .filter(n => !n.includes('{{'))
-      .filter(n => !outputs.some(o => o.value === `\${${n}.id}`))
+    resourceRefs
+      .filter(r => !r.name.includes('{{'))
+      .flatMap(r =>
+        r.attrs
+          .filter(attr => !outputs.some(o => o.value === `\${${r.name}.${attr}}`))
+          .map(attr => ({ name: r.name, attr }))
+      )
   );
 
-  function addSuggestion(name: string) {
-    // camelCase the resource name: foo-bar → fooBarId
-    const key = name
+  function addSuggestion(name: string, attr: string) {
+    // camelCase resource name + capitalised attr: instance-a + publicIp → instanceAPublicIp
+    const base = name
       .replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase())
-      .replace(/[^a-zA-Z0-9]/g, '') + 'Id';
-    outputs = [...outputs, { key, value: `\${${name}.id}` }];
+      .replace(/[^a-zA-Z0-9]/g, '');
+    const key = base + attr.charAt(0).toUpperCase() + attr.slice(1);
+    outputs = [...outputs, { key, value: `\${${name}.${attr}}` }];
   }
 
   function startAdd() {
@@ -94,13 +99,13 @@
       <div class="px-3 pt-3 pb-1">
         <p class="text-[10px] text-muted-foreground uppercase tracking-wide mb-1.5">From resources</p>
         <div class="flex flex-wrap gap-1">
-          {#each suggestions as name}
+          {#each suggestions as { name, attr }}
             <Tooltip.Root>
               <Tooltip.Trigger
                 class="text-[11px] font-mono px-1.5 py-0.5 rounded border border-dashed border-muted-foreground/40 text-muted-foreground hover:border-primary hover:text-primary transition-colors"
-                onclick={() => addSuggestion(name)}
-              >+ {name}.id</Tooltip.Trigger>
-              <Tooltip.Content>Expose ${'{'}${name}.id{'}'} as a stack output</Tooltip.Content>
+                onclick={() => addSuggestion(name, attr)}
+              >+ {name}.{attr}</Tooltip.Trigger>
+              <Tooltip.Content>Expose ${'{'}${name}.{attr}{'}'} as a stack output</Tooltip.Content>
             </Tooltip.Root>
           {/each}
         </div>

@@ -14,7 +14,7 @@ that stream live output back to the browser.
 | Backend | Go 1.25+, single binary, `net/http` + chi router |
 | Database | SQLite via `modernc.org/sqlite` (pure Go, no CGO) |
 | Encryption | AES-GCM, key from env var or auto-generated keystore |
-| Provisioning | Pulumi Automation API (Go SDK) + OCI Terraform provider v4.3.1 |
+| Provisioning | Pulumi Automation API (Go SDK) + OCI Terraform provider v4.4.0 |
 | Frontend | Svelte 5 SPA, embedded in the Go binary via `go:embed` |
 | Cloud | Oracle Cloud Infrastructure (OCI) — Always Free A1 Flex instances |
 
@@ -128,7 +128,7 @@ Browser
                       ├─ AgentInject (internal/agentinject/) — auto-injects Nebula + agent into compute user_data
                       ├─ Deployer  (internal/applications/) — post-infra app deployment via agent
                       └─ Pulumi Automation API  — subprocess management
-                           └─ OCI Terraform provider v4.3.1
+                           └─ OCI Terraform provider v4.4.0
 ```
 
 **Target architecture** (see `docs/roadmap.md`):

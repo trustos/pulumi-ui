@@ -608,7 +608,9 @@ resources:
 	assert.NotContains(t, result, "__agent_nlb", "public IP with existing NSG should skip NLB")
 }
 
-func TestInjectNetworking_ExistingNLB_PublicIP_StillAddsBackends(t *testing.T) {
+func TestInjectNetworking_ExistingNLB_PublicIP_SkipsBackends(t *testing.T) {
+	// When instances have public IPs, Nebula reaches them directly — no NLB
+	// backends needed for the agent port, even if an NLB already exists.
 	yaml := `name: test
 runtime: yaml
 resources:
@@ -627,10 +629,9 @@ resources:
 `
 	result, err := InjectNetworkingIntoYAML(yaml)
 	require.NoError(t, err)
-	// User explicitly created NLB — always add agent backends
-	assert.Contains(t, result, "__agent_bs_my-nlb", "existing NLB should get agent backend set")
-	assert.Contains(t, result, "__agent_ln_my-nlb", "existing NLB should get agent listener")
-	assert.Contains(t, result, "__agent_be_my-nlb_my-instance", "existing NLB should get agent backend")
+	assert.NotContains(t, result, "__agent_bs_my-nlb", "public IP instances: NLB should not get agent backend set")
+	assert.NotContains(t, result, "__agent_ln_my-nlb", "public IP instances: NLB should not get agent listener")
+	assert.NotContains(t, result, "__agent_be_my-nlb_my-instance", "public IP instances: NLB should not get agent backend")
 }
 
 func TestInjectNetworking_NSGRuleContent(t *testing.T) {
@@ -1099,4 +1100,62 @@ resources:
 	assert.Contains(t, result, "__agent_nsg")
 	assert.Contains(t, result, "__agent_nlb")
 	assert.Contains(t, result, "__agent_subnet_info")
+}
+
+// ---------------------------------------------------------------------------
+// Fix: existing NLB + public IP instances should NOT get agent backends
+// ---------------------------------------------------------------------------
+
+func TestInjectNetworking_ExistingNLB_PublicIPInstances_NoBackends(t *testing.T) {
+	// An NLB exists (e.g. for app traffic) and all instances have assignPublicIp: true.
+	// The NLB should NOT receive agent port backends — Nebula dials direct.
+	input := `name: test
+runtime: yaml
+resources:
+  my-nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ocid1.compartment
+      subnetId: ${my-subnet.id}
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      createVnicDetails:
+        subnetId: ${my-subnet.id}
+        assignPublicIp: "true"
+`
+	result, err := InjectNetworkingIntoYAML(input)
+	require.NoError(t, err)
+
+	// NSG rule should be added (required for UDP 41820 ingress).
+	assert.NotContains(t, result, "__agent_bs_my-nlb", "NLB should not get agent backend set when instances have public IPs")
+	assert.NotContains(t, result, "__agent_ln_my-nlb", "NLB should not get agent listener when instances have public IPs")
+	assert.NotContains(t, result, "__agent_be_my-nlb_my-instance", "NLB should not get agent backend when instances have public IPs")
+}
+
+func TestInjectNetworking_ExistingNLB_PrivateInstances_GetsBackends(t *testing.T) {
+	// Same scenario but without public IPs — NLB should get agent backends.
+	input := `name: test
+runtime: yaml
+resources:
+  my-nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ocid1.compartment
+      subnetId: ${my-subnet.id}
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      createVnicDetails:
+        subnetId: ${my-subnet.id}
+        assignPublicIp: "false"
+`
+	result, err := InjectNetworkingIntoYAML(input)
+	require.NoError(t, err)
+
+	assert.Contains(t, result, "__agent_bs_my-nlb")
+	assert.Contains(t, result, "__agent_ln_my-nlb")
+	assert.Contains(t, result, "__agent_be_my-nlb_my-instance")
 }

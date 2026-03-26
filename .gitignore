@@ -4,6 +4,7 @@ cmd/server/frontend/dist/
 server
 /agent
 /dist/
+node_modules/
 
 # ── Go ────────────────────────────────────────────────────────────────────────
 *.test

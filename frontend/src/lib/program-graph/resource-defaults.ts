@@ -62,14 +62,13 @@ const NETWORKING_RESOURCES: ResourceItem[] = [
 const INSTANCE_RECIPE: ResourceRecipe = {
   properties: [
     { key: 'compartmentId', value: '{{ .Config.compartmentId }}' },
-    { key: 'availabilityDomain', value: '${availabilityDomains[0].name}' },
+    { key: 'availabilityDomain', value: '@auto' },
     { key: 'shape', value: '"{{ .Config.shape }}"' },
     { key: 'displayName', value: '"instance"' },
     { key: 'sourceDetails', value: '{ sourceType: "image", sourceId: "{{ .Config.imageId }}" }' },
     { key: 'shapeConfig', value: '{ ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }' },
     { key: 'metadata', value: '{ ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }' },
-    { key: 'createVnicDetails.subnetId', value: '${subnet.id}' },
-    { key: 'createVnicDetails.assignPublicIp', value: 'true' },
+    { key: 'createVnicDetails', value: '{ subnetId: "${subnet.id}", assignPublicIp: true }' },
   ],
   configFields: [
     { key: 'compartmentId', type: 'string', description: 'OCI compartment OCID' },
@@ -78,6 +77,7 @@ const INSTANCE_RECIPE: ResourceRecipe = {
     { key: 'sshPublicKey', type: 'string', description: 'SSH public key for instance access' },
     { key: 'ocpus', type: 'integer', default: '2', description: 'Number of OCPUs' },
     { key: 'memoryInGbs', type: 'integer', default: '12', description: 'Memory in GB' },
+    { key: 'adCount', type: 'integer', default: '1', description: 'Number of availability domains to spread instances across (1–3). Use 1 for single-AD regions.' },
   ],
   variables: [
     {
@@ -96,6 +96,25 @@ const RECIPES: Record<string, ResourceRecipe> = {
 };
 
 /**
+ * If a `compartment` resource already exists in the graph, OCI resources
+ * should reference it directly instead of requiring a separate config field.
+ */
+function resolveCompartmentId(existingResourceNames: string[]): string {
+  return existingResourceNames.includes('compartment')
+    ? '${compartment.id}'
+    : '{{ .Config.compartmentId }}';
+}
+
+function applyCompartmentRef(props: PropertyEntry[], compartmentId: string): PropertyEntry[] {
+  if (compartmentId === '{{ .Config.compartmentId }}') return props;
+  return props.map(p =>
+    p.value === '{{ .Config.compartmentId }}'
+      ? { key: p.key, value: compartmentId }
+      : p
+  );
+}
+
+/**
  * Returns enriched properties for known resource types by merging recipe
  * defaults with schema-required keys. For unknown types, returns the
  * schema-required keys as-is (with empty values).
@@ -103,16 +122,19 @@ const RECIPES: Record<string, ResourceRecipe> = {
 export function getResourceDefaults(
   resourceType: string,
   schemaRequiredKeys: string[],
+  existingResourceNames: string[] = [],
 ): PropertyEntry[] {
   const recipe = RECIPES[resourceType];
   if (!recipe) {
     return schemaRequiredKeys.map(key => ({ key, value: '' }));
   }
 
-  const recipeByKey = new Map(recipe.properties.map(p => [p.key, p]));
+  const compartmentId = resolveCompartmentId(existingResourceNames);
+  const recipeProps = applyCompartmentRef(recipe.properties, compartmentId);
+  const recipeByKey = new Map(recipeProps.map(p => [p.key, p]));
 
   // Start with recipe properties (preserving recipe order)
-  const result: PropertyEntry[] = [...recipe.properties];
+  const result: PropertyEntry[] = [...recipeProps];
 
   // Append any schema-required keys that the recipe doesn't already cover
   for (const key of schemaRequiredKeys) {
@@ -131,13 +153,29 @@ export function getResourceDefaults(
  */
 export function getGraphExtras(
   resourceType: string,
+  existingResourceNames: string[] = [],
 ): { configFields: ConfigFieldDef[]; variables: VariableDef[]; outputs: OutputDef[]; resources: ResourceItem[] } | null {
   const recipe = RECIPES[resourceType];
   if (!recipe) return null;
+
+  const compartmentExists = existingResourceNames.includes('compartment');
+  const compartmentId = resolveCompartmentId(existingResourceNames);
+
+  // If compartment already exists: skip its config field + skip creating a new one
+  const configFields = compartmentExists
+    ? recipe.configFields.filter(f => f.key !== 'compartmentId')
+    : recipe.configFields;
+
+  const dependentResources = compartmentExists
+    ? recipe.dependentResources
+        .filter(r => r.name !== 'compartment')
+        .map(r => ({ ...r, properties: applyCompartmentRef(r.properties, compartmentId) }))
+    : recipe.dependentResources;
+
   return {
-    configFields: recipe.configFields,
+    configFields,
     variables: recipe.variables,
     outputs: recipe.outputs,
-    resources: recipe.dependentResources,
+    resources: dependentResources,
   };
 }

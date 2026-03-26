@@ -163,6 +163,9 @@
             <LoopBlock
               bind:loop={section.items[i] as LoopItem}
               {configFields}
+              {allProgramResourceNames}
+              allResourceRefs={allProgramResourceRefs}
+              {variableNames}
               onRemove={() => removeItem(i)}
               onMoveUp={i > 0 ? () => moveItem(i, -1) : undefined}
               onMoveDown={i < section.items.length - 1 ? () => moveItem(i, 1) : undefined}
@@ -172,6 +175,9 @@
             <ConditionalBlock
               bind:conditional={section.items[i] as ConditionalItem}
               {configFields}
+              {allProgramResourceNames}
+              allResourceRefs={allProgramResourceRefs}
+              {variableNames}
               onRemove={() => removeItem(i)}
               onMoveUp={i > 0 ? () => moveItem(i, -1) : undefined}
               onMoveDown={i < section.items.length - 1 ? () => moveItem(i, 1) : undefined}
@@ -188,6 +194,7 @@
   <ResourceCatalog
     onSelect={addResource}
     onClose={() => showCatalog = false}
+    existingResourceNames={allProgramResourceNames}
   />
 {/if}
 {/if}

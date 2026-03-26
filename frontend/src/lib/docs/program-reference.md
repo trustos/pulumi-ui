@@ -53,6 +53,16 @@ When you set a type and leave the field (blur), all required properties for that
 
 **Property value picker** — each property value field has a `⊕` button on the right. Clicking it shows a dropdown of all defined config fields, variables, and resource outputs. Selecting one inserts the appropriate reference — `{{ .Config.fieldKey }}` for config, `${varName}` for variables, or `${resource.attr}` for resources.
 
+**Availability Domain (`@auto`)** — when you pick `availabilityDomains` from the reference picker for an `availabilityDomain` property, the editor inserts the sentinel value `@auto` instead of a hardcoded index. The serializer then resolves `@auto` contextually:
+
+| Context | Generated YAML |
+|---|---|
+| Standalone resource | `${availabilityDomains[0].name}`, `[1]`, `[2]`, … (ordinal by resource position) |
+| `until` loop (config field) | `${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}` |
+| List/custom loop | `${availabilityDomains[{{ mod $__idx (atoi $.Config.adCount) }}].name}` |
+
+For loops, the round-robin requires an `adCount` config field (integer, default `"1"`). Add it to your config block to control how many ADs to distribute across. The parser normalises any `${availabilityDomains[N].name}` back to `@auto` on load, so the chip always shows regardless of the underlying template form.
+
 **Structured object properties** — properties like `createVnicDetails`, `sourceDetails`, `shapeConfig`, and `routeRules` have sub-field definitions from the OCI provider schema. Instead of a raw text input, these properties show a structured editor with:
 - Named sub-field rows (e.g. `subnetId`, `assignPublicIp` for `createVnicDetails`)
 - Required sub-fields marked with `*`
@@ -92,6 +102,8 @@ Loops can be nested. Resource names inside a loop are automatically suffixed wit
 #### Conditional blocks
 
 Wraps resources in a `{{- if condition }}...{{- else }}...{{- end }}` block. Type the condition expression directly, e.g. `eq .Config.enableMonitoring "true"`.
+
+**Deferred networking warning** — when your program contains at least one `oci:Core/instance:Instance` resource but none of the foundational networking resources (`vcn`, `igw`, `route-table`, `subnet`), a yellow warning banner appears at the top of the canvas: *"This program has compute resources but no networking."* Click **Add Networking** to automatically scaffold a VCN, Internet Gateway, Route Table, and Subnet into a new "Networking" section, wired up with the correct dependencies. You can dismiss the warning without adding networking if you are intentionally joining an existing VCN.
 
 #### Synced / YAML-edited status
 
@@ -271,7 +283,15 @@ meta:
 
 Fields not listed in any group appear at the bottom ungrouped.
 
-`meta:` also supports a top-level `agentAccess` flag:
+`meta:` also supports a top-level `displayName` and `agentAccess` flag:
+
+```yaml
+meta:
+  displayName: "My Cluster"   # Human-readable title shown in the template gallery
+  agentAccess: true
+```
+
+`displayName` is optional. When set, it is used as the program's display title in the **New Program** gallery and the program list — while `name` (the internal identifier used in Pulumi stack directories) remains unchanged. When the visual editor creates or round-trips a program with a display name that differs from its `name`, it emits `meta.displayName` automatically. The YAML editor preserves it as-is.
 
 ```yaml
 meta:
@@ -289,6 +309,31 @@ When `agentAccess: true`, the engine automatically injects the Nebula mesh + age
 Injected resources use the `__agent_` prefix to avoid naming collisions with your resources.
 
 The visual editor writes `meta:` automatically when you add groups or descriptions to config fields via the Config Fields panel.
+
+---
+
+## Built-in Template Gallery
+
+When you click **New Program**, the gallery shows all built-in templates plus a **Start from scratch** option. Templates are organized by category (Networking, Compute, Web, Security, Data, High Availability, Cluster, Architecture) and support free-text search across names, descriptions, tags, and categories.
+
+Templates marked with a **🌐** badge have `meta.agentAccess: true` — the Nebula mesh and pulumi-ui agent will be injected automatically at deploy time.
+
+### Template format
+
+Every built-in template is a plain `.yaml` file in `frontend/src/lib/program-graph/templates/`. They use the exact same format as user-defined YAML programs — including Go template directives, `meta:` blocks, `variables:`, and `outputs:`. This means:
+
+- Templates can be opened in either visual or YAML mode
+- Any parser/serializer improvement applies to templates automatically
+- Templates can be copied out and deployed directly as custom programs
+- External contributors can add templates by dropping a new `.yaml` file in that directory and registering it in `ProgramTemplateGallery.svelte`
+
+### Contributing a template
+
+1. Create `frontend/src/lib/program-graph/templates/your-template.yaml` following the program format documented below
+2. Set `meta.displayName` to a human-readable title
+3. Add `meta.agentAccess: true` if compute instances need mesh connectivity
+4. Import it in `ProgramTemplateGallery.svelte` with `?raw` and add it to the `templates` array with appropriate category and tags
+5. Add a test entry in `frontend/src/lib/program-graph/templates.test.ts`
 
 ---
 
@@ -339,15 +384,27 @@ config:
   nodeCount:
     type: integer
     default: 3
+  adCount:
+    type: integer
+    default: "1"
+    description: "Number of availability domains to round-robin across"
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
 
 resources:
   {{- range $i := until (atoi $.Config.nodeCount) }}
-  instance-{{ $i }}:
+  node-{{ $i }}:
     type: oci:Core/instance:Instance
     properties:
       compartmentId: ${my-compartment.id}
       displayName: {{ printf "node-%d" $i }}
-      availabilityDomain: {{ $.Config.availabilityDomain }}
+      availabilityDomain: ${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}
       shape: {{ $.Config.shape }}
       shapeConfig:
         ocpus: {{ instanceOcpus $i (atoi $.Config.nodeCount) }}
@@ -356,6 +413,8 @@ resources:
 ```
 
 > **Note:** Use `$.Config` (global `$` prefix) inside `range` blocks to access config. The loop variable `$i` shadows `.` inside the loop body.
+
+**Availability domain round-robin** — the `mod $i (atoi $.Config.adCount)` pattern distributes nodes across multiple OCI Availability Domains. With `adCount: "1"` (default), all nodes land in AD[0]. With `adCount: "3"`, nodes cycle 0→1→2→0→1→2. The `availabilityDomains` variable must be declared (see `variables:` above). In the visual editor, setting `availabilityDomain` to the `@auto` chip generates this pattern automatically when inside a loop.
 
 ### Iterating a Fixed List of Values
 
@@ -716,7 +775,7 @@ my-instance:
   type: oci:Core/instance:Instance
   properties:
     compartmentId: ${my-compartment.id}
-    availabilityDomain: {{ .Config.availabilityDomain }}
+    availabilityDomain: ${availabilityDomains[0].name}  # use @auto chip in visual editor for automatic AD assignment
     shape: {{ .Config.shape | default "VM.Standard.A1.Flex" }}
     displayName: my-instance
     shapeConfig:
@@ -783,7 +842,7 @@ my-volume:
   type: oci:Core/volume:Volume
   properties:
     compartmentId: ${my-compartment.id}
-    availabilityDomain: {{ .Config.availabilityDomain }}
+    availabilityDomain: ${availabilityDomains[0].name}
     displayName: my-volume
     sizeInGbs: {{ .Config.volumeSizeGb | default "50" }}
 
@@ -958,14 +1017,19 @@ Agent bootstrap injection requires the program to implement `ApplicationProvider
 ## Full Example — Three-Node Compute Cluster
 
 ```yaml
+name: compute-cluster
+runtime: yaml
+description: "N-node compute cluster with shared VCN"
+
 meta:
+  displayName: "Three-Node Compute Cluster"
   groups:
     - key: network
       label: "Network"
       fields: [compartmentName, vcnCidr, subnetCidr]
     - key: compute
       label: "Compute"
-      fields: [nodeCount, shape, imageId, bootVolSizeGb, availabilityDomain, sshPublicKey]
+      fields: [nodeCount, adCount, shape, imageId, bootVolSizeGb, sshPublicKey]
   fields:
     imageId:
       ui_type: oci-image
@@ -977,10 +1041,8 @@ meta:
       ui_type: ssh-public-key
     nodeCount:
       description: "Number of nodes (1–4 for Always Free)"
-
-name: compute-cluster
-runtime: yaml
-description: "N-node compute cluster with shared VCN"
+    adCount:
+      description: "Number of availability domains to round-robin across"
 
 config:
   compartmentName:
@@ -995,6 +1057,10 @@ config:
   nodeCount:
     type: integer
     default: 2
+  adCount:
+    type: integer
+    default: "1"
+    description: "Number of availability domains to round-robin across"
   shape:
     type: string
     default: "VM.Standard.A1.Flex"
@@ -1004,12 +1070,17 @@ config:
   bootVolSizeGb:
     type: integer
     default: 50
-  availabilityDomain:
-    type: string
-    default: ""
   sshPublicKey:
     type: string
     default: ""
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
 
 resources:
   cluster-compartment:
@@ -1082,7 +1153,7 @@ resources:
     type: oci:Core/instance:Instance
     properties:
       compartmentId: ${cluster-compartment.id}
-      availabilityDomain: {{ $.Config.availabilityDomain }}
+      availabilityDomain: ${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}
       shape: {{ $.Config.shape }}
       displayName: {{ printf "node-%d" $i }}
       shapeConfig:

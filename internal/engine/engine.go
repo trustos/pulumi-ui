@@ -31,10 +31,11 @@ type Credentials struct {
 }
 
 type Engine struct {
-	stateDir  string
-	registry  *programs.ProgramRegistry
-	deployer  *applications.Deployer
-	connStore *db.StackConnectionStore
+	stateDir       string
+	registry       *programs.ProgramRegistry
+	deployer       *applications.Deployer
+	connStore      *db.StackConnectionStore
+	nodeCertStore  *db.NodeCertStore
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
@@ -50,6 +51,11 @@ func New(stateDir string, registry *programs.ProgramRegistry, deployer *applicat
 		cancels:   make(map[string]context.CancelFunc),
 		running:   make(map[string]bool),
 	}
+}
+
+// WithNodeCertStore attaches the per-node cert store for multi-node injection.
+func (e *Engine) WithNodeCertStore(s *db.NodeCertStore) {
+	e.nodeCertStore = s
 }
 
 // tryLock returns false if a stack operation is already in flight.
@@ -105,7 +111,7 @@ func (e *Engine) getOrCreateStack(ctx context.Context, stackName, projectName st
 // ociPinnedVersion is the OCI provider version used for all YAML programs.
 // Pinned explicitly so that the plugins: path injection below selects this
 // exact binary rather than whatever is newest in $PULUMI_HOME/plugins/.
-const ociPinnedVersion = "4.3.1"
+const ociPinnedVersion = "4.4.0"
 
 // ociPluginDir returns the directory where the pinned OCI provider binary is
 // installed, or an empty string if it cannot be found.
@@ -170,13 +176,13 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 		shouldInjectAgent = true
 	}
 	if shouldInjectAgent {
-		if vars := e.agentVarsForStack(stackName); vars != nil {
-			injected, injErr := agentinject.InjectIntoYAML(sanitized, *vars)
+		if varsList := e.agentVarListForStack(stackName); len(varsList) > 0 {
+			injected, injErr := agentinject.InjectIntoYAML(sanitized, varsList)
 			if injErr != nil {
 				log.Printf("[agent-inject] bootstrap injection error for stack %s: %v", stackName, injErr)
 			} else {
 				sanitized = injected
-				log.Printf("[agent-inject] bootstrap injected for stack %s", stackName)
+				log.Printf("[agent-inject] bootstrap injected for stack %s (%d node cert(s))", stackName, len(varsList))
 			}
 		} else {
 			log.Printf("[agent-inject] WARNING: no agent vars for stack %s — bootstrap NOT injected (check Nebula PKI)", stackName)
@@ -350,6 +356,50 @@ func (e *Engine) agentVarsForStack(stackName string) *agentinject.AgentVars {
 	}
 }
 
+// agentVarListForStack returns one AgentVars per node cert stored for the stack.
+// When per-node certs exist (stack created after Phase 1), each compute instance
+// in the YAML receives its own Nebula identity.
+// Falls back to a single-element slice from agentVarsForStack for older stacks.
+func (e *Engine) agentVarListForStack(stackName string) []agentinject.AgentVars {
+	// Try per-node certs first.
+	if e.nodeCertStore != nil {
+		nodeCerts, err := e.nodeCertStore.ListForStack(stackName)
+		if err != nil {
+			log.Printf("[agent-vars] nodeCertStore.ListForStack error for stack %s: %v", stackName, err)
+		}
+		if len(nodeCerts) > 0 {
+			conn, err := e.connStore.Get(stackName)
+			if err != nil || conn == nil {
+				log.Printf("[agent-vars] cannot load conn for stack %s (needed for CA cert / token)", stackName)
+				return nil
+			}
+			downloadURL := ""
+			if extURL := os.Getenv("PULUMI_UI_EXTERNAL_URL"); extURL != "" {
+				downloadURL = strings.TrimRight(extURL, "/") + "/api/agent/binary/linux"
+			}
+			result := make([]agentinject.AgentVars, len(nodeCerts))
+			for i, nc := range nodeCerts {
+				result[i] = agentinject.AgentVars{
+					NebulaCACert:     string(conn.NebulaCACert),
+					NebulaHostCert:   string(nc.NebulaCert),
+					NebulaHostKey:    string(nc.NebulaKey),
+					NebulaVersion:    "v1.10.3",
+					AgentVersion:     "v0.1.0",
+					AgentDownloadURL: downloadURL,
+					AgentToken:       conn.AgentToken,
+				}
+			}
+			return result
+		}
+	}
+
+	// Legacy fallback: single cert from stack_connections.
+	if vars := e.agentVarsForStack(stackName); vars != nil {
+		return []agentinject.AgentVars{*vars}
+	}
+	return nil
+}
+
 // discoverAgentAddress extracts the agent's real IP from Pulumi outputs
 // after a successful deploy and stores it for Nebula static_host_map.
 func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, prog programs.Program, stack auto.Stack, send SSESender) {
@@ -370,6 +420,30 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 		return
 	}
 
+	// Scan per-node outputs first: instance-{i}-publicIp (e.g. for nomad_cluster).
+	// These are stored in stack_node_certs.agent_real_ip for per-tunnel dialling.
+	if e.nodeCertStore != nil {
+		for i := 0; i < 32; i++ {
+			key := fmt.Sprintf("instance-%d-publicIp", i)
+			v, ok := outputs[key]
+			if !ok {
+				break // outputs are sequential; first miss ends the scan
+			}
+			if ip, ok := v.Value.(string); ok && ip != "" {
+				if err := e.nodeCertStore.UpdateAgentRealIP(stackName, i, ip); err != nil {
+					log.Printf("[agent-discover] failed to store node %d IP for %s: %v", i, stackName, err)
+				} else {
+					send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: node %d at %s", i, ip)})
+					// Also store node 0's IP as the legacy single-agent IP.
+					if i == 0 {
+						_ = e.connStore.UpdateAgentRealIP(stackName, ip)
+					}
+				}
+			}
+		}
+	}
+
+	// Legacy single-agent output scan.
 	ipKeys := []string{
 		"instancePublicIp", "instancePublicIP",
 		"nlbPublicIp", "nlbPublicIP",

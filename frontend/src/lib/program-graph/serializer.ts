@@ -1,5 +1,36 @@
 import type { ProgramGraph, ProgramSection, ProgramItem, LoopSource, ConfigFieldDef, OutputDef, VariableDef } from '$lib/types/program-graph';
 
+// Loop context threaded through serializeItem to resolve @auto for availabilityDomain.
+type LoopContext = {
+  indexVar: string; // '$i' for until-config (already numeric); '$__idx' for list loops
+};
+
+// Mutable counter shared across all serializeItem calls within one graphToYaml invocation.
+// Tracks how many standalone (non-loop) @auto availabilityDomain properties have been
+// emitted so each instance gets a unique ordinal index.
+type SerializeCtx = { autoADIdx: number };
+
+/** Returns true if any item in the subtree has availabilityDomain: @auto. */
+function itemsHaveAutoAD(items: ProgramItem[]): boolean {
+  for (const item of items) {
+    if (item.kind === 'resource' && item.properties.some(p => p.key === 'availabilityDomain' && p.value === '@auto')) return true;
+    if (item.kind === 'loop' && itemsHaveAutoAD(item.items)) return true;
+    if (item.kind === 'conditional') {
+      if (itemsHaveAutoAD(item.items)) return true;
+      if (item.elseItems && itemsHaveAutoAD(item.elseItems)) return true;
+    }
+  }
+  return false;
+}
+
+/** Resolves the @auto placeholder to the correct Pulumi YAML interpolation. */
+function resolveAutoAD(loopCtx: LoopContext | undefined, serCtx: SerializeCtx): string {
+  if (loopCtx) {
+    return `\${availabilityDomains[{{ mod ${loopCtx.indexVar} (atoi $.Config.adCount) }}].name}`;
+  }
+  return `\${availabilityDomains[${serCtx.autoADIdx++}].name}`;
+}
+
 /**
  * Prepare a property/output value for safe embedding after "key: " in YAML.
  * - Already-quoted strings (user wrapped in " or ') are passed through.
@@ -38,12 +69,16 @@ export function graphToYaml(graph: ProgramGraph): string {
   }
   lines.push('');
 
-  // meta: block — groups, field descriptions, and agentAccess (parsed by backend)
+  // meta: block — displayName, groups, field descriptions, and agentAccess (parsed by backend)
   const hasGroups = graph.configFields.some(f => f.group);
   const hasDescriptions = graph.configFields.some(f => f.description);
   const hasAgentAccess = graph.metadata.agentAccess === true;
-  if (hasGroups || hasDescriptions || hasAgentAccess) {
+  const hasDisplayName = !!(graph.metadata.displayName && graph.metadata.displayName !== graph.metadata.name);
+  if (hasGroups || hasDescriptions || hasAgentAccess || hasDisplayName) {
     lines.push('meta:');
+    if (hasDisplayName) {
+      lines.push(`  displayName: ${graph.metadata.displayName}`);
+    }
     if (hasAgentAccess) {
       lines.push('  agentAccess: true');
     }
@@ -104,12 +139,15 @@ export function graphToYaml(graph: ProgramGraph): string {
     lines.push('');
   }
 
+  // Shared context: ordinal counter for standalone @auto availabilityDomain instances.
+  const serCtx: SerializeCtx = { autoADIdx: 0 };
+
   // Resources
   lines.push('resources:');
   for (const section of graph.sections) {
     lines.push(`  # --- section: ${section.id} ---`);
     for (const item of section.items) {
-      serializeItem(lines, item, '  ');
+      serializeItem(lines, item, '  ', undefined, undefined, serCtx);
     }
   }
   lines.push('');
@@ -169,7 +207,17 @@ function emitProperties(lines: string[], props: {key: string; value: string}[], 
   }
 }
 
-function serializeItem(lines: string[], item: ProgramItem, indent: string, loopVar?: string): void {
+/**
+ * Inside a {{range}} block, Go template rebinds "." to the loop variable.
+ * All config references must use the root context "$" instead of ".".
+ * This rewrites "{{ .Config." → "{{ $.Config." and "{{ .Config." inside
+ * complex expressions like object literals and quoted strings.
+ */
+function fixConfigRefsForLoop(value: string): string {
+  return value.replace(/\{\{\s*\.Config\./g, '{{ $.Config.');
+}
+
+function serializeItem(lines: string[], item: ProgramItem, indent: string, loopVar?: string, loopCtx?: LoopContext, serCtx?: SerializeCtx): void {
   if (item.kind === 'resource') {
     const rawName = item.name.trim() || 'unnamed-resource';
     // Auto-append loop variable so each iteration has a unique resource key
@@ -182,7 +230,18 @@ function serializeItem(lines: string[], item: ProgramItem, indent: string, loopV
     // Only emit properties that have both a key and a non-empty value.
     // Omitting empty-value properties prevents type errors when Pulumi expects
     // an object (e.g. sourceDetails) but the serializer would emit a bare "".
-    const filledProps = item.properties.filter(p => p.key.trim() && p.value.trim() !== '');
+    let filledProps = item.properties.filter(p => p.key.trim() && p.value.trim() !== '');
+    // Resolve @auto for availabilityDomain before any other transformations.
+    // Loop context → mod expression; standalone → ordinal counter.
+    filledProps = filledProps.map(p =>
+      p.key === 'availabilityDomain' && p.value === '@auto'
+        ? { key: p.key, value: resolveAutoAD(loopCtx, serCtx ?? { autoADIdx: 0 }) }
+        : p
+    );
+    // Inside a range block, "." is the loop variable — rewrite .Config.* → $.Config.*
+    if (loopVar) {
+      filledProps = filledProps.map(p => ({ key: p.key, value: fixConfigRefsForLoop(p.value) }));
+    }
     if (filledProps.length > 0) {
       lines.push(`${indent}  properties:`);
       emitProperties(lines, filledProps, `${indent}    `);
@@ -195,21 +254,28 @@ function serializeItem(lines: string[], item: ProgramItem, indent: string, loopV
       }
     }
   } else if (item.kind === 'loop') {
-    const rangeExpr = loopSourceToRange(item.source, item.variable);
+    const hasAutoAD = itemsHaveAutoAD(item.items);
+    const isUntilConfig = item.source.type === 'until-config';
+    // For list loops containing @auto, emit two-variable range to expose a numeric index.
+    const useIndexVar = hasAutoAD && !isUntilConfig;
+    const rangeExpr = loopSourceToRange(item.source, item.variable, useIndexVar);
     lines.push(`${indent}{{- range ${rangeExpr} }}`);
+    const childLoopCtx: LoopContext | undefined = hasAutoAD
+      ? { indexVar: isUntilConfig ? item.variable : '$__idx' }
+      : undefined;
     for (const child of item.items) {
-      serializeItem(lines, child, indent, item.variable || loopVar);
+      serializeItem(lines, child, indent, item.variable || loopVar, childLoopCtx ?? loopCtx, serCtx);
     }
     lines.push(`${indent}{{- end }}`);
   } else if (item.kind === 'conditional') {
     lines.push(`${indent}{{- if ${item.condition} }}`);
     for (const child of item.items) {
-      serializeItem(lines, child, indent, loopVar);
+      serializeItem(lines, child, indent, loopVar, loopCtx, serCtx);
     }
     if (item.elseItems && item.elseItems.length > 0) {
       lines.push(`${indent}{{- else }}`);
       for (const child of item.elseItems) {
-        serializeItem(lines, child, indent, loopVar);
+        serializeItem(lines, child, indent, loopVar, loopCtx, serCtx);
       }
     }
     lines.push(`${indent}{{- end }}`);
@@ -221,11 +287,16 @@ function serializeItem(lines: string[], item: ProgramItem, indent: string, loopV
   }
 }
 
-function loopSourceToRange(source: LoopSource, variable: string): string {
+function loopSourceToRange(source: LoopSource, variable: string, useIndexVar = false): string {
   if (source.type === 'until-config') {
     return `${variable} := until (atoi $.Config.${source.configKey})`;
   } else if (source.type === 'list') {
-    return `${variable} := list ${source.values.join(' ')}`;
+    // Bare identifiers in Go templates are interpreted as function calls.
+    // Quote any value that isn't already a plain integer.
+    const items = source.values.map(v => /^\d+$/.test(v) ? v : `"${v}"`);
+    // When @auto AD round-robin is needed, expose a numeric index via the two-variable form.
+    const varPart = useIndexVar ? `$__idx, ${variable}` : variable;
+    return `${varPart} := list ${items.join(' ')}`;
   } else {
     return `${variable} := ${source.expr}`;
   }

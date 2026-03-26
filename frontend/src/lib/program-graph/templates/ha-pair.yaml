@@ -1,0 +1,177 @@
+name: ha-pair
+runtime: yaml
+description: "Two instances across subnets behind a Network Load Balancer with TCP health checks — active/active or active/passive HA (inspired by keepalived / Pacemaker)"
+
+meta:
+  displayName: High-Availability Pair with NLB
+  agentAccess: true
+
+config:
+  compartmentName:
+    type: string
+    default: "my-compartment"
+  imageId:
+    type: string
+    default: ""
+  sshPublicKey:
+    type: string
+    default: ""
+  shape:
+    type: string
+    default: "VM.Standard.A1.Flex"
+  ocpus:
+    type: string
+    default: "2"
+  memoryInGbs:
+    type: string
+    default: "12"
+  appPort:
+    type: string
+    default: "443"
+    description: "TCP port for the NLB listener"
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+
+resources:
+  # --- section: networking ---
+  compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: "{{ .Config.compartmentName }}"
+      description: "Created by Pulumi"
+      enableDelete: "true"
+  vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${compartment.id}
+      cidrBlocks: ["10.0.0.0/16"]
+      displayName: "ha-vcn"
+      dnsLabel: "ha"
+    options:
+      dependsOn:
+        - ${compartment}
+  igw:
+    type: oci:Core/internetGateway:InternetGateway
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "igw"
+      enabled: "true"
+    options:
+      dependsOn:
+        - ${vcn}
+  route-table:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "ha-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
+    options:
+      dependsOn:
+        - ${igw}
+  subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.1.0/24"
+      displayName: "ha-subnet"
+      dnsLabel: "hasub"
+      routeTableId: ${route-table.id}
+      prohibitPublicIpOnVnic: "false"
+    options:
+      dependsOn:
+        - ${route-table}
+  nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ${compartment.id}
+      displayName: "ha-nlb"
+      subnetId: ${subnet.id}
+      isPrivate: "false"
+    options:
+      dependsOn:
+        - ${subnet}
+  backend-set:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${nlb.id}
+      name: "app-backends"
+      policy: "FIVE_TUPLE"
+      healthChecker: { protocol: "TCP", port: {{ .Config.appPort }} }
+    options:
+      dependsOn:
+        - ${nlb}
+  listener:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${nlb.id}
+      name: "app-listener"
+      defaultBackendSetName: ${backend-set.name}
+      protocol: "TCP"
+      port: {{ .Config.appPort }}
+    options:
+      dependsOn:
+        - ${backend-set}
+  # --- section: compute ---
+  node-a:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${compartment.id}
+      availabilityDomain: ${availabilityDomains[0].name}
+      shape: "{{ .Config.shape }}"
+      displayName: "node-a"
+      sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
+      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: false }
+      metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
+      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+    options:
+      dependsOn:
+        - ${subnet}
+  node-b:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${compartment.id}
+      availabilityDomain: ${availabilityDomains[0].name}
+      shape: "{{ .Config.shape }}"
+      displayName: "node-b"
+      sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
+      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: false }
+      metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
+      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+    options:
+      dependsOn:
+        - ${subnet}
+  backend-a:
+    type: oci:NetworkLoadBalancer/backend:Backend
+    properties:
+      networkLoadBalancerId: ${nlb.id}
+      backendSetName: ${backend-set.name}
+      targetId: ${node-a.id}
+      port: {{ .Config.appPort }}
+    options:
+      dependsOn:
+        - ${listener}
+        - ${node-a}
+  backend-b:
+    type: oci:NetworkLoadBalancer/backend:Backend
+    properties:
+      networkLoadBalancerId: ${nlb.id}
+      backendSetName: ${backend-set.name}
+      targetId: ${node-b.id}
+      port: {{ .Config.appPort }}
+    options:
+      dependsOn:
+        - ${backend-a}
+        - ${node-b}
+
+outputs:
+  nlbIp: ${nlb.ipAddresses[0].ipAddress}

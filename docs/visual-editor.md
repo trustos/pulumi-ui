@@ -100,7 +100,8 @@ interface ConfigFieldDef {
 - Always deterministic. Section boundaries are written as YAML comments (`# --- section: networking ---`) that survive a round-trip.
 - Loops serialize to `{{- range }}` blocks. Conditionals to `{{- if }}` blocks.
 - Property values are sanitized through `yamlValue()` — empty strings emit `""` so they are preserved on re-parse.
-- The `meta:` block is emitted when any config field has a `group` or `layer` annotation.
+- The `meta:` block is emitted when any of these are present: `displayName` (different from `name`), `agentAccess: true`, config field `group` annotations, or config field `description` annotations.
+- `meta.displayName` stores the human-readable program name separately from the machine-friendly `name` field. It survives full YAML roundtrips.
 - Config fields of type `cloudinit` serialize as `type: string` in YAML (Pulumi YAML does not know about `cloudinit`) with a YAML literal block scalar for multi-line default values.
 
 **`parser.ts`** — `yamlToGraph(yaml): ParseResult`
@@ -158,7 +159,7 @@ src/pages/ProgramEditor.svelte          ← page (owns state, fetches on mount, 
 - **Category pills** — clickable category filters (All / Networking / Compute / etc.).
 - **Agent Connect indicator** — templates with `agentAccess: true` show a globe icon with tooltip.
 - **Resource count** — computed dynamically from the graph, including resources inside loops/conditionals.
-- Templates are TypeScript-defined `ProgramGraph` objects in `src/lib/program-graph/templates/`.
+- Templates are plain YAML files in `src/lib/program-graph/templates/*.yaml` — the same format the editor saves and exports. Loaded at runtime via Vite `?raw` imports and parsed through `yamlToGraph()`. To add or modify a template, edit the YAML file directly — no TypeScript changes required.
 
 ---
 
@@ -188,16 +189,24 @@ For required non-object property rows with an empty value, a `→ config` chip i
 **Promote to Variable** — For certain well-known keys (e.g. `availabilityDomain`), a `→ variable` chip is shown instead. Clicking it auto-scaffolds the full `fn::invoke` variable definition in the graph's `variables:` and sets the property value to the correct Pulumi interpolation (e.g. `${availabilityDomains[0].name}`). This is driven by `KNOWN_VARIABLE_TEMPLATES` in `ProgramEditor.svelte`. For unknown keys, it sets the value to `${key}` and the user completes the variable definition manually.
 
 ### Structured Object Property Editor
-When the OCI schema provides sub-field definitions for an object or array-of-objects property, `PropertyEditor` delegates rendering to `ObjectPropertyEditor.svelte` instead of showing a raw textarea. This gives users:
+`PropertyEditor` delegates object/array property rendering to `ObjectPropertyEditor.svelte` instead of a raw textarea in two cases (`canUseStructuredEditor`):
+
+**(a) Schema-backed** — the OCI schema provides sub-field definitions (`PropertySchema.properties` or `PropertySchema.items.properties`).
+
+**(b) Value-backed** — the property schema says `type: object` (even without sub-fields) **and** the current value is already a parseable inline object (`{ ... }`). This handles free-form map properties like `metadata` where the OCI schema does not enumerate keys but the recipe pre-fills a known value.
+
+In case (b), no schema-driven "add optional field" buttons appear, but chip rendering and reference pickers still work.
+
+ObjectPropertyEditor gives users:
 
 - **Named sub-field rows** with key labels, required markers, and description tooltips.
 - **Reference pickers** (⊕) on every sub-field — config refs, variables, and resource outputs.
-- **Chip rendering** — `{{ .Config.KEY }}` and `${resource.id}` display as colored pills.
-- **Add optional sub-fields** — missing sub-fields appear as `+ fieldName` buttons below.
+- **Chip rendering** — `{{ .Config.KEY }}` and `{{ $.Config.KEY }}` (loop context) and `${resource.id}` display as colored pills.
+- **Add optional sub-fields** — missing sub-fields (from schema, case a) appear as `+ fieldName` buttons below.
 - **Array mode** — `routeRules`, `ingressSecurityRules`, etc. render as a list of sub-field editors with add/remove item controls.
 - **Graceful fallback** — if a value string cannot be parsed (malformed or hand-edited), the editor shows a raw textarea with an explanatory message.
 
-Properties with structured editing enabled:
+Properties with schema-backed structured editing (case a):
 
 | Property | Type | Sub-fields from schema |
 |---|---|---|
@@ -211,16 +220,23 @@ Properties with structured editing enabled:
 | `ingressSecurityRules` | array | items: `{ protocol*, source*, ... }` |
 | `placementConfigurations` | array | items: `{ availabilityDomain*, primarySubnetId* }` |
 
+Properties with value-backed structured editing (case b):
+
+| Property | Value the recipe pre-fills | Parsed fields shown |
+|---|---|---|
+| `metadata` | `{ ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }` | `ssh_authorized_keys` with config chip |
+
 The compact value format (`{ key: "val" }` / `[{ ... }]`) is parsed and serialized by `$lib/program-graph/object-value.ts`. Sub-field schemas come from `PropertySchema.Properties` / `PropertySchema.Items` — populated by resolving `$ref` pointers in the live Pulumi schema or from the hardcoded `fallbackSchema()`.
 
 ### Object Property Placeholders
-When no structured sub-fields are available (plain `object` type without schema), textarea fields show contextual placeholder text:
+When neither schema sub-fields nor an inline-object value is available (plain `object` type with no value or a raw-YAML value), a textarea with a contextual placeholder is shown:
 
 | Property key | Placeholder |
 |---|---|
 | `sourceDetails` | `sourceType: image\nimageId: {{ .Config.imageId }}` |
 | `shapeConfig` | `ocpus: {{ .Config.ocpusPerNode }}\nmemoryInGbs: {{ .Config.memoryGbPerNode }}` |
 | `createVnicDetails` | `subnetId: ${subnet.id}\nassignPublicIp: false` |
+| `metadata` | `ssh_authorized_keys: "{{ .Config.sshPublicKey }}"` |
 | `placementConfigurations` | `- availabilityDomain: ${availabilityDomain}\n  primarySubnetId: ${subnet.id}` |
 
 ### Required Property Auto-fill
@@ -247,8 +263,53 @@ This works in both visual and YAML modes — in visual mode it mutates the graph
 
 Level 7 warnings are **non-blocking** — users can save and address networking later. The backend `hasBlockingErrors()` helper (tested in `internal/api/programs_test.go`) only blocks on Levels 1–6.
 
+### Availability Domain Auto-Assignment (`@auto`)
+
+The `availabilityDomain` property on `oci:Core/instance:Instance` (and `oci:Core/volume:Volume`) supports a special value `@auto` in the graph model. Instead of hard-coding a single AD index, the editor assigns availability domains automatically:
+
+**In standalone resources** (not inside a loop): the serializer assigns ordinal indices in document order. First `@auto` instance → `${availabilityDomains[0].name}`, second → `[1]`, third → `[2]`. This distributes multiple standalone instances across different ADs for resilience.
+
+**Inside an `until-config` loop**: serialized as `${availabilityDomains[{{ mod $VAR (atoi $.Config.adCount) }}].name}` — Sprig's `mod` round-robins across `adCount` domains.
+
+**Inside a list loop**: a two-variable range form is emitted (`{{- range $__idx, $VAR := list ... }}`) to expose a numeric index, then the same `mod` expression is used.
+
+The parser normalizes any `${availabilityDomains[N].name}` (integer or `{{ }}` expression index) back to `@auto` on load, so the round-trip is lossless.
+
+In the visual editor, `@auto` properties render as a `var`-style chip labeled **availabilityDomains** with small *auto assign* text. Clicking `×` clears it back to a free-text field for manual override.
+
+`adCount` is automatically added as an `integer` config field (default `1`) whenever the Instance recipe defaults are applied.
+
+### Deferred Networking Warning
+
+When an `oci:Core/instance:Instance` resource is added to a program that has none of the standard networking resources (`vcn`, `igw`, `route-table`, `subnet`), the editor shows a warning banner:
+
+> *"This instance will not deploy without networking resources (VCN, subnet, route table, IGW)."*
+
+The banner contains an **Add Networking** button that prepends the full set of four networking resources in a new `networking` section. The warning disappears once any of the standard networking resource names is present. Logic lives in `ProgramEditor.svelte` via the `showNetworkingWarning` derived state and `addNetworkingForInstance()` function.
+
+### Loop Resource Names
+Resources inside a `LoopItem` are stored in the graph with their **base name only** (e.g. `instance`). The serializer appends `-{{ $loopVar }}` when emitting YAML, producing `instance-{{ $i }}:`. The parser reverses this on re-parse, stripping the `-{{ ... }}` suffix so the graph always holds clean base names.
+
+`ProgramEditor` expands these for display via `collectAllResources()`:
+- A resource named `instance` inside a loop with `source = { type: 'list', values: ['a', 'b'] }` produces two entries: `instance-a` and `instance-b`.
+- These expanded names are used for dependsOn autocomplete, output suggestions, and stale-output pruning.
+
+Config references inside loop bodies are automatically rewritten by the serializer: `{{ .Config.key }}` → `{{ $.Config.key }}` (Go template root context is required inside `range`).
+
 ### Outputs Panel
 `OutputsPanel.svelte` in the right sidebar (below `ConfigFieldPanel`) allows adding, editing, and removing `outputs: OutputDef[]` entries. Changes are preserved through visual/YAML round-trips.
+
+**"From resources" suggestions** are generated per resource and per attribute. For each resource in `allProgramResourceRefs` (which includes loop-expanded names), the panel shows one button per important output attribute. The attribute list is driven by `HIGHLIGHTED_OUTPUTS` in `ProgramEditor.svelte`:
+
+| Resource type | Suggested attrs |
+|---|---|
+| `oci:Core/instance:Instance` | `publicIp`, `privateIp`, `id` |
+| `oci:Identity/compartment:Compartment` | `id` |
+| `oci:Core/vcn:Vcn` | `id` |
+| `oci:Core/subnet:Subnet` | `id` |
+| All others | `id` |
+
+Clicking a suggestion auto-generates a camelCase key (`instanceAPublicIp`) and adds `${instance-a.publicIp}` as the value. Suggestions that are already present in the outputs list are hidden.
 
 ### Pre-Save Validation
 Before saving in visual mode, `collectVisualErrors()` checks:
@@ -303,9 +364,9 @@ Issues are ordered **P1 → P3** (P1 = must fix before usable; P3 = polish). G1 
 
 `serializer.ts` must wrap values through a `yamlValue()` helper that quotes strings containing `: `, ` #`, or hazardous leading characters. Go template expressions (`{{ }}`) and Pulumi interpolations (`${...}`) are passed through unchanged.
 
-**P1-2 · All four starter templates fail deployment**
+**P1-2 · All four starter templates fail deployment** ✓ FIXED
 
-`single-instance.ts`, `n-node-cluster.ts`, and `nlb-app.ts` templates omit required OCI instance properties: `subnetId`, `sourceDetails`, and `metadata.ssh_authorized_keys`. All three templates need networking sections (subnet, IGW) and completed instance property sets added.
+All 11 templates are now complete, deployable YAML files with full networking, compute, and output definitions. Templates use `@auto` for availability domain assignment and include `adCount` where required.
 
 **P1-3 · No UI for program outputs** ✓ FIXED
 
@@ -353,41 +414,37 @@ Add a hover-visible delete button to each section row in `SectionNavigator`. The
 
 ### G1 — Loop/Conditional Interaction Bugs
 
-**G1-1 · Cannot add resources inside a Loop or Conditional block (CRITICAL)**
+**G1-1 · Cannot add resources inside a Loop or Conditional block** ✓ FIXED
 
-`LoopBlock.svelte` and `ConditionalBlock.svelte` render their `items` arrays as read-only. Fix: add `+ Resource`, `+ Nested Loop`, remove buttons, and full `bind:` wiring to each block's body. For `ConditionalBlock`, add both then/else branch controls plus `+ Add Else Branch` / remove else branch.
+**G1-2 · Loop dropdown broken when no integer config fields exist** ✓ FIXED
 
-**G1-2 · Loop dropdown broken when no integer config fields exist**
+**G1-3 · Newly added config fields not visible in loop dropdowns** ✓ FIXED
 
-When source type is `until-config` and no integer config fields exist, the Select renders with `value=''` and no options. Fix: show an inline prompt ("Add an integer config field first") and fall back to `list` type in `updateSourceType()` when no integer fields are available.
+**G1-4 · Nested loops/conditionals inside loops not rendered** ✓ FIXED (addressed by G1-1)
 
-**G1-3 · Newly added config fields not visible in loop dropdowns**
-
-bits-ui Select may cache its options list. Fix: wrap the `Select.Root` in a `{#key configFields.length}` block in `LoopBlock.svelte` to force re-mount when config fields change.
-
-**G1-4 · Nested loops/conditionals inside loops not rendered**
-
-Addressed by G1-1 — the full `{#each loop.items}` handler must cover all item kinds including nested `LoopItem` and `ConditionalItem`.
-
-**G1-5 · Resources inside loops excluded from global dependsOn list**
-
-`SectionEditor`'s `allResourceNames` derived value only collects top-level resource names. Fix: use a recursive `collectResourceNames(items)` helper that descends into loop and conditional items.
+**G1-5 · Resources inside loops excluded from global dependsOn list** ✓ FIXED
 
 **G1-6 · Config field groups not supported**
 
 `ConfigFieldDef` has no `group`/`groupLabel` fields. Fix: add them to the type, add a group input to `ConfigFieldPanel.svelte`, emit the `meta:` block in `serializer.ts`, and parse it back in `parser.ts`.
 
-### Implementation Order
+### Additional Fixes (shipped)
+
+**Loop list values input reset on keystrokes** ✓ FIXED — Svelte 5 controlled input pattern caused the DOM to reset on every oninput event. Fixed by using a local `listValuesText` state with `bind:value` and a `prevSourceType` guard in the `$effect` that only re-syncs when the source type (not the values) changes.
+
+**Parser stored `instance-{{ $i }}` as resource name** ✓ FIXED — `tryParseLoop()` now strips the `-{{ ... }}` loop-variable suffix from resource names after parsing the body, so the graph always stores clean base names. Covered by `parser.test.ts`.
+
+**Output suggestions showed only `.id` for all resources** ✓ FIXED — `OutputsPanel` now receives `resourceRefs: {name, attrs}[]` and generates one suggestion per (resource, attr) pair. Important attrs per type are driven by `HIGHLIGHTED_OUTPUTS` in `ProgramEditor`.
+
+**Output suggestions excluded loop-expanded names** ✓ FIXED — `collectAllNames` replaced by `collectAllResources` which returns `{name, type}[]`, enabling loop expansion and per-type attribute lookup in one pass.
+
+**Compartment ID field duplicated when `compartment` resource already exists** ✓ FIXED — `getResourceDefaults` and `getGraphExtras` accept `existingResourceNames` and substitute `${compartment.id}` / skip the redundant config field and dependent resource when `compartment` is present.
+
+**Loop-nested instances showed wrong config chips and raw textareas** ✓ FIXED — Four root causes addressed: (1) `allResourceRefs`, `variableNames`, `configFields` props were not threaded through `LoopBlock`/`ConditionalBlock` to nested `ResourceCard`; (2) `CONFIG_REF_RE` in `PropertyEditor` and `ObjectPropertyEditor` did not match `{{ $.Config.KEY }}` (loop-rewritten form) — fixed by adding `\$?`; (3) `createVnicDetails` recipe used dot-notation sub-keys producing unreadable block YAML — fixed by switching to inline `{ subnetId: "...", assignPublicIp: true }` format; (4) `metadata` (no OCI schema sub-properties) never reached `ObjectPropertyEditor` — fixed by `canUseStructuredEditor` which activates the structured editor for any `object`-type property whose current value is an inline `{ ... }` object.
+
+### Implementation Order (remaining)
 
 ```
-G1-2  Loop dropdown broken when no config fields     (LoopBlock.svelte — 1h)
-G1-3  Config field dropdown reactivity fix           (LoopBlock.svelte {#key} — 30min)
-P1-1  Property value escaping                        (serializer.ts — 30min)
-P1-2  Fix all 4 templates                            (4 template files — 2h)
-P1-3  Outputs panel                                  (new component + wire-up — 2h)
-G1-1  Add/remove items inside Loop and Conditional   (LoopBlock + ConditionalBlock — 3h)
-G1-4  Render nested loops/conditionals               (included in G1-1)
-G1-5  Cross-section resource names for dependsOn     (SectionEditor.svelte — 30min)
 G1-6  Config field groups support                    (3 files — 2h)
 P2-1  Raw block UX                                   (SectionEditor.svelte — 30min)
 P2-2  Loop variable validation                       (LoopBlock.svelte + ProgramEditor.svelte — 45min)
@@ -456,5 +513,6 @@ For **simpler custom programs** (3–10 resources, 1–2 loops, basic config), t
 
 | File | Description |
 |---|---|
+| `frontend/src/lib/program-graph/templates/*.yaml` | 11 built-in template programs (VCN, subnets, single instance, HA pair, cluster, etc.) |
 | `docs/nomad-cluster-program.yaml` | v1 — short-form resource type aliases |
 | `docs/nomad-cluster-v2-program.yaml` | v2 — canonical resource type names, configurable backup retention, NLB NSG, 13 IAM statements |

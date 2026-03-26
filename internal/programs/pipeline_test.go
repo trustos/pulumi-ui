@@ -96,7 +96,7 @@ resources:
 		AgentVersion:   "latest",
 		AgentToken:     "test-token",
 	}
-	injected, err := agentinject.InjectIntoYAML(sanitized, agentVars)
+	injected, err := agentinject.InjectIntoYAML(sanitized, []agentinject.AgentVars{agentVars})
 	require.NoError(t, err)
 	assert.Contains(t, injected, "user_data", "agent bootstrap should be injected into instance")
 
@@ -194,7 +194,7 @@ resources:
 		AgentVersion:   "latest",
 		AgentToken:     "test-token",
 	}
-	injected, err := agentinject.InjectIntoYAML(sanitized, agentVars)
+	injected, err := agentinject.InjectIntoYAML(sanitized, []agentinject.AgentVars{agentVars})
 	require.NoError(t, err)
 	assert.Contains(t, injected, "user_data", "agent bootstrap injected into instance")
 

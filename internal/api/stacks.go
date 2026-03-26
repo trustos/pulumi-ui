@@ -369,6 +369,12 @@ func (h *Handler) DeleteStack(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.NodeCertStore != nil {
+		if err := h.NodeCertStore.Delete(stackName); err != nil {
+			log.Printf("[warn] failed to remove node certs for %s: %v", stackName, err)
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -602,8 +608,10 @@ func (h *Handler) GetStackLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-// generateNebulaPKI creates the Nebula CA, pulumi-ui node cert, agent node
-// cert, and a per-stack auth token for a new stack.
+// generateNebulaPKI creates the Nebula CA, pulumi-ui node cert, per-node
+// agent certs (10 nodes, .2–.11), and a per-stack auth token for a new stack.
+// Node 0's cert is also stored as the legacy agent_cert in stack_connections
+// for backwards compatibility with the mesh manager and Go programs.
 func (h *Handler) generateNebulaPKI(stackName string) error {
 	subnet, err := h.ConnStore.AllocateSubnet()
 	if err != nil {
@@ -625,14 +633,10 @@ func (h *Handler) generateNebulaPKI(stackName string) error {
 		return fmt.Errorf("issue UI cert: %w", err)
 	}
 
-	agentIP, err := nebulaPKI.AgentAddress(subnet)
+	// Generate 10 per-node certs (.2–.11). Node 0 doubles as the legacy agent cert.
+	nodeCerts, nodeIPs, err := nebulaPKI.GenerateNodeCerts(ca.CertPEM, ca.KeyPEM, subnet, 10, 365*24*time.Hour)
 	if err != nil {
-		return fmt.Errorf("compute agent address: %w", err)
-	}
-
-	agentCert, err := nebulaPKI.IssueCert(ca.CertPEM, ca.KeyPEM, "agent", agentIP, []string{"agent"}, 365*24*time.Hour)
-	if err != nil {
-		return fmt.Errorf("issue agent cert: %w", err)
+		return fmt.Errorf("generate node certs: %w", err)
 	}
 
 	tokenBytes := make([]byte, 32)
@@ -648,9 +652,30 @@ func (h *Handler) generateNebulaPKI(stackName string) error {
 		NebulaUICert:    uiCert.CertPEM,
 		NebulaUIKey:     uiCert.KeyPEM,
 		NebulaSubnet:    subnet,
-		NebulaAgentCert: agentCert.CertPEM,
-		NebulaAgentKey:  agentCert.KeyPEM,
+		NebulaAgentCert: nodeCerts[0].CertPEM, // node 0 = legacy single-agent identity
+		NebulaAgentKey:  nodeCerts[0].KeyPEM,
 		AgentToken:      agentToken,
 	}
-	return h.ConnStore.Create(conn)
+	if err := h.ConnStore.Create(conn); err != nil {
+		return err
+	}
+
+	// Store per-node certs when the NodeCertStore is wired (always true in production).
+	if h.NodeCertStore != nil {
+		dbCerts := make([]*db.NodeCert, len(nodeCerts))
+		for i, nc := range nodeCerts {
+			dbCerts[i] = &db.NodeCert{
+				StackName:  stackName,
+				NodeIndex:  i,
+				NebulaCert: nc.CertPEM,
+				NebulaKey:  nc.KeyPEM,
+				NebulaIP:   nodeIPs[i],
+			}
+		}
+		if err := h.NodeCertStore.CreateAll(dbCerts); err != nil {
+			return fmt.Errorf("store node certs: %w", err)
+		}
+	}
+
+	return nil
 }

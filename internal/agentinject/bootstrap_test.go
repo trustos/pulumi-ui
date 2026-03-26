@@ -44,7 +44,7 @@ func TestRenderAgentBootstrap_ContainsMarker(t *testing.T) {
 func TestRenderAgentBootstrap_InstallsNebulaBinary(t *testing.T) {
 	result := string(RenderAgentBootstrap(AgentVars{NebulaVersion: "v1.10.3"}))
 	assert.Contains(t, result, "nebula-linux-")
-	assert.Contains(t, result, "tar xz -C /usr/local/bin nebula nebula-cert")
+	assert.Contains(t, result, "tar xz -C /usr/local/bin -f")
 	assert.Contains(t, result, "chmod +x /usr/local/bin/nebula")
 }
 

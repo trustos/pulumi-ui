@@ -1,15 +1,16 @@
 <script lang="ts">
-  import { vcnOnlyTemplate } from '$lib/program-graph/templates/vcn-only';
-  import { singleInstanceTemplate } from '$lib/program-graph/templates/single-instance';
-  import { privateSubnetTemplate } from '$lib/program-graph/templates/private-subnet';
-  import { webServerTemplate } from '$lib/program-graph/templates/web-server';
-  import { bastionHostTemplate } from '$lib/program-graph/templates/bastion-host';
-  import { devEnvironmentTemplate } from '$lib/program-graph/templates/dev-environment';
-  import { databaseServerTemplate } from '$lib/program-graph/templates/database-server';
-  import { loadBalancedClusterTemplate } from '$lib/program-graph/templates/load-balanced-cluster';
-  import { haPairTemplate } from '$lib/program-graph/templates/ha-pair';
-  import { orchestratorClusterTemplate } from '$lib/program-graph/templates/orchestrator-cluster';
-  import { multiTierAppTemplate } from '$lib/program-graph/templates/multi-tier-app';
+  import vcnOnlyTemplate from '$lib/program-graph/templates/vcn-only.yaml?raw';
+  import singleInstanceTemplate from '$lib/program-graph/templates/single-instance.yaml?raw';
+  import privateSubnetTemplate from '$lib/program-graph/templates/private-subnet.yaml?raw';
+  import webServerTemplate from '$lib/program-graph/templates/web-server.yaml?raw';
+  import bastionHostTemplate from '$lib/program-graph/templates/bastion-host.yaml?raw';
+  import devEnvironmentTemplate from '$lib/program-graph/templates/dev-environment.yaml?raw';
+  import databaseServerTemplate from '$lib/program-graph/templates/database-server.yaml?raw';
+  import loadBalancedClusterTemplate from '$lib/program-graph/templates/load-balanced-cluster.yaml?raw';
+  import haPairTemplate from '$lib/program-graph/templates/ha-pair.yaml?raw';
+  import orchestratorClusterTemplate from '$lib/program-graph/templates/orchestrator-cluster.yaml?raw';
+  import multiTierAppTemplate from '$lib/program-graph/templates/multi-tier-app.yaml?raw';
+  import { yamlToGraph } from '$lib/program-graph/parser';
   import type { ProgramGraph, ProgramItem } from '$lib/types/program-graph';
   import { Button } from '$lib/components/ui/button';
   import * as Tooltip from '$lib/components/ui/tooltip';
@@ -25,7 +26,7 @@
   } = $props();
 
   interface TemplateEntry {
-    graph: ProgramGraph;
+    yaml: string;
     category: string;
     tags: string[];
   }
@@ -47,19 +48,20 @@
     return graph.sections.reduce((sum, s) => sum + countResources(s.items), 0);
   }
 
-  const templates: TemplateEntry[] = [
-    { graph: vcnOnlyTemplate, category: 'Networking', tags: ['vcn', 'network', 'foundation'] },
-    { graph: privateSubnetTemplate, category: 'Networking', tags: ['private', 'nat', 'subnet', 'security'] },
-    { graph: singleInstanceTemplate, category: 'Compute', tags: ['vm', 'instance', 'server', 'simple'] },
-    { graph: devEnvironmentTemplate, category: 'Compute', tags: ['dev', 'ssh', 'development', 'gitpod', 'ci', 'runner'] },
-    { graph: webServerTemplate, category: 'Web', tags: ['http', 'https', 'wordpress', 'nginx', 'apache', 'website', 'api'] },
-    { graph: bastionHostTemplate, category: 'Security', tags: ['jump', 'bastion', 'ssh', 'private', 'secure'] },
-    { graph: databaseServerTemplate, category: 'Data', tags: ['postgres', 'mysql', 'mongodb', 'database', 'storage', 'volume'] },
-    { graph: haPairTemplate, category: 'High Availability', tags: ['ha', 'failover', 'nlb', 'keepalived', 'pacemaker'] },
-    { graph: loadBalancedClusterTemplate, category: 'Cluster', tags: ['nlb', 'load', 'balancer', 'microservices', 'kubernetes', 'k8s', 'scale'] },
-    { graph: orchestratorClusterTemplate, category: 'Cluster', tags: ['nomad', 'kubernetes', 'k8s', 'containers', 'orchestration', 'consul', 'mesh'] },
-    { graph: multiTierAppTemplate, category: 'Architecture', tags: ['3-tier', 'web', 'app', 'db', 'lamp', 'rails', 'django'] },
-  ];
+  // Parse all templates once at module init time (they are small static strings).
+  const templates: (TemplateEntry & { graph: ProgramGraph })[] = [
+    { yaml: vcnOnlyTemplate, category: 'Networking', tags: ['vcn', 'network', 'foundation'] },
+    { yaml: privateSubnetTemplate, category: 'Networking', tags: ['private', 'nat', 'subnet', 'security'] },
+    { yaml: singleInstanceTemplate, category: 'Compute', tags: ['vm', 'instance', 'server', 'simple'] },
+    { yaml: devEnvironmentTemplate, category: 'Compute', tags: ['dev', 'ssh', 'development', 'gitpod', 'ci', 'runner'] },
+    { yaml: webServerTemplate, category: 'Web', tags: ['http', 'https', 'wordpress', 'nginx', 'apache', 'website', 'api'] },
+    { yaml: bastionHostTemplate, category: 'Security', tags: ['jump', 'bastion', 'ssh', 'private', 'secure'] },
+    { yaml: databaseServerTemplate, category: 'Data', tags: ['postgres', 'mysql', 'mongodb', 'database', 'storage', 'volume'] },
+    { yaml: haPairTemplate, category: 'High Availability', tags: ['ha', 'failover', 'nlb', 'keepalived', 'pacemaker'] },
+    { yaml: loadBalancedClusterTemplate, category: 'Cluster', tags: ['nlb', 'load', 'balancer', 'microservices', 'kubernetes', 'k8s', 'scale'] },
+    { yaml: orchestratorClusterTemplate, category: 'Cluster', tags: ['nomad', 'kubernetes', 'k8s', 'containers', 'orchestration', 'consul', 'mesh'] },
+    { yaml: multiTierAppTemplate, category: 'Architecture', tags: ['3-tier', 'web', 'app', 'db', 'lamp', 'rails', 'django'] },
+  ].map(t => ({ ...t, graph: yamlToGraph(t.yaml).graph }));
 
   const categories = [...new Set(templates.map(t => t.category))];
 

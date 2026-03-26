@@ -207,6 +207,49 @@ resources:
 	}
 }
 
+func TestValidateProgram_Level6_UndefinedOutputRef_Error(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  my-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+      cidrBlock: 10.0.0.0/16
+outputs:
+  instanceIp: ${instance.publicIp}
+`
+	errs := ValidateProgram(yaml)
+	var l6 []ValidationError
+	for _, e := range errs {
+		if e.Level == LevelVariableReference {
+			l6 = append(l6, e)
+		}
+	}
+	require.NotEmpty(t, l6, "should flag undefined output reference")
+	assert.Contains(t, l6[0].Message, "instance")
+	assert.Contains(t, l6[0].Field, "outputs.")
+}
+
+func TestValidateProgram_Level6_DefinedOutputRef_NoError(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+outputs:
+  instanceIp: ${instance.publicIp}
+`
+	errs := ValidateProgram(yaml)
+	for _, e := range errs {
+		if e.Level == LevelVariableReference {
+			t.Errorf("unexpected Level 6 error for valid output ref: %s", e.Message)
+		}
+	}
+}
+
 func TestValidateProgram_Level7_AgentAccess_NoCompute(t *testing.T) {
 	yaml := `name: test
 runtime: yaml

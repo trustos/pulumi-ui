@@ -30,10 +30,15 @@ export function yamlToGraph(yaml: string): ParseResult {
   const agentAccessMatch = yaml.match(/^meta:\s*\n(?:.*\n)*?\s+agentAccess:\s*(true|false)/m);
   const agentAccess = agentAccessMatch ? agentAccessMatch[1] === 'true' : undefined;
 
+  // displayName is stored under meta: (2-space indent) to survive roundtrip
+  const displayNameMatch = yaml.match(/^  displayName:\s*(.+)$/m);
+  const parsedName = nameMatch ? nameMatch[1].trim() : 'unnamed';
+  const displayName = displayNameMatch ? displayNameMatch[1].trim() : parsedName;
+
   const graph: ProgramGraph = {
     metadata: {
-      name: nameMatch ? nameMatch[1].trim() : 'unnamed',
-      displayName: nameMatch ? nameMatch[1].trim() : 'Unnamed',
+      name: parsedName,
+      displayName,
       description: descMatch ? descMatch[1].trim() : '',
       ...(agentAccess !== undefined && { agentAccess }),
     },
@@ -360,7 +365,15 @@ function tryParseResource(name: string, block: string): ResourceItem | null {
     const propRe = /^      (\w[\w-]*):\s*(.*)$/gm;
     let pm: RegExpExecArray | null;
     while ((pm = propRe.exec(propsBlock)) !== null) {
-      properties.push({ key: pm[1], value: pm[2].trim() });
+      const key = pm[1];
+      const raw = pm[2].trim();
+      // Normalise @auto: both the plain [0] form and the mod round-robin form
+      // are treated as equivalent — stored as @auto so the serializer can
+      // re-emit the correct expression based on loop context.
+      const value = key === 'availabilityDomain' && /^\$\{availabilityDomains\[(?:\d+|\{\{[^}]+\}\})\]\.name\}$/.test(raw)
+        ? '@auto'
+        : raw;
+      properties.push({ key, value });
     }
   }
 
@@ -391,7 +404,10 @@ function tryParseResource(name: string, block: string): ResourceItem | null {
 }
 
 function tryParseLoop(content: string): LoopItem | null {
-  const rangeRe = /\{\{-?\s*range\s+([\$\w]+)\s*:=\s*([^}]+)\s*\}\}/;
+  // Matches both single-variable form ($var := ...) and the two-variable index form
+  // ($__idx, $var := ...) emitted when @auto AD round-robin is active.
+  // In the two-variable form we capture the *value* variable (second), not the index.
+  const rangeRe = /\{\{-?\s*range\s+(?:\$__idx,\s*)?([\$\w]+)\s*:=\s*([^}]+)\s*\}\}/;
   const m = rangeRe.exec(content);
   if (!m) return null;
 
@@ -404,7 +420,10 @@ function tryParseLoop(content: string): LoopItem | null {
   if (untilMatch) {
     source = { type: 'until-config', configKey: untilMatch[1] };
   } else if (listMatch) {
-    source = { type: 'list', values: listMatch[1].trim().split(/\s+/) };
+    // Strip surrounding quotes from each value so the serializer can re-quote correctly.
+    // e.g. `list "a" "b"` → ['a', 'b'], `list 1 2` → ['1', '2']
+    const rawValues = listMatch[1].trim().split(/\s+/);
+    source = { type: 'list', values: rawValues.map(v => v.replace(/^["']|["']$/g, '')) };
   } else {
     source = { type: 'raw', expr: rangeExpr };
   }
@@ -415,7 +434,16 @@ function tryParseLoop(content: string): LoopItem | null {
   if (!endMatch) return null;
   const bodyContent = content.slice(startIdx, startIdx + endMatch.index);
 
-  const bodyItems = parseItems(bodyContent);
+  let bodyItems = parseItems(bodyContent);
+  // Strip the loop-variable template suffix from resource names.
+  // The serializer adds "-{{ $i }}" when emitting; the parser must reverse it
+  // so that graph state holds just "instance" (not "instance-{{ $i }}").
+  const loopSuffixRe = /-\{\{[^}]+\}\}$/;
+  bodyItems = bodyItems.map(item =>
+    item.kind === 'resource' && loopSuffixRe.test(item.name)
+      ? { ...item, name: item.name.replace(loopSuffixRe, '') }
+      : item
+  );
   const serialized = bodyItems.some(item =>
     item.kind === 'resource' && item.options?.dependsOn && item.options.dependsOn.length > 0
   );

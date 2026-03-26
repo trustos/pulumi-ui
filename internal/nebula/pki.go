@@ -93,6 +93,29 @@ func IssueCert(caCertPEM, caKeyPEM []byte, name string, ip netip.Prefix, groups 
 	return &CertBundle{CertPEM: certPEM, KeyPEM: keyPEM}, nil
 }
 
+// GenerateNodeCerts issues n node certificates signed by the given CA.
+// Nodes are assigned consecutive Nebula IPs starting at .2 within the /24 subnet
+// (node 0 → subnet.2, node 1 → subnet.3, …, node n-1 → subnet.n+1).
+//
+// Returns the CertBundles and the corresponding Nebula IP strings (e.g. "10.42.1.2/24").
+func GenerateNodeCerts(caCertPEM, caKeyPEM []byte, subnet string, n int, duration time.Duration) ([]*CertBundle, []string, error) {
+	bundles := make([]*CertBundle, n)
+	ips := make([]string, n)
+	for i := 0; i < n; i++ {
+		ip, err := SubnetIP(subnet, i+2) // .2 for node 0, .3 for node 1, …
+		if err != nil {
+			return nil, nil, fmt.Errorf("compute IP for node %d: %w", i, err)
+		}
+		cert, err := IssueCert(caCertPEM, caKeyPEM, fmt.Sprintf("node-%d", i), ip, []string{"agent"}, duration)
+		if err != nil {
+			return nil, nil, fmt.Errorf("issue cert for node %d: %w", i, err)
+		}
+		bundles[i] = cert
+		ips[i] = ip.String()
+	}
+	return bundles, ips, nil
+}
+
 func x25519Keypair() (pub, priv []byte) {
 	priv = make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, priv); err != nil {

@@ -205,8 +205,8 @@
     }
   }
 
-  // Config ref detection
-  const CONFIG_REF_RE = /^"?\{\{\s*\.Config\.(\w+)\s*\}\}"?$/;
+  // Config ref detection — matches both {{ .Config.KEY }} and {{ $.Config.KEY }} (loop context)
+  const CONFIG_REF_RE = /^"?\{\{\s*\$?\.Config\.(\w+)\s*\}\}"?$/;
   function getConfigRef(val: string): string | null {
     return CONFIG_REF_RE.exec(val)?.[1] ?? null;
   }

@@ -9,6 +9,8 @@
   import { insertAgentAccess, removeAgentAccess } from '$lib/program-graph/agent-access';
   import { scaffoldNetworkingGraph, scaffoldNetworkingYaml, hasNetworkingResources } from '$lib/program-graph/scaffold-networking';
   import { propagateRename, propagateRenameYaml } from '$lib/program-graph/rename-resource';
+  import { collectAllResources } from '$lib/program-graph/collect-resources';
+  import { getGraphExtras } from '$lib/program-graph/resource-defaults';
   import type { ProgramGraph, ProgramSection } from '$lib/types/program-graph';
   import type { ValidationError } from '$lib/types';
   import EditorModeBar from '$lib/components/EditorModeBar.svelte';
@@ -70,58 +72,55 @@
     graph.sections.some(s => s.items.some(i => i.kind === 'raw'))
   );
 
-  // G1-5: all resource names across the whole program (for cross-section dependsOn)
-  function collectAllNames(items: import('$lib/types/program-graph').ProgramItem[]): string[] {
-    const names: string[] = [];
-    for (const item of items) {
-      if (item.kind === 'resource') names.push(item.name);
-      else if (item.kind === 'loop') names.push(...collectAllNames(item.items));
-      else if (item.kind === 'conditional') {
-        names.push(...collectAllNames(item.items));
-        names.push(...collectAllNames(item.elseItems ?? []));
-      }
-    }
-    return names;
-  }
-  const allProgramResourceNames = $derived(
-    graph.sections.flatMap(s => collectAllNames(s.items))
+  // G1-5: collect all resources (name + type) across the whole program.
+  // Loop-expanded resources (e.g. "instance" in a list loop with values ["a","b"])
+  // produce one entry per value: [{name:"instance-a",type:...},{name:"instance-b",type:...}].
+  const allProgramResources = $derived(
+    graph.sections.flatMap(s => collectAllResources(s.items))
   );
+  const allProgramResourceNames = $derived(allProgramResources.map(r => r.name));
 
   // Variable names from the variables: block (for $-ref autocomplete)
   const allVariableNames = $derived(
     (graph.variables ?? []).map(v => v.name)
   );
 
-  // Resource names + their output attribute names (loaded once from the schema cache)
-  let resourceOutputAttrs = $state<Record<string, string[]>>({});
+  // Prune outputs that reference resource/variable names no longer in the graph.
+  // This handles renamed resources, resources moved into loops (auto-suffixed),
+  // and any other structural change that invalidates an output ref.
   $effect(() => {
-    getOciSchema().then(s => {
-      const map: Record<string, string[]> = {};
-      for (const [type, res] of Object.entries(s.resources)) {
-        const shortName = type.split(':').pop() ?? type;
-        if (res.outputs) map[type] = Object.keys(res.outputs).sort();
-      }
-      resourceOutputAttrs = map;
-    }).catch(() => {});
+    const validNames = new Set([...allProgramResourceNames, ...allVariableNames]);
+    const pruned = (graph.outputs ?? []).filter(o => {
+      const m = /^\$\{([^.[}\s]+)/.exec(o.value);
+      if (!m) return true;                    // non-interpolation value — keep
+      const ref = m[1];
+      if (ref.includes(':')) return true;     // provider config ref e.g. oci:tenancyOcid
+      return validNames.has(ref);
+    });
+    if (pruned.length !== (graph.outputs ?? []).length) {
+      graph = { ...graph, outputs: pruned };
+    }
   });
 
+  // Priority output attributes to suggest per resource type.
+  // Only the most useful outputs are listed; all others remain accessible via manual Add.
+  const HIGHLIGHTED_OUTPUTS: Record<string, string[]> = {
+    'oci:Core/instance:Instance': ['publicIp', 'privateIp', 'id'],
+    'oci:Identity/compartment:Compartment': ['id'],
+    'oci:Core/vcn:Vcn': ['id'],
+    'oci:Core/subnet:Subnet': ['id'],
+    'oci:Core/internetGateway:InternetGateway': ['id'],
+    'oci:Core/routeTable:RouteTable': ['id'],
+    'oci:Core/networkSecurityGroup:NetworkSecurityGroup': ['id'],
+    'oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer': ['id'],
+    'oci:Core/instanceConfiguration:InstanceConfiguration': ['id'],
+  };
+
   const allProgramResourceRefs = $derived(
-    allProgramResourceNames.map(name => {
-      // Find this resource's type from the graph to look up output attrs
-      function findType(items: import('$lib/types/program-graph').ProgramItem[]): string | undefined {
-        for (const item of items) {
-          if (item.kind === 'resource' && item.name === name) return item.resourceType;
-          if (item.kind === 'loop') { const t = findType(item.items); if (t) return t; }
-          if (item.kind === 'conditional') {
-            const t = findType(item.items) ?? findType(item.elseItems ?? []);
-            if (t) return t;
-          }
-        }
-      }
-      const type = graph.sections.flatMap(s => [findType(s.items)]).find(Boolean);
-      const attrs = (type && resourceOutputAttrs[type]) ? resourceOutputAttrs[type] : ['id'];
-      return { name, attrs };
-    })
+    allProgramResources.map(r => ({
+      name: r.name,
+      attrs: HIGHLIGHTED_OUTPUTS[r.type] ?? ['id'],
+    }))
   );
 
   // ── Property promotion helpers ─────────────────────────────────────────────
@@ -170,7 +169,7 @@
     availabilityDomain: {
       varName: 'availabilityDomains',
       yaml: '    fn::invoke:\n      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains\n      arguments:\n        compartmentId: ${oci:tenancyOcid}\n      return: availabilityDomains',
-      ref: '${availabilityDomains[0].name}',
+      ref: '@auto',
     },
   };
 
@@ -191,11 +190,12 @@
   }
 
   function handleResourceExtras(e: CustomEvent) {
-    const { configFields: newCfg, variables: newVars, outputs: newOutputs, resources: newResources } = e.detail as {
+    // Dependent resources (e.g. networking for an Instance) are NOT auto-added.
+    // The user sees a "Add Networking" warning banner and opts in explicitly.
+    const { configFields: newCfg, variables: newVars, outputs: newOutputs } = e.detail as {
       configFields: { key: string; type: string; default?: string; description?: string }[];
       variables: { name: string; yaml: string }[];
       outputs: { key: string; value: string }[];
-      resources: import('$lib/types/program-graph').ResourceItem[];
     };
     const existingCfgKeys = new Set(graph.configFields.map(f => f.key));
     const addedCfg = newCfg
@@ -213,26 +213,39 @@
     const existingOutputKeys = new Set((graph.outputs ?? []).map(o => o.key));
     const addedOutputs = newOutputs.filter(o => !existingOutputKeys.has(o.key));
 
-    // Collect existing resource names across all sections to avoid duplicates
-    const existingNames = new Set(
-      graph.sections.flatMap(s => s.items.filter(i => i.kind === 'resource').map(i => i.name))
-    );
-    const addedResources = (newResources ?? []).filter(r => !existingNames.has(r.name));
-
-    const hasChanges = addedCfg.length || addedVars.length || addedOutputs.length || addedResources.length;
-    if (hasChanges) {
-      const sections = addedResources.length
-        ? graph.sections.map((s, i) =>
-            i === 0 ? { ...s, items: [...addedResources.map(r => ({ ...r })), ...s.items] } : s
-          )
-        : graph.sections;
-
+    if (addedCfg.length || addedVars.length || addedOutputs.length) {
       graph = {
         ...graph,
         configFields: [...graph.configFields, ...addedCfg],
         variables: [...(graph.variables ?? []), ...addedVars],
         outputs: [...(graph.outputs ?? []), ...addedOutputs],
-        sections,
+      };
+    }
+  }
+
+  // ── Networking warning ────────────────────────────────────────────────────
+  const INSTANCE_TYPE = 'oci:Core/instance:Instance';
+  const NETWORKING_RESOURCE_NAMES = ['vcn', 'igw', 'route-table', 'subnet'];
+
+  const hasInstanceResource = $derived(
+    allProgramResources.some(r => r.type === INSTANCE_TYPE)
+  );
+  const hasRecipeNetworking = $derived(
+    NETWORKING_RESOURCE_NAMES.some(n => allProgramResourceNames.includes(n))
+  );
+  const showNetworkingWarning = $derived(hasInstanceResource && !hasRecipeNetworking);
+
+  function addNetworkingForInstance() {
+    const extras = getGraphExtras(INSTANCE_TYPE, allProgramResourceNames);
+    if (!extras || extras.resources.length === 0) return;
+    const existingNames = new Set(allProgramResourceNames);
+    const resourcesToAdd = extras.resources.filter(r => !existingNames.has(r.name));
+    if (resourcesToAdd.length > 0) {
+      graph = {
+        ...graph,
+        sections: graph.sections.map((s, i) =>
+          i === 0 ? { ...s, items: [...resourcesToAdd.map(r => ({ ...r })), ...s.items] } : s
+        ),
       };
     }
   }
@@ -777,6 +790,20 @@
     </Alert>
   {/if}
 
+  <!-- Networking missing warning -->
+  {#if showNetworkingWarning && mode === 'visual'}
+    <Alert variant="warning" class="rounded-none border-x-0 border-t-0">
+      <AlertDescription class="text-xs">
+        <div class="flex items-center gap-3">
+          <span>This instance needs a VCN, internet gateway, route table, and subnet to deploy successfully.</span>
+          <Button variant="outline" size="sm" class="h-7 text-[11px] shrink-0" onclick={addNetworkingForInstance}>
+            Add Networking
+          </Button>
+        </div>
+      </AlertDescription>
+    </Alert>
+  {/if}
+
   <!-- Degraded mode notice -->
   {#if degraded && mode === 'visual'}
     <Alert variant="warning" class="rounded-none border-x-0 border-t-0 text-xs">
@@ -823,7 +850,7 @@
           <ConfigFieldPanel bind:fields={graph.configFields} />
         </div>
         <div class="flex-1 min-h-0 overflow-y-auto">
-          <OutputsPanel bind:outputs={graph.outputs} resourceNames={allProgramResourceNames} />
+          <OutputsPanel bind:outputs={graph.outputs} resourceRefs={allProgramResourceRefs} />
         </div>
       </div>
     </div>

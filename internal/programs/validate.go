@@ -310,6 +310,7 @@ func validateVariableReferences(rendered string) []ValidationError {
 			Type       string                 `yaml:"type"`
 			Properties map[string]interface{} `yaml:"properties"`
 		} `yaml:"resources"`
+		Outputs map[string]interface{} `yaml:"outputs"`
 	}
 	if err := yaml.Unmarshal([]byte(rendered), &doc); err != nil {
 		return nil
@@ -326,6 +327,24 @@ func validateVariableReferences(rendered string) []ValidationError {
 	var errs []ValidationError
 	for resName, res := range doc.Resources {
 		checkRefValues(res.Properties, resName, defined, &errs)
+	}
+	// Check outputs for undefined resource/variable references.
+	for outputKey, outputVal := range doc.Outputs {
+		if s, ok := outputVal.(string); ok {
+			for _, m := range pulumiVarRefRe.FindAllStringSubmatch(s, -1) {
+				ref := m[1]
+				if strings.Contains(ref, ":") {
+					continue // provider config ref like oci:tenancyOcid
+				}
+				if !defined[ref] {
+					errs = append(errs, ValidationError{
+						Level:   LevelVariableReference,
+						Field:   "outputs." + outputKey,
+						Message: "output '" + outputKey + "' references '${" + ref + "}' which is not defined in variables: or resources:",
+					})
+				}
+			}
+		}
 	}
 	return errs
 }

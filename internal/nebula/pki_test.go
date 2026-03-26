@@ -1,6 +1,7 @@
 package nebula
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -113,4 +114,73 @@ func TestSubnetIP_HostIndexOverflow(t *testing.T) {
 	prefix, err := SubnetIP("10.42.1.0/24", 256)
 	require.NoError(t, err)
 	assert.Equal(t, "10.42.1.0", prefix.Addr().String(), "byte(256) wraps to 0")
+}
+
+// ---------------------------------------------------------------------------
+// GenerateNodeCerts
+// ---------------------------------------------------------------------------
+
+func TestGenerateNodeCerts_Count(t *testing.T) {
+	ca, err := GenerateCA("test-ca", 48*time.Hour)
+	require.NoError(t, err)
+
+	bundles, ips, err := GenerateNodeCerts(ca.CertPEM, ca.KeyPEM, "10.42.1.0/24", 10, 24*time.Hour)
+	require.NoError(t, err)
+	assert.Len(t, bundles, 10)
+	assert.Len(t, ips, 10)
+}
+
+func TestGenerateNodeCerts_IPRange(t *testing.T) {
+	ca, err := GenerateCA("test-ca", 48*time.Hour)
+	require.NoError(t, err)
+
+	bundles, ips, err := GenerateNodeCerts(ca.CertPEM, ca.KeyPEM, "10.42.1.0/24", 10, 24*time.Hour)
+	require.NoError(t, err)
+	_ = bundles
+
+	// Node 0 → .2, node 1 → .3, … node 9 → .11
+	for i, ip := range ips {
+		expected := fmt.Sprintf("10.42.1.%d/24", i+2)
+		assert.Equal(t, expected, ip, "node %d IP mismatch", i)
+	}
+}
+
+func TestGenerateNodeCerts_NoduplicateIPs(t *testing.T) {
+	ca, err := GenerateCA("test-ca", 48*time.Hour)
+	require.NoError(t, err)
+
+	_, ips, err := GenerateNodeCerts(ca.CertPEM, ca.KeyPEM, "10.42.5.0/24", 10, 24*time.Hour)
+	require.NoError(t, err)
+
+	seen := map[string]bool{}
+	for _, ip := range ips {
+		assert.False(t, seen[ip], "duplicate IP: %s", ip)
+		seen[ip] = true
+	}
+}
+
+func TestGenerateNodeCerts_SignedByCA(t *testing.T) {
+	ca, err := GenerateCA("test-ca", 48*time.Hour)
+	require.NoError(t, err)
+
+	bundles, _, err := GenerateNodeCerts(ca.CertPEM, ca.KeyPEM, "10.42.2.0/24", 3, 24*time.Hour)
+	require.NoError(t, err)
+
+	for i, b := range bundles {
+		assert.Contains(t, string(b.CertPEM), "NEBULA CERTIFICATE", "node %d cert missing PEM header", i)
+		assert.NotEmpty(t, b.KeyPEM, "node %d key must not be empty", i)
+	}
+}
+
+func TestGenerateNodeCerts_Node0MatchesAgentAddress(t *testing.T) {
+	ca, err := GenerateCA("test-ca", 48*time.Hour)
+	require.NoError(t, err)
+
+	subnet := "10.42.3.0/24"
+	_, ips, err := GenerateNodeCerts(ca.CertPEM, ca.KeyPEM, subnet, 5, 24*time.Hour)
+	require.NoError(t, err)
+
+	agentAddr, err := AgentAddress(subnet)
+	require.NoError(t, err)
+	assert.Equal(t, agentAddr.String(), ips[0], "node 0 IP should match AgentAddress (.2)")
 }

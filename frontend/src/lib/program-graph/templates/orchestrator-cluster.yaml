@@ -1,0 +1,179 @@
+name: orchestrator-cluster
+runtime: yaml
+description: "N-node private cluster with NLB, NSG, and agent connectivity — run container workloads, service mesh, and job scheduling (inspired by Nomad / Kubernetes)"
+
+meta:
+  displayName: Container Orchestration Cluster
+  agentAccess: true
+
+config:
+  compartmentName:
+    type: string
+    default: "my-compartment"
+  nodeCount:
+    type: integer
+    default: "3"
+    description: "Number of cluster nodes"
+  imageId:
+    type: string
+    default: ""
+  sshPublicKey:
+    type: string
+    default: ""
+  shape:
+    type: string
+    default: "VM.Standard.A1.Flex"
+  ocpus:
+    type: string
+    default: "4"
+  memoryInGbs:
+    type: string
+    default: "24"
+  adCount:
+    type: integer
+    default: "1"
+    description: "Number of availability domains to round-robin across"
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+
+resources:
+  # --- section: networking ---
+  compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: "{{ .Config.compartmentName }}"
+      description: "Created by Pulumi"
+      enableDelete: "true"
+  vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${compartment.id}
+      cidrBlocks: ["10.0.0.0/16"]
+      displayName: "cluster-vcn"
+      dnsLabel: "cluster"
+    options:
+      dependsOn:
+        - ${compartment}
+  igw:
+    type: oci:Core/internetGateway:InternetGateway
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "igw"
+      enabled: "true"
+    options:
+      dependsOn:
+        - ${vcn}
+  nat-gw:
+    type: oci:Core/natGateway:NatGateway
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "nat-gw"
+    options:
+      dependsOn:
+        - ${vcn}
+  public-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "public-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
+    options:
+      dependsOn:
+        - ${igw}
+  private-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "private-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${nat-gw.id}" }]
+    options:
+      dependsOn:
+        - ${nat-gw}
+  nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      displayName: "cluster-nsg"
+    options:
+      dependsOn:
+        - ${vcn}
+  nsg-internal:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${nsg.id}
+      direction: "INGRESS"
+      protocol: "all"
+      source: "10.0.0.0/16"
+      sourceType: "CIDR_BLOCK"
+    options:
+      dependsOn:
+        - ${nsg}
+  public-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.0.0/24"
+      displayName: "public-subnet"
+      dnsLabel: "pub"
+      routeTableId: ${public-rt.id}
+      prohibitPublicIpOnVnic: "false"
+    options:
+      dependsOn:
+        - ${public-rt}
+  private-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${compartment.id}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.1.0/24"
+      displayName: "private-subnet"
+      dnsLabel: "priv"
+      routeTableId: ${private-rt.id}
+      prohibitPublicIpOnVnic: "true"
+    options:
+      dependsOn:
+        - ${private-rt}
+  nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ${compartment.id}
+      displayName: "cluster-nlb"
+      subnetId: ${public-subnet.id}
+      isPrivate: "false"
+    options:
+      dependsOn:
+        - ${public-subnet}
+  # --- section: compute ---
+{{- range $i := until (atoi $.Config.nodeCount) }}
+  node-{{ $i }}:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${compartment.id}
+      availabilityDomain: ${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}
+      shape: "{{ $.Config.shape }}"
+      displayName: "node-{{ $i }}"
+      sourceDetails: { sourceType: "image", sourceId: "{{ $.Config.imageId }}" }
+      createVnicDetails: { subnetId: "${private-subnet.id}", assignPublicIp: false, nsgIds: ["${nsg.id}"] }
+      metadata: { ssh_authorized_keys: "{{ $.Config.sshPublicKey }}" }
+      shapeConfig: { ocpus: {{ $.Config.ocpus }}, memoryInGbs: {{ $.Config.memoryInGbs }} }
+    options:
+      dependsOn:
+        - ${private-subnet}
+        - ${nsg-internal}
+{{- end }}
+
+outputs:
+  nlbIp: ${nlb.ipAddresses[0].ipAddress}
