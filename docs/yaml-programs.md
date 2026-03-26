@@ -177,6 +177,30 @@ Injected resources use a `__agent_` prefix to avoid naming collisions. If agent 
 
 This is separate from the `ApplicationProvider` interface (which provides a full application catalog). A program can use `agentAccess: true` without implementing an application catalog.
 
+#### Required IP outputs
+
+When `agentAccess: true` is set and compute resources exist, the program **must** expose at least one IP output so the engine can discover agent addresses after deploy. Without an IP output, deployed agents will be unreachable.
+
+The engine accepts any of these output key formats:
+
+| Output key | Typical use |
+|---|---|
+| `instance-0-publicIp`, `instance-1-publicIp`, … | Per-node (recommended for multi-node setups) |
+| `instancePublicIp` / `instancePublicIP` | Single instance, no NLB |
+| `nlbPublicIp` / `nlbPublicIP` | NLB-fronted setup |
+| `publicIp` / `publicIP` | Generic single-endpoint |
+| `serverPublicIp` / `serverPublicIP` | Single server |
+
+For multi-node programs, use sequential `instance-{i}-publicIp` keys (one per compute resource). The engine scans them in order and stops at the first gap.
+
+```yaml
+outputs:
+  instance-0-publicIp: ${node-0.publicIp}
+  instance-1-publicIp: ${node-1.publicIp}
+```
+
+The visual editor shows a warning banner and an **Add Outputs** button when required outputs are missing. In visual mode, saving is blocked until the outputs are present. The backend (Level 7 validation) also warns when saving YAML programs that lack IP outputs.
+
 ---
 
 ## Loops
@@ -756,9 +780,10 @@ Programs are validated on every save. Validation runs seven levels sequentially:
 | 4 | Config section | Are field types valid? Do `meta:` group references exist in `config:`? Empty `config:` is allowed. |
 | 5 | Resource structure | Does each resource have a `type` with a valid/well-formed provider token? Are all required properties present (schema-validated)? |
 | 6 | Variable references | Does every `${varName}` in resource properties reference a name defined in `variables:` or `resources:`? Provider config refs (containing `:`) are skipped. |
-| 7 | Agent access context | If `meta.agentAccess: true`, are there compute resources? Is there networking context (VCN, subnet, NSG, NLB, or `createVnicDetails.subnetId`)? Warns (non-blocking) if not. |
+| 7a | Agent networking context | If `meta.agentAccess: true`, are there compute resources with networking context (VCN, subnet, NSG, NLB, or `createVnicDetails.subnetId`)? Warns (non-blocking) if not. |
+| 7b | Agent IP outputs | If `meta.agentAccess: true` and compute resources exist, is at least one recognised IP output key defined? Warns (non-blocking) if not. |
 
-Levels 1–6 are blocking — a program that fails cannot be saved. Level 7 produces warnings: the program can still be saved, but the editor shows an inline **"Add VCN + Subnet"** button to scaffold the missing networking in one click.
+Levels 1–6 are blocking — a program that fails cannot be saved. Level 7 produces warnings: the program can still be saved in YAML mode, but the visual editor shows inline action buttons — **"Add VCN + Subnet"** to scaffold missing networking, and **"Add Outputs"** to insert the required IP output keys. Saving in visual mode is blocked when IP outputs are missing.
 
 A program that fails validation cannot be saved. Fix all errors shown in the editor panel before saving.
 

@@ -261,7 +261,26 @@ When Level 7 validation detects `agentAccess` is enabled but no networking conte
 - `compartmentId` added as a config field if not already present.
 This works in both visual and YAML modes — in visual mode it mutates the graph; in YAML mode it patches the text inline. Logic is in `$lib/program-graph/scaffold-networking.ts` (`scaffoldNetworkingGraph` / `scaffoldNetworkingYaml`), with 16 Vitest unit tests in `scaffold-networking.test.ts`.
 
-Level 7 warnings are **non-blocking** — users can save and address networking later. The backend `hasBlockingErrors()` helper (tested in `internal/api/programs_test.go`) only blocks on Levels 1–6.
+### Agent IP Outputs Requirement
+
+When `agentAccess` is enabled and compute resources exist, the engine needs at least one IP output to discover agent addresses after deploy. The editor enforces this:
+
+- A warning banner appears (below the Agent Connect info block) listing the specific missing output keys (e.g. `instance-0-publicIp`, `instance-1-publicIp`).
+- An **"Add Outputs"** button in the banner inserts all missing entries in one click (visual mode only).
+- **Saving in visual mode is blocked** until the required outputs are present.
+- The Agent Connect toggle button renders in warning style when outputs are absent.
+- In YAML mode, the backend Level 7b check warns but does not block save.
+
+Accepted output key formats (mirrors engine IP discovery in `internal/engine/engine.go`):
+- `instance-{i}-publicIp` — per-node, one per compute resource, sequential
+- `instancePublicIp` / `instancePublicIP`
+- `nlbPublicIp` / `nlbPublicIP` — for NLB-fronted setups
+- `publicIp` / `publicIP`
+- `serverPublicIp` / `serverPublicIP`
+
+Logic lives in `$lib/program-graph/collect-resources.ts` (`getMissingAgentOutputs`, `ACCEPTED_AGENT_IP_KEYS`, `COMPUTE_RESOURCE_TYPES`).
+
+Level 7 warnings are **non-blocking at the backend** — YAML-mode saves are allowed. The frontend blocks save in visual mode when outputs are missing. The backend `hasBlockingErrors()` helper (tested in `internal/api/programs_test.go`) only blocks on Levels 1–6.
 
 ### Availability Domain Auto-Assignment (`@auto`)
 

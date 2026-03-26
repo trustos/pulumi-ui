@@ -255,7 +255,7 @@ Separately, YAML programs can declare `meta.agentAccess: true` to opt into autom
 2. Inject the agent bootstrap into compute resource `user_data` (same as `ApplicationProvider`). Missing intermediate property nodes (e.g. `metadata`) are created automatically.
 3. Auto-add NSG security rules for the Nebula UDP port on existing NSG resources, or create a new NSG from the VCN if none exist
 4. Auto-add NLB backend set + listener for the agent port on existing NLB resources, or create a new NLB from the subnet if none exist
-5. **Post-deploy IP discovery** — after successful `Up`, the engine scans Pulumi outputs for IP patterns and stores the agent's real IP in `stack_connections` for Nebula tunnel establishment.
+5. **Post-deploy IP discovery** — after successful `Up`, the engine scans Pulumi outputs for IP patterns and stores the agent's real IP in `stack_connections` for Nebula tunnel establishment. The engine accepts: `instance-{i}-publicIp` (per-node, sequential), `instancePublicIp/IP`, `nlbPublicIp/IP`, `publicIp/IP`, `serverPublicIp/IP`. Programs must expose at least one of these; the visual editor warns and blocks save when they are absent.
 
 The agent bootstrap script installs both the Nebula binary (from GitHub releases, configured as a systemd service on port 41820) and the pulumi-ui agent binary (from the server at `GET /api/agent/binary/{os}/{arch}`). All subsequent agent communication routes through the Nebula mesh via `internal/mesh/mesh.go`.
 

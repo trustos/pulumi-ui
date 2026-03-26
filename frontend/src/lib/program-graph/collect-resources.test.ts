@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { collectAllResources } from './collect-resources';
+import { collectAllResources, getMissingAgentOutputs, COMPUTE_RESOURCE_TYPES, ACCEPTED_AGENT_IP_KEYS } from './collect-resources';
 import type { ProgramItem, LoopItem, ConditionalItem, ResourceItem } from '$lib/types/program-graph';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -286,9 +286,158 @@ describe('showConfigChip logic', () => {
   });
 });
 
+// ── COMPUTE_RESOURCE_TYPES ────────────────────────────────────────────────────
+
+describe('COMPUTE_RESOURCE_TYPES', () => {
+  it('includes oci:Core/instance:Instance', () => {
+    expect(COMPUTE_RESOURCE_TYPES.has('oci:Core/instance:Instance')).toBe(true);
+  });
+
+  it('includes oci:Core/instanceConfiguration:InstanceConfiguration', () => {
+    expect(COMPUTE_RESOURCE_TYPES.has('oci:Core/instanceConfiguration:InstanceConfiguration')).toBe(true);
+  });
+
+  it('does not include non-compute types', () => {
+    expect(COMPUTE_RESOURCE_TYPES.has('oci:Core/vcn:Vcn')).toBe(false);
+    expect(COMPUTE_RESOURCE_TYPES.has('oci:Core/subnet:Subnet')).toBe(false);
+    expect(COMPUTE_RESOURCE_TYPES.has('oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer')).toBe(false);
+  });
+});
+
+// ── ACCEPTED_AGENT_IP_KEYS ────────────────────────────────────────────────────
+
+describe('ACCEPTED_AGENT_IP_KEYS', () => {
+  it('includes all engine-recognised single-endpoint keys', () => {
+    const keys = ACCEPTED_AGENT_IP_KEYS;
+    expect(keys).toContain('instancePublicIp');
+    expect(keys).toContain('instancePublicIP');
+    expect(keys).toContain('nlbPublicIp');
+    expect(keys).toContain('nlbPublicIP');
+    expect(keys).toContain('publicIp');
+    expect(keys).toContain('publicIP');
+    expect(keys).toContain('serverPublicIp');
+    expect(keys).toContain('serverPublicIP');
+  });
+});
+
+// ── getMissingAgentOutputs ────────────────────────────────────────────────────
+
+function compute(name: string, type = 'oci:Core/instance:Instance') {
+  return { name, type };
+}
+
+function out(key: string) {
+  return { key };
+}
+
+describe('getMissingAgentOutputs', () => {
+  it('returns empty when no compute resources', () => {
+    expect(getMissingAgentOutputs([], [out('instance-0-publicIp')])).toEqual([]);
+    expect(getMissingAgentOutputs([], [])).toEqual([]);
+  });
+
+  it('returns empty when no outputs but no compute resources', () => {
+    expect(getMissingAgentOutputs([], [])).toEqual([]);
+  });
+
+  // Single resource
+  it('returns missing instance-0-publicIp for a single instance with no outputs', () => {
+    const result = getMissingAgentOutputs([compute('my-vm')], []);
+    expect(result).toEqual([{ key: 'instance-0-publicIp', value: '${my-vm.publicIp}' }]);
+  });
+
+  it('returns empty when single instance already has instance-0-publicIp', () => {
+    expect(getMissingAgentOutputs([compute('vm')], [out('instance-0-publicIp')])).toEqual([]);
+  });
+
+  it('returns empty when single instance has publicIp (accepted key)', () => {
+    expect(getMissingAgentOutputs([compute('vm')], [out('publicIp')])).toEqual([]);
+  });
+
+  it('returns empty when single instance has publicIP (uppercase variant)', () => {
+    expect(getMissingAgentOutputs([compute('vm')], [out('publicIP')])).toEqual([]);
+  });
+
+  it('returns empty when single instance has instancePublicIp', () => {
+    expect(getMissingAgentOutputs([compute('vm')], [out('instancePublicIp')])).toEqual([]);
+  });
+
+  it('returns empty when single instance has nlbPublicIp (NLB-fronted setup)', () => {
+    expect(getMissingAgentOutputs([compute('vm')], [out('nlbPublicIp')])).toEqual([]);
+  });
+
+  it('returns empty when single instance has serverPublicIp', () => {
+    expect(getMissingAgentOutputs([compute('vm')], [out('serverPublicIp')])).toEqual([]);
+  });
+
+  // Multiple resources
+  it('returns all missing outputs for two instances with no outputs', () => {
+    const result = getMissingAgentOutputs([compute('node-0'), compute('node-1')], []);
+    expect(result).toEqual([
+      { key: 'instance-0-publicIp', value: '${node-0.publicIp}' },
+      { key: 'instance-1-publicIp', value: '${node-1.publicIp}' },
+    ]);
+  });
+
+  it('returns only the missing outputs when some are already present', () => {
+    const result = getMissingAgentOutputs(
+      [compute('node-0'), compute('node-1'), compute('node-2')],
+      [out('instance-0-publicIp'), out('instance-2-publicIp')],
+    );
+    expect(result).toEqual([{ key: 'instance-1-publicIp', value: '${node-1.publicIp}' }]);
+  });
+
+  it('returns empty when all per-node outputs are already present', () => {
+    const result = getMissingAgentOutputs(
+      [compute('n0'), compute('n1')],
+      [out('instance-0-publicIp'), out('instance-1-publicIp')],
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty when all instances are covered by instance-N keys even if unordered', () => {
+    const result = getMissingAgentOutputs(
+      [compute('a'), compute('b'), compute('c')],
+      [out('instance-2-publicIp'), out('instance-0-publicIp'), out('instance-1-publicIp')],
+    );
+    expect(result).toEqual([]);
+  });
+
+  // instanceConfiguration type
+  it('treats oci:Core/instanceConfiguration:InstanceConfiguration as a compute resource', () => {
+    const result = getMissingAgentOutputs(
+      [compute('template', 'oci:Core/instanceConfiguration:InstanceConfiguration')],
+      [],
+    );
+    expect(result).toEqual([{ key: 'instance-0-publicIp', value: '${template.publicIp}' }]);
+  });
+
+  it('accepted keys satisfy single instanceConfiguration too', () => {
+    expect(getMissingAgentOutputs(
+      [compute('tpl', 'oci:Core/instanceConfiguration:InstanceConfiguration')],
+      [out('instancePublicIp')],
+    )).toEqual([]);
+  });
+
+  // Mixed compute types
+  it('counts both Instance and InstanceConfiguration toward multi-node threshold', () => {
+    const result = getMissingAgentOutputs(
+      [
+        compute('vm', 'oci:Core/instance:Instance'),
+        compute('tpl', 'oci:Core/instanceConfiguration:InstanceConfiguration'),
+      ],
+      [],
+    );
+    expect(result).toEqual([
+      { key: 'instance-0-publicIp', value: '${vm.publicIp}' },
+      { key: 'instance-1-publicIp', value: '${tpl.publicIp}' },
+    ]);
+  });
+});
+
 // ── showNetworkingWarning logic ───────────────────────────────────────────────
 // The networking warning banner in ProgramEditor is visible when:
-//   hasInstance  = any collected resource has type oci:Core/instance:Instance
+//   hasCompute   = any collected resource has a type in COMPUTE_RESOURCE_TYPES
 //   !hasNetworking = none of ['vcn','igw','route-table','subnet'] appear in resource names
 
 describe('showNetworkingWarning logic', () => {

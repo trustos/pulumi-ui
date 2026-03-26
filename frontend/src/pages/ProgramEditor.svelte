@@ -9,7 +9,7 @@
   import { insertAgentAccess, removeAgentAccess } from '$lib/program-graph/agent-access';
   import { scaffoldNetworkingGraph, scaffoldNetworkingYaml, hasNetworkingResources } from '$lib/program-graph/scaffold-networking';
   import { propagateRename, propagateRenameYaml } from '$lib/program-graph/rename-resource';
-  import { collectAllResources, getMissingAgentOutputs, INSTANCE_TYPE as _INSTANCE_TYPE } from '$lib/program-graph/collect-resources';
+  import { collectAllResources, getMissingAgentOutputs, COMPUTE_RESOURCE_TYPES } from '$lib/program-graph/collect-resources';
   import { getGraphExtras } from '$lib/program-graph/resource-defaults';
   import type { ProgramGraph, ProgramSection } from '$lib/types/program-graph';
   import type { ValidationError } from '$lib/types';
@@ -224,11 +224,10 @@
   }
 
   // ── Networking warning ────────────────────────────────────────────────────
-  const INSTANCE_TYPE = _INSTANCE_TYPE;
   const NETWORKING_RESOURCE_NAMES = ['vcn', 'igw', 'route-table', 'subnet'];
 
   const hasInstanceResource = $derived(
-    allProgramResources.some(r => r.type === INSTANCE_TYPE)
+    allProgramResources.some(r => COMPUTE_RESOURCE_TYPES.has(r.type))
   );
   const hasRecipeNetworking = $derived(
     NETWORKING_RESOURCE_NAMES.some(n => allProgramResourceNames.includes(n))
@@ -236,10 +235,10 @@
   const showNetworkingWarning = $derived(hasInstanceResource && !hasRecipeNetworking);
 
   // ── Agent outputs warning ─────────────────────────────────────────────────
-  // When agentAccess is on, every compute instance needs a corresponding
+  // When agentAccess is on, every compute resource needs a corresponding
   // instance-{i}-publicIp output so the engine can discover IPs after deploy.
   const instanceResources = $derived(
-    allProgramResources.filter(r => r.type === INSTANCE_TYPE)
+    allProgramResources.filter(r => COMPUTE_RESOURCE_TYPES.has(r.type))
   );
   const missingAgentOutputs = $derived(
     agentAccess && instanceResources.length > 0
@@ -254,7 +253,7 @@
   }
 
   function addNetworkingForInstance() {
-    const extras = getGraphExtras(INSTANCE_TYPE, allProgramResourceNames);
+    const extras = getGraphExtras('oci:Core/instance:Instance', allProgramResourceNames);
     if (!extras || extras.resources.length === 0) return;
     const existingNames = new Set(allProgramResourceNames);
     const resourcesToAdd = extras.resources.filter(r => !existingNames.has(r.name));

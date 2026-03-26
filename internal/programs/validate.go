@@ -6,6 +6,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/trustos/pulumi-ui/internal/agentinject"
 	"github.com/trustos/pulumi-ui/internal/oci"
 	"gopkg.in/yaml.v3"
 )
@@ -409,7 +410,7 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 		case res.Type == "oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer":
 			hasNLB = true
 		}
-		if isComputeType(res.Type) {
+		if agentinject.IsComputeResource(res.Type) {
 			hasCompute = true
 			if vnic, ok := res.Properties["createVnicDetails"].(map[string]interface{}); ok {
 				if _, hasKey := vnic["subnetId"]; hasKey {
@@ -440,8 +441,14 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 
 // validateAgentAccessOutputs checks that at least one IP output is present so
 // the engine can populate stack_node_certs.agent_real_ip after deploy.
-// The engine scans instance-{i}-publicIp sequentially, falling back to a set
-// of legacy single-agent key names (instancePublicIp, publicIp, etc.).
+//
+// Accepted output key formats:
+//   - instance-{i}-publicIp   (per-node; engine scans sequentially)
+//   - instancePublicIp / instancePublicIP
+//   - nlbPublicIp / nlbPublicIP   (valid for NLB-fronted setups)
+//   - publicIp / publicIP
+//   - serverPublicIp / serverPublicIP
+//
 // Returns a Level 7 warning when agentAccess is enabled, compute resources
 // exist, and no recognised IP output key is defined.
 func validateAgentAccessOutputs(rendered string) []ValidationError {
@@ -457,7 +464,7 @@ func validateAgentAccessOutputs(rendered string) []ValidationError {
 
 	hasCompute := false
 	for _, res := range doc.Resources {
-		if isComputeType(res.Type) {
+		if agentinject.IsComputeResource(res.Type) {
 			hasCompute = true
 			break
 		}
@@ -466,7 +473,8 @@ func validateAgentAccessOutputs(rendered string) []ValidationError {
 		return nil
 	}
 
-	legacyKeys := []string{
+	// All output key names the engine accepts for agent IP discovery.
+	knownIpKeys := []string{
 		"instancePublicIp", "instancePublicIP",
 		"nlbPublicIp", "nlbPublicIP",
 		"publicIp", "publicIP",
@@ -474,7 +482,7 @@ func validateAgentAccessOutputs(rendered string) []ValidationError {
 	}
 	instanceOutputRe := regexp.MustCompile(`^instance-\d+-publicIp$`)
 
-	for _, key := range legacyKeys {
+	for _, key := range knownIpKeys {
 		if _, ok := doc.Outputs[key]; ok {
 			return nil
 		}
@@ -490,11 +498,6 @@ func validateAgentAccessOutputs(rendered string) []ValidationError {
 		Field:   "outputs",
 		Message: "agentAccess is enabled but no instance IP outputs are defined — add instance-0-publicIp (and instance-N-publicIp for each additional node) to outputs so the engine can discover agent addresses after deploy",
 	}}
-}
-
-func isComputeType(t string) bool {
-	return t == "oci:Core/instance:Instance" ||
-		t == "oci:Core/instanceConfiguration:InstanceConfiguration"
 }
 
 // --- helpers ----------------------------------------------------------------

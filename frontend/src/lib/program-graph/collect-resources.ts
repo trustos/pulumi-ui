@@ -2,13 +2,22 @@ import type { ProgramItem } from '$lib/types/program-graph';
 
 export type ResourceRef = { name: string; type: string };
 
-export const INSTANCE_TYPE = 'oci:Core/instance:Instance';
+/**
+ * All Pulumi resource type tokens that produce compute instances and accept
+ * agent bootstrap injection via user_data. Mirrors agentinject.ComputeResources
+ * in internal/agentinject/map.go — keep in sync when adding new providers.
+ */
+export const COMPUTE_RESOURCE_TYPES = new Set([
+  'oci:Core/instance:Instance',
+  'oci:Core/instanceConfiguration:InstanceConfiguration',
+]);
 
 /**
- * IP output key names recognised by the engine for agent address discovery.
- * Single-instance programs may use any of these instead of instance-0-publicIp.
+ * Output key names accepted by the engine for agent IP discovery.
+ * These cover single-endpoint architectures (NLB-fronted, single server, etc.).
+ * For multi-node setups the engine also accepts instance-{i}-publicIp keys.
  */
-export const AGENT_IP_LEGACY_KEYS = [
+export const ACCEPTED_AGENT_IP_KEYS = [
   'instancePublicIp', 'instancePublicIP',
   'nlbPublicIp',      'nlbPublicIP',
   'publicIp',         'publicIP',
@@ -32,9 +41,9 @@ export function getMissingAgentOutputs(
 
   const outputKeys = new Set(outputs.map(o => o.key));
 
-  // Single-instance: legacy keys or instance-0-publicIp are acceptable
+  // Single-compute-resource: any accepted key or instance-0-publicIp is enough
   if (instances.length === 1) {
-    if (AGENT_IP_LEGACY_KEYS.some(k => outputKeys.has(k))) return [];
+    if (ACCEPTED_AGENT_IP_KEYS.some(k => outputKeys.has(k))) return [];
     if (outputKeys.has('instance-0-publicIp')) return [];
   }
 

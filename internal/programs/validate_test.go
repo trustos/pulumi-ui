@@ -416,3 +416,195 @@ resources:
 	}
 	assert.True(t, hasNetworkingWarning, "should include 'no networking context' warning")
 }
+
+// ── validateAgentAccessOutputs ───────────────────────────────────────────────
+
+func TestValidateAgentAccessOutputs_MissingOutputs_NoCompute(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+
+meta:
+  agentAccess: true
+
+resources:
+  my-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+`
+	// No compute resources → no outputs warning
+	for _, e := range ValidateProgram(yaml) {
+		if e.Level == LevelAgentAccess && strings.Contains(e.Message, "no instance IP outputs") {
+			t.Errorf("should not warn about outputs when no compute resources present: %s", e.Message)
+		}
+	}
+}
+
+func TestValidateAgentAccessOutputs_MissingOutputs_Instance(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+
+meta:
+  agentAccess: true
+
+resources:
+  my-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+  my-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ocid1.compartment
+      vcnId: ${my-vcn.id}
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+`
+	var outputErr *ValidationError
+	for _, e := range ValidateProgram(yaml) {
+		e := e
+		if e.Level == LevelAgentAccess && strings.Contains(e.Message, "no instance IP outputs") {
+			outputErr = &e
+		}
+	}
+	require.NotNil(t, outputErr, "should warn when instance present but no IP outputs defined")
+}
+
+func TestValidateAgentAccessOutputs_MissingOutputs_InstanceConfiguration(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+
+meta:
+  agentAccess: true
+
+resources:
+  my-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+  my-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ocid1.compartment
+      vcnId: ${my-vcn.id}
+  my-template:
+    type: oci:Core/instanceConfiguration:InstanceConfiguration
+    properties:
+      compartmentId: ocid1.compartment
+`
+	var outputErr *ValidationError
+	for _, e := range ValidateProgram(yaml) {
+		e := e
+		if e.Level == LevelAgentAccess && strings.Contains(e.Message, "no instance IP outputs") {
+			outputErr = &e
+		}
+	}
+	require.NotNil(t, outputErr, "instanceConfiguration should also require IP outputs")
+}
+
+func TestValidateAgentAccessOutputs_AcceptedKeys(t *testing.T) {
+	// All of these output keys should silence the warning for a single-instance program.
+	acceptedKeys := []string{
+		"instancePublicIp", "instancePublicIP",
+		"nlbPublicIp", "nlbPublicIP",
+		"publicIp", "publicIP",
+		"serverPublicIp", "serverPublicIP",
+		"instance-0-publicIp",
+	}
+
+	for _, key := range acceptedKeys {
+		t.Run(key, func(t *testing.T) {
+			yaml := `name: test
+runtime: yaml
+
+meta:
+  agentAccess: true
+
+resources:
+  my-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+  my-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ocid1.compartment
+      vcnId: ${my-vcn.id}
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+
+outputs:
+  ` + key + `: ${my-instance.publicIp}
+`
+			for _, e := range ValidateProgram(yaml) {
+				if e.Level == LevelAgentAccess && strings.Contains(e.Message, "no instance IP outputs") {
+					t.Errorf("key %q should satisfy the outputs check but got warning: %s", key, e.Message)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateAgentAccessOutputs_MultiNode_AllCovered(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+
+meta:
+  agentAccess: true
+
+resources:
+  my-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+  my-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ocid1.compartment
+      vcnId: ${my-vcn.id}
+  node-0:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+  node-1:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+
+outputs:
+  instance-0-publicIp: ${node-0.publicIp}
+  instance-1-publicIp: ${node-1.publicIp}
+`
+	for _, e := range ValidateProgram(yaml) {
+		if e.Level == LevelAgentAccess && strings.Contains(e.Message, "no instance IP outputs") {
+			t.Errorf("should not warn when all per-node outputs are defined: %s", e.Message)
+		}
+	}
+}
+
+func TestValidateAgentAccessOutputs_NoAgentAccess_NoCheck(t *testing.T) {
+	// agentAccess is off — outputs check must not run at all
+	yaml := `name: test
+runtime: yaml
+
+resources:
+  my-instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      shape: VM.Standard.A1.Flex
+`
+	for _, e := range ValidateProgram(yaml) {
+		if strings.Contains(e.Message, "no instance IP outputs") {
+			t.Errorf("outputs check should not run when agentAccess is off: %s", e.Message)
+		}
+	}
+}
