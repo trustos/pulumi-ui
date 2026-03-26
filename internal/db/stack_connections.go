@@ -130,6 +130,19 @@ func (s *StackConnectionStore) UpdateAgentRealIP(stackName, realIP string) error
 	return err
 }
 
+// ClearAgentConnection resets the runtime-discovered fields after a destroy so
+// the UI no longer shows the agent as connected. The PKI material (certs, keys,
+// subnet) is preserved so a re-deploy can reuse the same Nebula identity.
+func (s *StackConnectionStore) ClearAgentConnection(stackName string) error {
+	_, err := s.db.Exec(`
+		UPDATE stack_connections
+		SET agent_nebula_ip = NULL, agent_real_ip = NULL,
+		    lighthouse_addr = NULL, last_seen_at = NULL, cluster_info = NULL
+		WHERE stack_name = ?
+	`, stackName)
+	return err
+}
+
 // UpdateLastSeen refreshes the last_seen_at timestamp (called by periodic health checks).
 func (s *StackConnectionStore) UpdateLastSeen(stackName string) error {
 	_, err := s.db.Exec(`

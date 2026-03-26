@@ -126,6 +126,9 @@ export interface StackInfo {
   running: boolean;
   mesh?: MeshStatus;
   agentAccess?: boolean;
+  deployed?: boolean;
+  wasDeployed?: boolean;
+  lastOperationType?: string;
 }
 
 export interface SshKey {

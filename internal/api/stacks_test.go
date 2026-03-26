@@ -9,6 +9,175 @@ import (
 	"github.com/trustos/pulumi-ui/internal/db"
 )
 
+// ---------------------------------------------------------------------------
+// computeDeployed
+// ---------------------------------------------------------------------------
+
+func TestComputeDeployed(t *testing.T) {
+	type op struct {
+		operation string
+		status    string
+		startedAt int64
+	}
+	makeOps := func(in []op) []db.Operation {
+		out := make([]db.Operation, len(in))
+		for i, o := range in {
+			out[i] = db.Operation{Operation: o.operation, Status: o.status, StartedAt: o.startedAt}
+		}
+		return out
+	}
+
+	tests := []struct {
+		name string
+		ops  []op
+		want bool
+	}{
+		{
+			name: "no operations — never deployed",
+			ops:  nil,
+			want: false,
+		},
+		{
+			name: "successful up only",
+			ops:  []op{{"up", "succeeded", 100}},
+			want: true,
+		},
+		{
+			name: "failed up only",
+			ops:  []op{{"up", "failed", 100}},
+			want: false,
+		},
+		{
+			name: "up then destroy — not deployed",
+			ops: []op{
+				{"destroy", "succeeded", 200},
+				{"up", "succeeded", 100},
+			},
+			want: false,
+		},
+		{
+			name: "up then destroy then up again — deployed",
+			ops: []op{
+				{"up", "succeeded", 300},
+				{"destroy", "succeeded", 200},
+				{"up", "succeeded", 100},
+			},
+			want: true,
+		},
+		{
+			name: "destroy then refresh — not deployed",
+			ops: []op{
+				{"refresh", "succeeded", 300},
+				{"destroy", "succeeded", 200},
+				{"up", "succeeded", 100},
+			},
+			want: false,
+		},
+		{
+			name: "up then failed destroy — still deployed",
+			ops: []op{
+				{"destroy", "failed", 200},
+				{"up", "succeeded", 100},
+			},
+			want: true,
+		},
+		{
+			name: "destroy only (no prior up) — not deployed",
+			ops:  []op{{"destroy", "succeeded", 100}},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, computeDeployed(makeOps(tc.ops)))
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// computeDeployedState — wasDeployed field
+// ---------------------------------------------------------------------------
+
+func TestComputeDeployedState_WasDeployed(t *testing.T) {
+	type op struct {
+		operation string
+		status    string
+		startedAt int64
+	}
+	makeOps := func(in []op) []db.Operation {
+		out := make([]db.Operation, len(in))
+		for i, o := range in {
+			out[i] = db.Operation{Operation: o.operation, Status: o.status, StartedAt: o.startedAt}
+		}
+		return out
+	}
+
+	tests := []struct {
+		name        string
+		ops         []op
+		deployed    bool
+		wasDeployed bool
+	}{
+		{
+			name:        "no ops — never deployed",
+			ops:         nil,
+			deployed:    false,
+			wasDeployed: false,
+		},
+		{
+			name:        "preview + refresh only — never deployed",
+			ops:         []op{{"refresh", "succeeded", 200}, {"preview", "succeeded", 100}},
+			deployed:    false,
+			wasDeployed: false,
+		},
+		{
+			name:        "up succeeded — deployed and wasDeployed",
+			ops:         []op{{"up", "succeeded", 100}},
+			deployed:    true,
+			wasDeployed: true,
+		},
+		{
+			name:        "up then destroy — not deployed but wasDeployed",
+			ops:         []op{{"destroy", "succeeded", 200}, {"up", "succeeded", 100}},
+			deployed:    false,
+			wasDeployed: true,
+		},
+		{
+			name:        "up then destroy then refresh — not deployed but wasDeployed",
+			ops:         []op{{"refresh", "succeeded", 300}, {"destroy", "succeeded", 200}, {"up", "succeeded", 100}},
+			deployed:    false,
+			wasDeployed: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, wd := computeDeployedState(makeOps(tc.ops))
+			assert.Equal(t, tc.deployed, d, "deployed")
+			assert.Equal(t, tc.wasDeployed, wd, "wasDeployed")
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// lastOperationType population
+// ---------------------------------------------------------------------------
+
+func TestLastOperationType(t *testing.T) {
+	// ops sorted descending by started_at (as ListForStack returns them)
+	ops := []db.Operation{
+		{Operation: "refresh", Status: "succeeded", StartedAt: 300},
+		{Operation: "destroy", Status: "succeeded", StartedAt: 200},
+		{Operation: "up", Status: "succeeded", StartedAt: 100},
+	}
+	// The most recent op (index 0) should be the lastOperationType
+	assert.Equal(t, "refresh", ops[0].Operation)
+	_, wasDeployed := computeDeployedState(ops)
+	assert.True(t, wasDeployed, "destroy→refresh: wasDeployed should be true")
+	assert.False(t, computeDeployed(ops), "destroy→refresh should not be deployed")
+}
+
 func setupTestHandler(t *testing.T) *Handler {
 	t.Helper()
 	database, err := db.Open(":memory:")

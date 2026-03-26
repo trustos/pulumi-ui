@@ -182,11 +182,15 @@ When `generate: true` is sent, the server generates an Ed25519 key pair. The res
   "config": { "nodeCount": "3", "compartmentName": "nomad-prod" },
   "applications": { "docker": true, "consul": true, "traefik": true },
   "appConfig": { "traefik_dashboard": "true" },
-  "outputs": { "traefikNlbIps": [...] },
+  "outputs": { "traefikNlbIps": [] },
   "resources": 0,
   "lastUpdated": "2026-03-20T10:01:00Z",
   "status": "succeeded",
   "running": false,
+  "deployed": true,
+  "wasDeployed": true,
+  "lastOperationType": "up",
+  "agentAccess": true,
   "mesh": {
     "connected": true,
     "lighthouseAddr": "1.2.3.4:41820",
@@ -200,7 +204,15 @@ When `generate: true` is sent, the server generates an Ed25519 key pair. The res
 
 The `running` field is `true` while a Pulumi operation is actively executing for this stack. It is derived from the engine's in-memory lock, not from the database.
 
-The `applications` and `appConfig` fields are present only for stacks whose program implements `ApplicationProvider`. The `mesh` field is present only when a stack connection (Nebula PKI) exists in `stack_connections`. The `mesh.agentRealIP` and `mesh.nebulaSubnet` fields are included when available.
+The `deployed` field reflects whether infrastructure is currently live: it is `true` only when the most recent successful `up` operation is more recent than the most recent successful `destroy`. A stack that was destroyed and then refreshed has `deployed: false` because the destroy precedes the refresh. A stack that was never deployed has `deployed: false`.
+
+The `wasDeployed` field is `true` if at least one successful `up` operation has ever run. Combined with `deployed`, it lets the UI distinguish three states: `deployed=true` (live), `deployed=false && wasDeployed=true` (was deployed, now destroyed), and `deployed=false && wasDeployed=false` (never deployed — only previews, refreshes, or failed ups have run).
+
+The `lastOperationType` field is the operation type (`up`, `destroy`, `refresh`, `preview`) of the most recent operation, regardless of its outcome. It is omitted when no operations have run.
+
+The `agentAccess` field is `true` for programs that implement `ApplicationProvider` or `AgentAccessProvider` with agent access enabled. It controls whether the Nodes tab and agent proxy endpoints are available in the UI.
+
+The `applications` and `appConfig` fields are present only for stacks whose program implements `ApplicationProvider`. The `mesh` field is present only when a stack connection (Nebula PKI) exists in `stack_connections`. When `deployed` is `false`, any stale agent runtime fields (`agentNebulaIp`, `agentRealIp`, `lighthouseAddr`, `lastSeenAt`) are cleared lazily on read so the response never contains stale connectivity data.
 
 ### Agent Proxy (requires auth, routes through Nebula mesh)
 

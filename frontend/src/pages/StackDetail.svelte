@@ -50,6 +50,7 @@
   const appCatalog = $derived<ApplicationDef[]>(currentProgram?.applications ?? []);
   const hasApps = $derived(appCatalog.length > 0);
   const hasAgent = $derived(info?.agentAccess === true);
+  const isInfraDeployed = $derived(info?.deployed === true);
   let agentHealth = $state<AgentHealth | null>(null);
   let agentServices = $state<AgentService[]>([]);
   let agentError = $state('');
@@ -67,14 +68,19 @@
     return `${Math.floor(seconds / 86400)}d ago`;
   }
 
-  function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-    if (status === 'succeeded') return 'default';
+  function statusVariant(status: string, deployed?: boolean): 'default' | 'secondary' | 'destructive' | 'outline' {
+    if (status === 'succeeded') return deployed ? 'default' : 'secondary';
     if (status === 'failed') return 'destructive';
     return 'secondary';
   }
 
-  function statusLabel(status: string): string {
+  function statusLabel(status: string, deployed?: boolean, wasDeployed?: boolean): string {
     if (status === 'not deployed') return 'Not deployed';
+    if (status === 'succeeded') {
+      if (deployed) return 'Deployed';
+      if (wasDeployed) return 'Destroyed';
+      return 'Not deployed';
+    }
     return status.charAt(0).toUpperCase() + status.slice(1);
   }
 
@@ -94,7 +100,7 @@
   }
 
   async function loadAgentStatus() {
-    if (!hasAgent || notDeployed) return;
+    if (!hasAgent || !isInfraDeployed) return;
     try {
       agentError = '';
       agentHealth = await getAgentHealth(name);
@@ -354,8 +360,8 @@
       <h1 class="text-2xl font-bold">{name}</h1>
       {#if info}
         <Badge variant="secondary">{info.program}</Badge>
-        <Badge variant={statusVariant(info.status)} class={info.status === 'succeeded' ? 'bg-green-600 text-white border-green-600' : ''}>
-          {statusLabel(info.status)}
+        <Badge variant={statusVariant(info.status, info.deployed)} class={info.status === 'succeeded' && info.deployed ? 'bg-green-600 text-white border-green-600' : ''}>
+          {statusLabel(info.status, info.deployed, info.wasDeployed)}
         </Badge>
         {#if isRunning}
           <Badge variant="outline" class="animate-pulse border-blue-500 text-blue-500">
@@ -510,17 +516,15 @@
               <Card.Title class="text-base flex items-center gap-2">
                 Mesh Connectivity
                 {#if info?.mesh?.connected}
-                  <span class="h-2 w-2 rounded-full bg-green-500 inline-block"></span>
+                  <Badge variant="default">Connected</Badge>
+                {:else if info?.mesh}
+                  <Badge variant="secondary">Not connected</Badge>
                 {:else}
-                  <span class="h-2 w-2 rounded-full bg-zinc-500 inline-block"></span>
+                  <Badge variant="secondary">No PKI</Badge>
                 {/if}
               </Card.Title>
             </Card.Header>
             <Card.Content class="space-y-2 text-sm">
-              <div class="flex justify-between">
-                <span class="text-muted-foreground">Status</span>
-                <span>{info?.mesh?.connected ? 'Connected' : 'Not connected'}</span>
-              </div>
               {#if info?.mesh?.lighthouseAddr}
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">Lighthouse</span>
@@ -538,6 +542,11 @@
                   <span class="text-muted-foreground">Last seen</span>
                   <span>{new Date(info.mesh.lastSeenAt * 1000).toLocaleString()}</span>
                 </div>
+              {/if}
+              {#if !info?.mesh?.connected}
+                <p class="text-xs text-muted-foreground">
+                  {info?.mesh ? 'Deploy infrastructure to establish mesh connectivity.' : 'No Nebula PKI provisioned yet.'}
+                </p>
               {/if}
             </Card.Content>
           </Card.Root>
@@ -629,6 +638,7 @@
     <!-- Nodes tab (Agent Connect) -->
     {#if hasAgent}
       <Tabs.Content value="nodes" class="flex-1 flex flex-col min-h-0">
+        {#if isInfraDeployed}
         <div class="mt-2 space-y-4 flex-1 flex flex-col min-h-0">
           <!-- Agent Health -->
           <div class="flex items-center gap-4 flex-wrap">
@@ -641,8 +651,6 @@
               </Badge>
             {:else if agentError}
               <Badge variant="destructive">Agent unreachable</Badge>
-            {:else if notDeployed}
-              <span class="text-sm text-muted-foreground">Deploy infrastructure first</span>
             {:else}
               <span class="text-sm text-muted-foreground">Click Refresh to check agent status</span>
             {/if}
@@ -652,7 +660,14 @@
           {#if info?.mesh}
             <Card.Root>
               <Card.Header class="py-3">
-                <Card.Title class="text-sm">Nebula Mesh</Card.Title>
+                <Card.Title class="text-sm flex items-center gap-2">
+                  Nebula Mesh
+                  {#if info.mesh.connected}
+                    <Badge variant="default">Connected</Badge>
+                  {:else}
+                    <Badge variant="secondary">Not connected</Badge>
+                  {/if}
+                </Card.Title>
               </Card.Header>
               <Card.Content class="py-2">
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
@@ -668,10 +683,12 @@
                     <span class="text-muted-foreground">Agent Real IP</span>
                     <div class="font-mono">{info.mesh.agentRealIp ?? '—'}</div>
                   </div>
-                  <div>
-                    <span class="text-muted-foreground">Status</span>
-                    <div>{info.mesh.connected ? 'Connected' : 'Not connected'}</div>
-                  </div>
+                  {#if info.mesh.lastSeenAt}
+                    <div>
+                      <span class="text-muted-foreground">Last seen</span>
+                      <div class="text-xs">{new Date(info.mesh.lastSeenAt * 1000).toLocaleString()}</div>
+                    </div>
+                  {/if}
                 </div>
               </Card.Content>
             </Card.Root>
@@ -711,6 +728,21 @@
             </div>
           {/if}
         </div>
+        {:else}
+        <div class="flex-1 flex items-center justify-center">
+          <div class="text-center space-y-2">
+            <p class="text-sm font-medium">Infrastructure not deployed</p>
+            <p class="text-xs text-muted-foreground">
+              Deploy this stack to establish agent connectivity.
+            </p>
+            {#if info?.mesh?.nebulaSubnet}
+              <p class="text-xs text-muted-foreground">
+                Nebula subnet <span class="font-mono">{info.mesh.nebulaSubnet}</span> reserved for re-deploy.
+              </p>
+            {/if}
+          </div>
+        </div>
+        {/if}
       </Tabs.Content>
     {/if}
 
@@ -725,8 +757,8 @@
             <Card.Content class="space-y-3 text-sm">
               <div class="flex justify-between">
                 <span class="text-muted-foreground">Status</span>
-                <Badge variant={statusVariant(info.status)} class={info.status === 'succeeded' ? 'bg-green-600 text-white border-green-600' : ''}>
-                  {statusLabel(info.status)}
+                <Badge variant={statusVariant(info.status, info.deployed)} class={info.status === 'succeeded' && info.deployed ? 'bg-green-600 text-white border-green-600' : ''}>
+                  {statusLabel(info.status, info.deployed, info.wasDeployed)}
                 </Badge>
               </div>
               <div class="flex justify-between">

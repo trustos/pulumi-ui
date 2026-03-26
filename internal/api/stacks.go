@@ -21,6 +21,35 @@ import (
 	"github.com/trustos/pulumi-ui/internal/stacks"
 )
 
+// computeDeployedState returns two booleans from the operation history:
+//   - deployed:     most recent successful "up" is more recent than most recent successful "destroy"
+//   - wasDeployed:  at least one successful "up" has ever run
+//
+// ops must be sorted descending by started_at (as returned by ListForStack).
+func computeDeployedState(ops []db.Operation) (deployed bool, wasDeployed bool) {
+	var lastUpAt, lastDestroyAt int64
+	for _, op := range ops {
+		if op.Status != "succeeded" {
+			continue
+		}
+		if op.Operation == "up" && op.StartedAt > lastUpAt {
+			lastUpAt = op.StartedAt
+		}
+		if op.Operation == "destroy" && op.StartedAt > lastDestroyAt {
+			lastDestroyAt = op.StartedAt
+		}
+	}
+	deployed = lastUpAt > 0 && (lastDestroyAt == 0 || lastUpAt > lastDestroyAt)
+	wasDeployed = lastUpAt > 0
+	return
+}
+
+// computeDeployed is a convenience wrapper used by tests.
+func computeDeployed(ops []db.Operation) bool {
+	d, _ := computeDeployedState(ops)
+	return d
+}
+
 // resolveCredentials builds engine credentials for a stack.
 // OCI credentials come from the account (or global fallback).
 // The passphrase is looked up from the named passphrases table.
@@ -223,8 +252,11 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		LastUpdated  *string                `json:"lastUpdated"`
 		Status       string                 `json:"status"`
 		Running      bool                   `json:"running"`
-		Mesh         *MeshStatus            `json:"mesh,omitempty"`
-		AgentAccess  bool                   `json:"agentAccess"`
+		Mesh              *MeshStatus            `json:"mesh,omitempty"`
+		AgentAccess       bool                   `json:"agentAccess"`
+		Deployed          bool                   `json:"deployed"`
+		WasDeployed       bool                   `json:"wasDeployed"`
+		LastOperationType string                 `json:"lastOperationType,omitempty"`
 	}
 
 	info := StackInfo{
@@ -241,12 +273,15 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		Running:      h.Engine.IsRunning(stackName),
 	}
 
-	ops, _ := h.Ops.ListForStack(stackName, 1, row.CreatedAt)
+	ops, _ := h.Ops.ListForStack(stackName, 20, row.CreatedAt)
 	if len(ops) > 0 {
 		ts := time.Unix(ops[0].StartedAt, 0).Format(time.RFC3339)
 		info.LastUpdated = &ts
 		info.Status = ops[0].Status
+		info.LastOperationType = ops[0].Operation
 	}
+
+	info.Deployed, info.WasDeployed = computeDeployedState(ops)
 
 	if info.Status == "succeeded" || info.Status == "failed" {
 		creds, err := h.resolveCredentials(row.OciAccountID, row.PassphraseID, row.SshKeyID)
@@ -273,6 +308,20 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 	// Mesh status from stack_connections
 	if h.ConnStore != nil {
 		if conn, err := h.ConnStore.Get(stackName); err == nil && conn != nil {
+			// If infrastructure is not deployed, any stored agent runtime fields
+			// (IPs, lighthouse) are stale. Clear them lazily — this handles stacks
+			// destroyed before ClearAgentConnection was in the destroy path, and
+			// the destroy→refresh case where the last op is "refresh" not "destroy".
+			if !info.Deployed {
+				if conn.AgentNebulaIP != nil || conn.AgentRealIP != nil {
+					_ = h.ConnStore.ClearAgentConnection(stackName)
+				}
+				conn.AgentNebulaIP = nil
+				conn.AgentRealIP = nil
+				conn.LighthouseAddr = nil
+				conn.LastSeenAt = nil
+				conn.ClusterInfo = nil
+			}
 			mesh := &MeshStatus{
 				Connected:      conn.AgentNebulaIP != nil,
 				LighthouseAddr: conn.LighthouseAddr,
@@ -418,6 +467,18 @@ func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation
 		status = h.Engine.Up(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
 	case "destroy":
 		status = h.Engine.Destroy(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
+		if status == "succeeded" {
+			// Infrastructure is gone — clear the agent connection fields so the UI
+			// no longer shows "Connected" or offers the terminal for a dead instance.
+			if h.ConnStore != nil {
+				if err := h.ConnStore.ClearAgentConnection(stackName); err != nil {
+					log.Printf("[destroy] clear agent connection for %s: %v", stackName, err)
+				}
+			}
+			if h.MeshManager != nil {
+				h.MeshManager.CloseTunnel(stackName)
+			}
+		}
 	case "refresh":
 		status = h.Engine.Refresh(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
 	case "preview":
