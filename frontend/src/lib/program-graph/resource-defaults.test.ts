@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { getResourceDefaults, getGraphExtras, wireSubnetIntoInstances } from './resource-defaults';
 import { graphToYaml } from './serializer';
 import { yamlToGraph } from './parser';
-import type { ProgramGraph } from '$lib/types/program-graph';
+import type { ProgramGraph, PropertyEntry, ResourceItem } from '$lib/types/program-graph';
 
 // ── loop config ref rewriting ────────────────────────────────────────────────
 
@@ -391,7 +391,7 @@ describe('wireSubnetIntoInstances', () => {
       }],
     }];
     const result = wireSubnetIntoInstances(sections, 'subnet');
-    const vnic = result[0].items[0].properties?.find(p => p.key === 'createVnicDetails');
+    const vnic = (result[0].items[0] as ResourceItem).properties?.find((p: PropertyEntry) => p.key === 'createVnicDetails');
     expect(vnic?.value).toContain('${subnet.id}');
     expect(vnic?.value).not.toContain('subnetId: ""');
   });
@@ -405,7 +405,7 @@ describe('wireSubnetIntoInstances', () => {
       }],
     }];
     const result = wireSubnetIntoInstances(sections, 'my-subnet');
-    const vnic = result[0].items[0].properties?.find(p => p.key === 'createVnicDetails');
+    const vnic = (result[0].items[0] as ResourceItem).properties?.find((p: PropertyEntry) => p.key === 'createVnicDetails');
     expect(vnic?.value).toContain('${my-subnet.id}');
   });
 
@@ -419,7 +419,7 @@ describe('wireSubnetIntoInstances', () => {
       }],
     }];
     const result = wireSubnetIntoInstances(sections, 'subnet');
-    const vnic = result[0].items[0].properties?.find(p => p.key === 'createVnicDetails');
+    const vnic = (result[0].items[0] as ResourceItem).properties?.find((p: PropertyEntry) => p.key === 'createVnicDetails');
     expect(vnic?.value).toBe(original);
   });
 
@@ -432,7 +432,7 @@ describe('wireSubnetIntoInstances', () => {
       }],
     }];
     const result = wireSubnetIntoInstances(sections, 'subnet');
-    const item = result[0].items[0];
+    const item = result[0].items[0] as ResourceItem;
     expect(item.properties).not.toContainEqual(
       expect.objectContaining({ key: 'createVnicDetails' }),
     );
@@ -447,7 +447,7 @@ describe('wireSubnetIntoInstances', () => {
       }],
     }];
     const result = wireSubnetIntoInstances(sections, 'subnet');
-    const vnic = result[0].items[0].properties?.find(p => p.key === 'createVnicDetails');
+    const vnic = (result[0].items[0] as ResourceItem).properties?.find((p: PropertyEntry) => p.key === 'createVnicDetails');
     expect(vnic?.value).toBe('{ subnetId: "", assignPublicIp: true }');
   });
 
@@ -470,7 +470,7 @@ describe('wireSubnetIntoInstances', () => {
     ];
     const result = wireSubnetIntoInstances(sections, 'subnet');
     for (const s of result) {
-      const vnic = s.items[0].properties?.find(p => p.key === 'createVnicDetails');
+      const vnic = (s.items[0] as ResourceItem).properties?.find((p: PropertyEntry) => p.key === 'createVnicDetails');
       expect(vnic?.value).toContain('${subnet.id}');
     }
   });

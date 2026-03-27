@@ -212,21 +212,21 @@ export function getGraphExtras(
  * already reference a differently-named subnet are left untouched.
  */
 export function wireSubnetIntoInstances(
-  sections: import('$lib/types/program-graph').SectionDef[],
+  sections: import('$lib/types/program-graph').ProgramSection[],
   subnetName: string,
-): import('$lib/types/program-graph').SectionDef[] {
+): import('$lib/types/program-graph').ProgramSection[] {
   const ref = `\${${subnetName}.id}`;
   return sections.map(s => ({
     ...s,
-    items: s.items.map(item => {
+    items: s.items.map((item: import('$lib/types/program-graph').ProgramItem) => {
       if (item.kind !== 'resource' || item.resourceType !== 'oci:Core/instance:Instance') return item;
       const hasBlankSubnetId = item.properties?.some(
-        p => p.key === 'createVnicDetails' && p.value.includes('subnetId: ""'),
+        (p: import('$lib/types/program-graph').PropertyEntry) => p.key === 'createVnicDetails' && p.value.includes('subnetId: ""'),
       );
       if (!hasBlankSubnetId) return item;
       return {
         ...item,
-        properties: item.properties!.map(p =>
+        properties: item.properties!.map((p: import('$lib/types/program-graph').PropertyEntry) =>
           p.key === 'createVnicDetails'
             ? { ...p, value: p.value.replace('subnetId: ""', `subnetId: "${ref}"`) }
             : p,
