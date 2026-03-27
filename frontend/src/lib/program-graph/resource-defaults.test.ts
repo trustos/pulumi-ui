@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getResourceDefaults, getGraphExtras } from './resource-defaults';
+import { getResourceDefaults, getGraphExtras, wireSubnetIntoInstances } from './resource-defaults';
 import { graphToYaml } from './serializer';
 import { yamlToGraph } from './parser';
 import type { ProgramGraph } from '$lib/types/program-graph';
@@ -131,6 +131,21 @@ describe('getResourceDefaults', () => {
     const props = getResourceDefaults(INSTANCE_TYPE, ['availabilityDomain', 'compartmentId']);
     const byKey = new Map(props.map(p => [p.key, p.value]));
     expect(byKey.get('compartmentId')).toBe('{{ .Config.compartmentId }}');
+  });
+
+  it('blanks subnetId reference when no subnet resource exists', () => {
+    const props = getResourceDefaults(INSTANCE_TYPE, ['availabilityDomain', 'compartmentId']);
+    const byKey = new Map(props.map(p => [p.key, p.value]));
+    // subnetId ref must not be a dangling ${subnet.id} — the resource doesn't exist yet
+    expect(byKey.get('createVnicDetails')).not.toContain('${subnet.id}');
+    // assignPublicIp should still be there
+    expect(byKey.get('createVnicDetails')).toContain('assignPublicIp');
+  });
+
+  it('keeps subnetId reference when subnet resource already exists', () => {
+    const props = getResourceDefaults(INSTANCE_TYPE, ['availabilityDomain', 'compartmentId'], ['subnet']);
+    const byKey = new Map(props.map(p => [p.key, p.value]));
+    expect(byKey.get('createVnicDetails')).toContain('${subnet.id}');
   });
 });
 
@@ -300,7 +315,8 @@ describe('Instance defaults + graphToYaml', () => {
   });
 
   it('serializes createVnicDetails as nested YAML from recipe defaults', () => {
-    const props = getResourceDefaults('oci:Core/instance:Instance', ['availabilityDomain', 'compartmentId']);
+    // When subnet exists, the ${subnet.id} ref is preserved
+    const props = getResourceDefaults('oci:Core/instance:Instance', ['availabilityDomain', 'compartmentId'], ['subnet']);
 
     const graph: ProgramGraph = {
       metadata: { name: 'test', displayName: 'Test', description: '' },
@@ -330,4 +346,145 @@ describe('Instance defaults + graphToYaml', () => {
     expect(yaml).toContain('shape: "{{ .Config.shape }}"');
     expect(yaml).toContain('sourceDetails:');
   });
+
+  it('serializes createVnicDetails with blank subnetId when no subnet resource exists', () => {
+    const props = getResourceDefaults('oci:Core/instance:Instance', ['availabilityDomain', 'compartmentId']);
+
+    const graph: ProgramGraph = {
+      metadata: { name: 'test', displayName: 'Test', description: '' },
+      configFields: [],
+      variables: [],
+      sections: [{
+        id: 'main',
+        label: 'Resources',
+        items: [{
+          kind: 'resource',
+          name: 'instance',
+          resourceType: 'oci:Core/instance:Instance',
+          properties: props,
+        }],
+      }],
+      outputs: [],
+    };
+
+    const yaml = graphToYaml(graph);
+
+    expect(yaml).toContain('createVnicDetails:');
+    expect(yaml).not.toContain('${subnet.id}');
+    expect(yaml).toMatch(/assignPublicIp: true/);
+  });
+});
+
+// ── wireSubnetIntoInstances ──────────────────────────────────────────────────
+
+describe('wireSubnetIntoInstances', () => {
+  const INSTANCE_TYPE = 'oci:Core/instance:Instance';
+
+  it('fills blank subnetId with the given subnet reference', () => {
+    const sections = [{
+      id: 'main', label: 'Resources',
+      items: [{
+        kind: 'resource' as const, name: 'node-0', resourceType: INSTANCE_TYPE,
+        properties: [
+          { key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' },
+        ],
+      }],
+    }];
+    const result = wireSubnetIntoInstances(sections, 'subnet');
+    const vnic = result[0].items[0].properties?.find(p => p.key === 'createVnicDetails');
+    expect(vnic?.value).toContain('${subnet.id}');
+    expect(vnic?.value).not.toContain('subnetId: ""');
+  });
+
+  it('works with a custom subnet name', () => {
+    const sections = [{
+      id: 'main', label: 'Resources',
+      items: [{
+        kind: 'resource' as const, name: 'node-0', resourceType: INSTANCE_TYPE,
+        properties: [{ key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' }],
+      }],
+    }];
+    const result = wireSubnetIntoInstances(sections, 'my-subnet');
+    const vnic = result[0].items[0].properties?.find(p => p.key === 'createVnicDetails');
+    expect(vnic?.value).toContain('${my-subnet.id}');
+  });
+
+  it('does not touch instances that already have a subnet reference', () => {
+    const original = '{ subnetId: "${existing-subnet.id}", assignPublicIp: true }';
+    const sections = [{
+      id: 'main', label: 'Resources',
+      items: [{
+        kind: 'resource' as const, name: 'node-0', resourceType: INSTANCE_TYPE,
+        properties: [{ key: 'createVnicDetails', value: original }],
+      }],
+    }];
+    const result = wireSubnetIntoInstances(sections, 'subnet');
+    const vnic = result[0].items[0].properties?.find(p => p.key === 'createVnicDetails');
+    expect(vnic?.value).toBe(original);
+  });
+
+  it('does not touch instances with no createVnicDetails property', () => {
+    const sections = [{
+      id: 'main', label: 'Resources',
+      items: [{
+        kind: 'resource' as const, name: 'node-0', resourceType: INSTANCE_TYPE,
+        properties: [{ key: 'compartmentId', value: '{{ .Config.compartmentId }}' }],
+      }],
+    }];
+    const result = wireSubnetIntoInstances(sections, 'subnet');
+    const item = result[0].items[0];
+    expect(item.properties).not.toContainEqual(
+      expect.objectContaining({ key: 'createVnicDetails' }),
+    );
+  });
+
+  it('does not touch non-Instance resources', () => {
+    const sections = [{
+      id: 'main', label: 'Resources',
+      items: [{
+        kind: 'resource' as const, name: 'vcn', resourceType: 'oci:Core/vcn:Vcn',
+        properties: [{ key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' }],
+      }],
+    }];
+    const result = wireSubnetIntoInstances(sections, 'subnet');
+    const vnic = result[0].items[0].properties?.find(p => p.key === 'createVnicDetails');
+    expect(vnic?.value).toBe('{ subnetId: "", assignPublicIp: true }');
+  });
+
+  it('wires all instances across multiple sections', () => {
+    const sections = [
+      {
+        id: 's1', label: 'Section 1',
+        items: [{
+          kind: 'resource' as const, name: 'n0', resourceType: INSTANCE_TYPE,
+          properties: [{ key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' }],
+        }],
+      },
+      {
+        id: 's2', label: 'Section 2',
+        items: [{
+          kind: 'resource' as const, name: 'n1', resourceType: INSTANCE_TYPE,
+          properties: [{ key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' }],
+        }],
+      },
+    ];
+    const result = wireSubnetIntoInstances(sections, 'subnet');
+    for (const s of result) {
+      const vnic = s.items[0].properties?.find(p => p.key === 'createVnicDetails');
+      expect(vnic?.value).toContain('${subnet.id}');
+    }
+  });
+
+  it('does not mutate the original sections', () => {
+    const sections = [{
+      id: 'main', label: 'Resources',
+      items: [{
+        kind: 'resource' as const, name: 'node-0', resourceType: INSTANCE_TYPE,
+        properties: [{ key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' }],
+      }],
+    }];
+    wireSubnetIntoInstances(sections, 'subnet');
+    expect(sections[0].items[0].properties![0].value).toBe('{ subnetId: "", assignPublicIp: true }');
+  });
+});
 });

@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 func TestInjectNetworking_NSGRule(t *testing.T) {
@@ -48,9 +47,9 @@ resources:
 `
 	result, err := InjectNetworkingIntoYAML(yaml)
 	require.NoError(t, err)
-	assert.Contains(t, result, "__agent_bs_my-nlb")
-	assert.Contains(t, result, "__agent_ln_my-nlb")
-	assert.Contains(t, result, "__agent_be_my-nlb_my-instance")
+	assert.Contains(t, result, "__agent_bs_my-nlb_0")
+	assert.Contains(t, result, "__agent_ln_my-nlb_0")
+	assert.Contains(t, result, "__agent_be_my-nlb_0")
 	assert.Contains(t, result, "BackendSet")
 	assert.Contains(t, result, "Listener")
 	assert.Contains(t, result, "Backend")
@@ -129,8 +128,13 @@ resources:
 `
 	result, err := InjectNetworkingIntoYAML(yaml)
 	require.NoError(t, err)
-	assert.Contains(t, result, "__agent_be_my-nlb_node-1")
-	assert.Contains(t, result, "__agent_be_my-nlb_node-2")
+	// Per-node injection: node-1 → index 0, node-2 → index 1
+	assert.Contains(t, result, "__agent_bs_my-nlb_0", "backend set for node-1")
+	assert.Contains(t, result, "__agent_bs_my-nlb_1", "backend set for node-2")
+	assert.Contains(t, result, "__agent_be_my-nlb_0", "backend for node-1")
+	assert.Contains(t, result, "__agent_be_my-nlb_1", "backend for node-2")
+	assert.Contains(t, result, fmt.Sprintf("%d", AgentNLBPortBase), "first listener port")
+	assert.Contains(t, result, fmt.Sprintf("%d", AgentNLBPortBase+1), "second listener port")
 }
 
 func TestInjectNetworking_BareInstance_CreatesNSGAndNLB(t *testing.T) {
@@ -162,14 +166,8 @@ resources:
 	assert.Contains(t, result, "pulumi-ui-agent-nsg", "NSG should have display name")
 	assert.Contains(t, result, "${my-vcn.id}", "NSG should reference VCN")
 
-	// Should create an NLB, backend set, listener, and backend
-	assert.Contains(t, result, "__agent_nlb", "should create NLB")
-	assert.Contains(t, result, "pulumi-ui-agent-nlb", "NLB should have display name")
-	assert.Contains(t, result, "${my-subnet.id}", "NLB should reference subnet")
-	assert.Contains(t, result, "__agent_bs", "should create backend set")
-	assert.Contains(t, result, "__agent_ln", "should create listener")
-	assert.Contains(t, result, "__agent_be_my-instance", "should create backend for instance")
-	assert.Contains(t, result, fmt.Sprintf("%d", AgentPort))
+	// NLB is no longer auto-created; only NSG is injected when no existing NLB
+	assert.NotContains(t, result, "__agent_nlb", "NLB should not be auto-created")
 
 	// Should attach NSG to instance
 	assert.Contains(t, result, "createVnicDetails", "should add createVnicDetails to instance")
@@ -319,11 +317,8 @@ resources:
 	assert.Contains(t, result, "${__agent_subnet_info.vcnId}", "NSG should use VCN from subnet lookup")
 	assert.Contains(t, result, "__agent_nsg_rule", "should create NSG rule")
 
-	// Should create NLB using the same subnetId
-	assert.Contains(t, result, "__agent_nlb", "should create NLB")
-	assert.Contains(t, result, "__agent_bs", "should create backend set")
-	assert.Contains(t, result, "__agent_ln", "should create listener")
-	assert.Contains(t, result, "__agent_be_my-instance", "should create backend for instance")
+	// NLB not auto-created; only NSG injected
+	assert.NotContains(t, result, "__agent_nlb", "NLB should not be auto-created")
 
 	// Should attach NSG to instance
 	assert.Contains(t, result, "nsgIds", "should add nsgIds")
@@ -348,7 +343,7 @@ resources:
 	assert.Contains(t, result, "__agent_subnet_info")
 	assert.Contains(t, result, "${subnetId}", "should pass through the Pulumi ref")
 	assert.Contains(t, result, "__agent_nsg")
-	assert.Contains(t, result, "__agent_nlb")
+	assert.NotContains(t, result, "__agent_nlb", "NLB should not be auto-created")
 }
 
 func TestInjectNetworking_OnlyInstance_NoSubnetRef(t *testing.T) {
@@ -468,10 +463,8 @@ resources:
 	result, err := InjectNetworkingIntoYAML(yaml)
 	require.NoError(t, err)
 	assert.Contains(t, result, "__agent_nsg", "should create NSG")
-	assert.Contains(t, result, "__agent_nlb", "private instance needs NLB")
-	assert.Contains(t, result, "__agent_bs", "private instance needs backend set")
-	assert.Contains(t, result, "__agent_ln", "private instance needs listener")
-	assert.Contains(t, result, "__agent_be_my-instance", "private instance needs backend")
+	// NLB not auto-created when no existing NLB in template
+	assert.NotContains(t, result, "__agent_nlb", "NLB should not be auto-created")
 }
 
 func TestInjectNetworking_MixedPublicPrivate_CreatesNLB(t *testing.T) {
@@ -505,10 +498,8 @@ resources:
 	result, err := InjectNetworkingIntoYAML(yaml)
 	require.NoError(t, err)
 	assert.Contains(t, result, "__agent_nsg", "should create NSG")
-	// Mixed public/private means NLB is still needed
-	assert.Contains(t, result, "__agent_nlb", "mixed cluster needs NLB")
-	assert.Contains(t, result, "__agent_be_public-node", "should create backend for public node")
-	assert.Contains(t, result, "__agent_be_private-node", "should create backend for private node")
+	// NLB not auto-created when no existing NLB in template
+	assert.NotContains(t, result, "__agent_nlb", "NLB should not be auto-created")
 }
 
 func TestInjectNetworking_NoVnicDetails_CreatesNLB(t *testing.T) {
@@ -532,7 +523,7 @@ resources:
 	result, err := InjectNetworkingIntoYAML(yaml)
 	require.NoError(t, err)
 	assert.Contains(t, result, "__agent_nsg", "should create NSG")
-	assert.Contains(t, result, "__agent_nlb", "no createVnicDetails means NLB is needed")
+	assert.NotContains(t, result, "__agent_nlb", "NLB should not be auto-created")
 }
 
 func TestInjectNetworking_MultiplePublicInstances_SkipsNLB(t *testing.T) {
@@ -608,9 +599,9 @@ resources:
 	assert.NotContains(t, result, "__agent_nlb", "public IP with existing NSG should skip NLB")
 }
 
-func TestInjectNetworking_ExistingNLB_PublicIP_SkipsBackends(t *testing.T) {
-	// When instances have public IPs, Nebula reaches them directly — no NLB
-	// backends needed for the agent port, even if an NLB already exists.
+func TestInjectNetworking_ExistingNLB_PublicIP_InjectsBackends(t *testing.T) {
+	// When an NLB exists alongside public-IP instances, prefer the NLB path
+	// for Nebula connectivity (T3 topology). Per-node backends are always injected.
 	yaml := `name: test
 runtime: yaml
 resources:
@@ -629,9 +620,9 @@ resources:
 `
 	result, err := InjectNetworkingIntoYAML(yaml)
 	require.NoError(t, err)
-	assert.NotContains(t, result, "__agent_bs_my-nlb", "public IP instances: NLB should not get agent backend set")
-	assert.NotContains(t, result, "__agent_ln_my-nlb", "public IP instances: NLB should not get agent listener")
-	assert.NotContains(t, result, "__agent_be_my-nlb_my-instance", "public IP instances: NLB should not get agent backend")
+	assert.Contains(t, result, "__agent_bs_my-nlb_0", "NLB should get per-node backend set")
+	assert.Contains(t, result, "__agent_ln_my-nlb_0", "NLB should get per-node listener")
+	assert.Contains(t, result, "__agent_be_my-nlb_0", "NLB should get per-node backend")
 }
 
 func TestInjectNetworking_NSGRuleContent(t *testing.T) {
@@ -660,18 +651,14 @@ resources:
 }
 
 func TestInjectNetworking_NLBDependencyChain(t *testing.T) {
+	// Per-node injection: each node gets its own BS → LN → BE chain
 	yaml := `name: test
 runtime: yaml
 resources:
-  my-vcn:
-    type: oci:Core/vcn:Vcn
+  my-nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
     properties:
       compartmentId: ocid1.compartment
-  my-subnet:
-    type: oci:Core/subnet:Subnet
-    properties:
-      compartmentId: ocid1.compartment
-      vcnId: ${my-vcn.id}
   node-a:
     type: oci:Core/instance:Instance
     properties:
@@ -684,14 +671,16 @@ resources:
 	result, err := InjectNetworkingIntoYAML(yaml)
 	require.NoError(t, err)
 
-	// Listener depends on backend set
-	assert.Contains(t, result, "${__agent_bs}", "listener should depend on backend set")
-	// First backend depends on listener, second depends on first
-	lnPos := strings.Index(result, "__agent_ln:")
-	beAPos := strings.Index(result, "__agent_be_node-a:")
-	beBPos := strings.Index(result, "__agent_be_node-b:")
-	assert.Greater(t, beAPos, lnPos, "first backend should come after listener")
-	assert.Greater(t, beBPos, beAPos, "second backend should come after first")
+	// Each per-node listener depends on its own backend set
+	assert.Contains(t, result, "${__agent_bs_my-nlb_0}", "node-0 listener should depend on its backend set")
+	assert.Contains(t, result, "${__agent_bs_my-nlb_1}", "node-1 listener should depend on its backend set")
+
+	// Backends come after their respective listeners in the output
+	bs0Pos := strings.Index(result, "__agent_bs_my-nlb_0:")
+	ln0Pos := strings.Index(result, "__agent_ln_my-nlb_0:")
+	be0Pos := strings.Index(result, "__agent_be_my-nlb_0:")
+	assert.Greater(t, ln0Pos, bs0Pos, "listener-0 should come after backend-set-0")
+	assert.Greater(t, be0Pos, ln0Pos, "backend-0 should come after listener-0")
 }
 
 func TestInjectNetworking_NSGAttachesAllInstances(t *testing.T) {
@@ -848,190 +837,10 @@ resources:
 	nsgAttachments := strings.Count(result, "${__agent_nsg.id}")
 	assert.Equal(t, 4, nsgAttachments, "NSG rule ref + 3 instance nsgIds attachments")
 
-	// NLB created with backends for all instances
-	assert.Contains(t, result, "__agent_nlb", "private cluster needs NLB")
-	assert.Contains(t, result, "__agent_be_server-1", "backend for server-1")
-	assert.Contains(t, result, "__agent_be_server-2", "backend for server-2")
-	assert.Contains(t, result, "__agent_be_server-3", "backend for server-3")
+	// NLB not auto-created; users must include an NLB in the template
+	assert.NotContains(t, result, "__agent_nlb", "NLB should not be auto-created")
 }
 
-func TestAllComputesHavePublicIP(t *testing.T) {
-	tests := []struct {
-		name     string
-		yaml     string
-		computes []discoveredResource
-		want     bool
-	}{
-		{
-			name:     "empty computes returns false",
-			yaml:     `resources: {}`,
-			computes: nil,
-			want:     false,
-		},
-		{
-			name: "single public instance",
-			yaml: `resources:
-  inst:
-    type: oci:Core/instance:Instance
-    properties:
-      createVnicDetails:
-        assignPublicIp: true`,
-			computes: []discoveredResource{{name: "inst", category: "compute"}},
-			want:     true,
-		},
-		{
-			name: "single private instance",
-			yaml: `resources:
-  inst:
-    type: oci:Core/instance:Instance
-    properties:
-      createVnicDetails:
-        assignPublicIp: false`,
-			computes: []discoveredResource{{name: "inst", category: "compute"}},
-			want:     false,
-		},
-		{
-			name: "all public",
-			yaml: `resources:
-  a:
-    type: oci:Core/instance:Instance
-    properties:
-      createVnicDetails:
-        assignPublicIp: true
-  b:
-    type: oci:Core/instance:Instance
-    properties:
-      createVnicDetails:
-        assignPublicIp: true`,
-			computes: []discoveredResource{
-				{name: "a", category: "compute"},
-				{name: "b", category: "compute"},
-			},
-			want: true,
-		},
-		{
-			name: "one public one private",
-			yaml: `resources:
-  a:
-    type: oci:Core/instance:Instance
-    properties:
-      createVnicDetails:
-        assignPublicIp: true
-  b:
-    type: oci:Core/instance:Instance
-    properties:
-      createVnicDetails:
-        assignPublicIp: false`,
-			computes: []discoveredResource{
-				{name: "a", category: "compute"},
-				{name: "b", category: "compute"},
-			},
-			want: false,
-		},
-		{
-			name: "instance without createVnicDetails",
-			yaml: `resources:
-  inst:
-    type: oci:Core/instance:Instance
-    properties:
-      compartmentId: ocid1.test`,
-			computes: []discoveredResource{{name: "inst", category: "compute"}},
-			want:     false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var doc yaml.Node
-			err := yaml.Unmarshal([]byte(tt.yaml), &doc)
-			require.NoError(t, err)
-			root := doc.Content[0]
-			resources := findMapValue(root, "resources")
-			if resources == nil || resources.Kind != yaml.MappingNode {
-				got := allComputesHavePublicIP(nil, tt.computes)
-				assert.Equal(t, tt.want, got)
-				return
-			}
-			got := allComputesHavePublicIP(resources, tt.computes)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestComputeHasPublicIP(t *testing.T) {
-	tests := []struct {
-		name     string
-		yaml     string
-		instance string
-		want     bool
-	}{
-		{
-			name: "assignPublicIp true",
-			yaml: `resources:
-  inst:
-    type: oci:Core/instance:Instance
-    properties:
-      createVnicDetails:
-        assignPublicIp: true`,
-			instance: "inst",
-			want:     true,
-		},
-		{
-			name: "assignPublicIp false",
-			yaml: `resources:
-  inst:
-    type: oci:Core/instance:Instance
-    properties:
-      createVnicDetails:
-        assignPublicIp: false`,
-			instance: "inst",
-			want:     false,
-		},
-		{
-			name: "no createVnicDetails",
-			yaml: `resources:
-  inst:
-    type: oci:Core/instance:Instance
-    properties:
-      compartmentId: ocid1.test`,
-			instance: "inst",
-			want:     false,
-		},
-		{
-			name: "no assignPublicIp key",
-			yaml: `resources:
-  inst:
-    type: oci:Core/instance:Instance
-    properties:
-      createVnicDetails:
-        subnetId: ocid1.subnet.test`,
-			instance: "inst",
-			want:     false,
-		},
-		{
-			name:     "instance not found",
-			yaml:     `resources: {}`,
-			instance: "missing",
-			want:     false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var doc yaml.Node
-			err := yaml.Unmarshal([]byte(tt.yaml), &doc)
-			require.NoError(t, err)
-			root := doc.Content[0]
-			resources := findMapValue(root, "resources")
-			if resources == nil || resources.Kind != yaml.MappingNode {
-				if tt.want {
-					t.Fatal("expected resources mapping")
-				}
-				return
-			}
-			got := computeHasPublicIP(resources, tt.instance)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
 
 func TestInjectNetworking_FlowMappingCreateVnicDetails(t *testing.T) {
 	// When the frontend serializes createVnicDetails as a quoted flow-mapping
@@ -1095,20 +904,19 @@ resources:
 	result, err := InjectNetworkingIntoYAML(input)
 	require.NoError(t, err)
 
-	// Should have created NSG + NLB since there are no VCN/subnet resources
-	// and the instance is private.
+	// NSG injected via fn::invoke; NLB not auto-created
 	assert.Contains(t, result, "__agent_nsg")
-	assert.Contains(t, result, "__agent_nlb")
 	assert.Contains(t, result, "__agent_subnet_info")
+	assert.NotContains(t, result, "__agent_nlb", "NLB should not be auto-created")
 }
 
 // ---------------------------------------------------------------------------
 // Fix: existing NLB + public IP instances should NOT get agent backends
 // ---------------------------------------------------------------------------
 
-func TestInjectNetworking_ExistingNLB_PublicIPInstances_NoBackends(t *testing.T) {
-	// An NLB exists (e.g. for app traffic) and all instances have assignPublicIp: true.
-	// The NLB should NOT receive agent port backends — Nebula dials direct.
+func TestInjectNetworking_ExistingNLB_PublicIPInstances_InjectsBackends(t *testing.T) {
+	// An NLB exists and instances have assignPublicIp: true (T3 topology).
+	// Per-node NLB backends are always injected when an NLB is present.
 	input := `name: test
 runtime: yaml
 resources:
@@ -1128,10 +936,9 @@ resources:
 	result, err := InjectNetworkingIntoYAML(input)
 	require.NoError(t, err)
 
-	// NSG rule should be added (required for UDP 41820 ingress).
-	assert.NotContains(t, result, "__agent_bs_my-nlb", "NLB should not get agent backend set when instances have public IPs")
-	assert.NotContains(t, result, "__agent_ln_my-nlb", "NLB should not get agent listener when instances have public IPs")
-	assert.NotContains(t, result, "__agent_be_my-nlb_my-instance", "NLB should not get agent backend when instances have public IPs")
+	assert.Contains(t, result, "__agent_bs_my-nlb_0", "NLB should get per-node backend set")
+	assert.Contains(t, result, "__agent_ln_my-nlb_0", "NLB should get per-node listener")
+	assert.Contains(t, result, "__agent_be_my-nlb_0", "NLB should get per-node backend")
 }
 
 func TestInjectNetworking_ExistingNLB_PrivateInstances_GetsBackends(t *testing.T) {
@@ -1155,7 +962,7 @@ resources:
 	result, err := InjectNetworkingIntoYAML(input)
 	require.NoError(t, err)
 
-	assert.Contains(t, result, "__agent_bs_my-nlb")
-	assert.Contains(t, result, "__agent_ln_my-nlb")
-	assert.Contains(t, result, "__agent_be_my-nlb_my-instance")
+	assert.Contains(t, result, "__agent_bs_my-nlb_0")
+	assert.Contains(t, result, "__agent_ln_my-nlb_0")
+	assert.Contains(t, result, "__agent_be_my-nlb_0")
 }

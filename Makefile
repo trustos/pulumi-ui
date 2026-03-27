@@ -28,10 +28,11 @@ backend-static:
 	CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o $(BINARY) ./cmd/server
 
 ## build-agent: Cross-compile agent for Linux arm64 + amd64
+## Output goes to cmd/server/dist/ so the server binary can embed them via go:embed.
 build-agent:
-	@mkdir -p dist
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/agent_linux_arm64 ./cmd/agent
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/agent_linux_amd64 ./cmd/agent
+	@mkdir -p cmd/server/dist
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o cmd/server/dist/agent_linux_arm64 ./cmd/agent
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o cmd/server/dist/agent_linux_amd64 ./cmd/agent
 
 # ── Dev ───────────────────────────────────────────────────────────────────────
 #
@@ -110,11 +111,12 @@ deploy:
 
 # ── Maintenance ───────────────────────────────────────────────────────────────
 
-## clean: Remove built binary, dev-data, and frontend dist
+## clean: Remove built binary, dev-data, frontend dist, and embedded agent binaries
 clean:
 	rm -f $(BINARY)
 	rm -rf $(DATA_DIR)
 	rm -rf cmd/server/frontend/dist
+	rm -rf cmd/server/dist
 
 ## clean-all: clean + remove frontend node_modules
 clean-all: clean

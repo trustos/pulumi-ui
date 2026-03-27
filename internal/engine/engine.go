@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optdestroy"
@@ -21,6 +24,8 @@ import (
 	"github.com/trustos/pulumi-ui/internal/agentinject"
 	"github.com/trustos/pulumi-ui/internal/applications"
 	"github.com/trustos/pulumi-ui/internal/db"
+	"github.com/trustos/pulumi-ui/internal/mesh"
+	nebulaPKI "github.com/trustos/pulumi-ui/internal/nebula"
 	"github.com/trustos/pulumi-ui/internal/programs"
 )
 
@@ -36,6 +41,8 @@ type Engine struct {
 	deployer       *applications.Deployer
 	connStore      *db.StackConnectionStore
 	nodeCertStore  *db.NodeCertStore
+	meshManager    *mesh.Manager
+	externalURL    string // PULUMI_UI_EXTERNAL_URL or auto-detected public URL
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
@@ -56,6 +63,20 @@ func New(stateDir string, registry *programs.ProgramRegistry, deployer *applicat
 // WithNodeCertStore attaches the per-node cert store for multi-node injection.
 func (e *Engine) WithNodeCertStore(s *db.NodeCertStore) {
 	e.nodeCertStore = s
+}
+
+// WithMeshManager attaches the mesh manager so the engine can invalidate
+// stale tunnels after post-deploy IP discovery.
+func (e *Engine) WithMeshManager(m *mesh.Manager) {
+	e.meshManager = m
+}
+
+// SetExternalURL sets the server's publicly reachable base URL (e.g.
+// "http://1.2.3.4:8080"). Used to construct AgentDownloadURL and to inject
+// the server's real IP into the agent's Nebula static_host_map so it can
+// initiate the Nebula handshake and download the agent binary over the overlay.
+func (e *Engine) SetExternalURL(url string) {
+	e.externalURL = url
 }
 
 // tryLock returns false if a stack operation is already in flight.
@@ -176,13 +197,16 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 		shouldInjectAgent = true
 	}
 	if shouldInjectAgent {
+		if err := e.ensureNebulaPKI(stackName); err != nil {
+			log.Printf("[agent-inject] failed to ensure Nebula PKI for stack %s: %v", stackName, err)
+		}
 		if varsList := e.agentVarListForStack(stackName); len(varsList) > 0 {
-			injected, injErr := agentinject.InjectIntoYAML(sanitized, varsList)
+			injected, injectedCount, injErr := agentinject.InjectIntoYAML(sanitized, varsList)
 			if injErr != nil {
 				log.Printf("[agent-inject] bootstrap injection error for stack %s: %v", stackName, injErr)
 			} else {
 				sanitized = injected
-				log.Printf("[agent-inject] bootstrap injected for stack %s (%d node cert(s))", stackName, len(varsList))
+				log.Printf("[agent-inject] bootstrap injected for stack %s (%d instance(s))", stackName, injectedCount)
 			}
 		} else {
 			log.Printf("[agent-inject] WARNING: no agent vars for stack %s — bootstrap NOT injected (check Nebula PKI)", stackName)
@@ -309,6 +333,129 @@ func (e *Engine) resolveStack(ctx context.Context, stackName, programName string
 	return stack, func() {}, err
 }
 
+// generateNebulaPKI creates the Nebula CA, UI cert, per-node agent certs (10 nodes),
+// and a per-stack auth token. Mirrors Handler.generateNebulaPKI in internal/api/stacks.go.
+func (e *Engine) generateNebulaPKI(stackName string) error {
+	subnet, err := e.connStore.AllocateSubnet()
+	if err != nil {
+		return fmt.Errorf("allocate subnet: %w", err)
+	}
+	ca, err := nebulaPKI.GenerateCA(stackName+"-ca", 2*365*24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("generate CA: %w", err)
+	}
+	uiIP, err := nebulaPKI.UIAddress(subnet)
+	if err != nil {
+		return fmt.Errorf("compute UI address: %w", err)
+	}
+	uiCert, err := nebulaPKI.IssueCert(ca.CertPEM, ca.KeyPEM, "pulumi-ui", uiIP, []string{"server"}, 365*24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("issue UI cert: %w", err)
+	}
+	nodeCerts, nodeIPs, err := nebulaPKI.GenerateNodeCerts(ca.CertPEM, ca.KeyPEM, subnet, 10, 365*24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("generate node certs: %w", err)
+	}
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return fmt.Errorf("generate agent token: %w", err)
+	}
+	conn := &db.StackConnection{
+		StackName:       stackName,
+		NebulaCACert:    ca.CertPEM,
+		NebulaCAKey:     ca.KeyPEM,
+		NebulaUICert:    uiCert.CertPEM,
+		NebulaUIKey:     uiCert.KeyPEM,
+		NebulaSubnet:    subnet,
+		NebulaAgentCert: nodeCerts[0].CertPEM,
+		NebulaAgentKey:  nodeCerts[0].KeyPEM,
+		AgentToken:      hex.EncodeToString(tokenBytes),
+	}
+	if err := e.connStore.Create(conn); err != nil {
+		return err
+	}
+	if e.nodeCertStore != nil {
+		dbCerts := make([]*db.NodeCert, len(nodeCerts))
+		for i, nc := range nodeCerts {
+			dbCerts[i] = &db.NodeCert{
+				StackName:  stackName,
+				NodeIndex:  i,
+				NebulaCert: nc.CertPEM,
+				NebulaKey:  nc.KeyPEM,
+				NebulaIP:   nodeIPs[i],
+			}
+		}
+		if err := e.nodeCertStore.CreateAll(dbCerts); err != nil {
+			return fmt.Errorf("store node certs: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureNebulaPKI generates Nebula PKI for stackName if no connection record exists yet.
+// This is a lazy-init safety net for stacks where PKI generation failed or was skipped
+// at stack-creation time (PutStack in internal/api/stacks.go).
+func (e *Engine) ensureNebulaPKI(stackName string) error {
+	if e.connStore == nil {
+		return nil
+	}
+	conn, err := e.connStore.Get(stackName)
+	if err != nil {
+		return err
+	}
+	if conn != nil {
+		return nil // already exists
+	}
+	log.Printf("[agent-inject] no Nebula PKI for stack %s — generating now (lazy init)", stackName)
+	return e.generateNebulaPKI(stackName)
+}
+
+// agentURLFields returns the AgentDownloadURL, NebulaServerVPNIP, and
+// NebulaServerRealIP fields common to all AgentVars entries for a stack.
+// It also pre-starts a passive Nebula tunnel so the server is listening
+// before the agent tries to initiate a handshake at boot time.
+func (e *Engine) agentURLFields(stackName string, conn *db.StackConnection) (downloadURL, serverVPNIP, serverRealIP string) {
+	extURL := e.externalURL
+	if extURL == "" {
+		extURL = os.Getenv("PULUMI_UI_EXTERNAL_URL")
+	}
+	if extURL != "" {
+		downloadURL = strings.TrimRight(extURL, "/") + "/api/agent/binary/linux"
+		serverRealIP = extractHost(extURL)
+	}
+
+	if conn != nil {
+		if ip, err := nebulaPKI.UIAddress(conn.NebulaSubnet); err == nil {
+			serverVPNIP = ip.Addr().String()
+		}
+	}
+
+	// Pre-start a passive Nebula tunnel: server listens without knowing the
+	// agent's real IP yet, so that when the agent initiates the handshake
+	// (using the server's real IP from static_host_map) the server responds.
+	if e.meshManager != nil && serverVPNIP != "" && conn != nil {
+		if _, err := e.meshManager.GetOrStartPassive(stackName, conn); err != nil {
+			log.Printf("[mesh] failed to pre-start passive tunnel for %s: %v", stackName, err)
+		} else {
+			log.Printf("[mesh] pre-started passive tunnel for stack %s (server VPN: %s real: %s)", stackName, serverVPNIP, serverRealIP)
+		}
+	}
+	return
+}
+
+// extractHost strips the scheme and port from a URL, returning just the host.
+// "http://1.2.3.4:8080" → "1.2.3.4", "https://example.com" → "example.com".
+func extractHost(rawURL string) string {
+	s := rawURL
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.LastIndex(s, ":"); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
 // agentVarsForStack loads the Nebula connection for a stack and returns
 // AgentVars suitable for rendering the agent bootstrap script.
 // Returns nil if the stack has no connection record (agent injection skipped).
@@ -340,19 +487,18 @@ func (e *Engine) agentVarsForStack(stackName string) *agentinject.AgentVars {
 		token = "placeholder-token"
 	}
 
-	downloadURL := ""
-	if extURL := os.Getenv("PULUMI_UI_EXTERNAL_URL"); extURL != "" {
-		downloadURL = strings.TrimRight(extURL, "/") + "/api/agent/binary/linux"
-	}
+	downloadURL, serverVPNIP, serverRealIP := e.agentURLFields(stackName, conn)
 
 	return &agentinject.AgentVars{
-		NebulaCACert:     string(conn.NebulaCACert),
-		NebulaHostCert:   hostCert,
-		NebulaHostKey:    hostKey,
-		NebulaVersion:    "v1.10.3",
-		AgentVersion:     "v0.1.0",
-		AgentDownloadURL: downloadURL,
-		AgentToken:       token,
+		NebulaCACert:       string(conn.NebulaCACert),
+		NebulaHostCert:     hostCert,
+		NebulaHostKey:      hostKey,
+		NebulaVersion:      "v1.10.3",
+		AgentVersion:       "v0.1.0",
+		AgentDownloadURL:   downloadURL,
+		AgentToken:         token,
+		NebulaServerVPNIP:  serverVPNIP,
+		NebulaServerRealIP: serverRealIP,
 	}
 }
 
@@ -373,20 +519,19 @@ func (e *Engine) agentVarListForStack(stackName string) []agentinject.AgentVars 
 				log.Printf("[agent-vars] cannot load conn for stack %s (needed for CA cert / token)", stackName)
 				return nil
 			}
-			downloadURL := ""
-			if extURL := os.Getenv("PULUMI_UI_EXTERNAL_URL"); extURL != "" {
-				downloadURL = strings.TrimRight(extURL, "/") + "/api/agent/binary/linux"
-			}
+			downloadURL, serverVPNIP, serverRealIP := e.agentURLFields(stackName, conn)
 			result := make([]agentinject.AgentVars, len(nodeCerts))
 			for i, nc := range nodeCerts {
 				result[i] = agentinject.AgentVars{
-					NebulaCACert:     string(conn.NebulaCACert),
-					NebulaHostCert:   string(nc.NebulaCert),
-					NebulaHostKey:    string(nc.NebulaKey),
-					NebulaVersion:    "v1.10.3",
-					AgentVersion:     "v0.1.0",
-					AgentDownloadURL: downloadURL,
-					AgentToken:       conn.AgentToken,
+					NebulaCACert:       string(conn.NebulaCACert),
+					NebulaHostCert:     string(nc.NebulaCert),
+					NebulaHostKey:      string(nc.NebulaKey),
+					NebulaVersion:      "v1.10.3",
+					AgentVersion:       "v0.1.0",
+					AgentDownloadURL:   downloadURL,
+					AgentToken:         conn.AgentToken,
+					NebulaServerVPNIP:  serverVPNIP,
+					NebulaServerRealIP: serverRealIP,
 				}
 			}
 			return result
@@ -420,9 +565,48 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 		return
 	}
 
+	// Per-node NLB discovery for YAML programs with agentAccess: true.
+	// Stores nlbIP:41821, nlbIP:41822, … in stack_node_certs so the mesh
+	// Manager can open a dedicated Nebula tunnel per node via NLB port forwarding.
+	// Go programs (ApplicationProvider) are excluded — they use a shared NLB
+	// listener on port 41820 and store only a plain IP via the legacy scan below.
+	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() && e.nodeCertStore != nil {
+		for _, key := range []string{"nlbPublicIp", "nlbPublicIP"} {
+			v, ok := outputs[key]
+			if !ok {
+				continue
+			}
+			nlbIP, ok := v.Value.(string)
+			if !ok || nlbIP == "" {
+				continue
+			}
+			nodes, err := e.nodeCertStore.ListForStack(stackName)
+			if err != nil {
+				log.Printf("[agent-discover] nodeCertStore.ListForStack error for %s: %v", stackName, err)
+				break
+			}
+			for i := range nodes {
+				addr := fmt.Sprintf("%s:%d", nlbIP, agentinject.AgentNLBPortBase+i)
+				if err := e.nodeCertStore.UpdateAgentRealIP(stackName, i, addr); err != nil {
+					log.Printf("[agent-discover] failed to store node %d NLB addr for %s: %v", i, stackName, err)
+				}
+				if i == 0 {
+					_ = e.connStore.UpdateAgentRealIP(stackName, addr)
+				}
+			}
+			send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: NLB %s (%d node(s))", nlbIP, len(nodes))})
+			log.Printf("[agent-discover] stack %s: NLB %s, %d node(s)", stackName, nlbIP, len(nodes))
+			if e.meshManager != nil {
+				e.meshManager.CloseTunnel(stackName)
+			}
+			return
+		}
+	}
+
 	// Scan per-node outputs first: instance-{i}-publicIp (e.g. for nomad_cluster).
 	// These are stored in stack_node_certs.agent_real_ip for per-tunnel dialling.
 	if e.nodeCertStore != nil {
+		foundAny := false
 		for i := 0; i < 32; i++ {
 			key := fmt.Sprintf("instance-%d-publicIp", i)
 			v, ok := outputs[key]
@@ -438,8 +622,12 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 					if i == 0 {
 						_ = e.connStore.UpdateAgentRealIP(stackName, ip)
 					}
+					foundAny = true
 				}
 			}
+		}
+		if foundAny && e.meshManager != nil {
+			e.meshManager.CloseTunnel(stackName)
 		}
 	}
 
@@ -459,6 +647,9 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 					send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: found %s = %s", key, ip)})
 					log.Printf("[agent-discover] stack %s: agent reachable at %s", stackName, ip)
 				}
+				if e.meshManager != nil {
+					e.meshManager.CloseTunnel(stackName)
+				}
 				return
 			}
 		}
@@ -470,6 +661,9 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 				log.Printf("[agent-discover] failed to store agent IP for %s: %v", stackName, err)
 			} else {
 				send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: found %s = %s", key, ip)})
+			}
+			if e.meshManager != nil {
+				e.meshManager.CloseTunnel(stackName)
 			}
 			return
 		}

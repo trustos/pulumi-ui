@@ -9,7 +9,10 @@ import (
 
 var pulumiInterpRe = regexp.MustCompile(`\$\{[^}]+\}`)
 
-const AgentPort = 41820
+const (
+	AgentPort        = 41820
+	AgentNLBPortBase = AgentPort + 1 // 41821 — first per-node NLB listener port
+)
 
 // NetworkingResourceTypes maps Pulumi resource type tokens to a category
 // for networking injection detection.
@@ -25,8 +28,14 @@ var ContextResourceTypes = map[string]string{
 }
 
 type discoveredResource struct {
-	name     string
-	category string
+	name      string
+	category  string
+	isPrivate bool // only meaningful for category "nlb"
+}
+
+type discoveredPoolResource struct {
+	name string
+	size int // from properties.size; 0 if unresolvable (Pulumi interpolation)
 }
 
 // InjectNetworkingIntoYAML parses a rendered Pulumi YAML, detects existing
@@ -64,6 +73,7 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 
 	var nsgs, nlbs, computes []discoveredResource
 	var vcns, subnets []discoveredResource
+	var pools []discoveredPoolResource
 
 	for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
 		resName := resourcesNode.Content[i].Value
@@ -80,7 +90,13 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 			case "nsg":
 				nsgs = append(nsgs, discoveredResource{name: resName, category: cat})
 			case "nlb":
-				nlbs = append(nlbs, discoveredResource{name: resName, category: cat})
+				isPriv := false
+				if props := findMapValue(resNode, "properties"); props != nil {
+					if v := findMapValue(props, "isPrivate"); v != nil {
+						isPriv = v.Value == "true"
+					}
+				}
+				nlbs = append(nlbs, discoveredResource{name: resName, category: cat, isPrivate: isPriv})
 			}
 		}
 		if cat, ok := ContextResourceTypes[typeNode.Value]; ok {
@@ -94,14 +110,24 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 		if IsComputeResource(typeNode.Value) {
 			computes = append(computes, discoveredResource{name: resName, category: "compute"})
 		}
+		if typeNode.Value == "oci:Core/instancePool:InstancePool" {
+			size := 0
+			if props := findMapValue(resNode, "properties"); props != nil {
+				if sv := findMapValue(props, "size"); sv != nil {
+					if n, err := fmt.Sscanf(sv.Value, "%d", new(int)); n == 1 && err == nil {
+						fmt.Sscanf(sv.Value, "%d", &size)
+					}
+				}
+			}
+			pools = append(pools, discoveredPoolResource{name: resName, size: size})
+		}
 	}
 
-	if len(nsgs) == 0 && len(nlbs) == 0 && len(computes) == 0 {
+	if len(nsgs) == 0 && len(nlbs) == 0 && len(computes) == 0 && len(pools) == 0 {
 		return yamlBody, nil
 	}
 
 	modified := false
-	publicIPInstances := allComputesHavePublicIP(resourcesNode, computes)
 
 	// When no VCN/subnet resources exist but compute does, try to extract
 	// subnetId from the first compute instance's createVnicDetails. Use
@@ -125,21 +151,6 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 			addResource(resourcesNode, ruleName, buildNSGRuleResource(nsgName))
 			for _, compute := range computes {
 				attachNSGToInstance(resourcesNode, compute.name, nsgName)
-			}
-
-			if !publicIPInstances {
-				nlbName := "__agent_nlb"
-				addResource(resourcesNode, nlbName, buildNLBResourceFromSubnetRef(compartmentRef, subnetRef))
-				bsName := "__agent_bs"
-				lnName := "__agent_ln"
-				addResource(resourcesNode, bsName, buildNLBBackendSetResource(nlbName))
-				addResource(resourcesNode, lnName, buildNLBListenerResource(nlbName, bsName))
-				prevDep := lnName
-				for _, compute := range computes {
-					beName := fmt.Sprintf("__agent_be_%s", compute.name)
-					addResource(resourcesNode, beName, buildNLBBackendResource(nlbName, bsName, compute.name, prevDep))
-					prevDep = beName
-				}
 			}
 			modified = true
 		}
@@ -166,44 +177,43 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 		modified = true
 	}
 
-	// When no NLB exists but we have a subnet and compute, create one with
-	// agent backend set — only needed when instances are private (no public IP).
-	if len(nlbs) == 0 && len(subnets) > 0 && len(computes) > 0 && !publicIPInstances {
-		subnet := subnets[0]
-		compartmentRef := resolveCompartmentId(resourcesNode, subnet.name)
-		nlbName := "__agent_nlb"
-		addResource(resourcesNode, nlbName, buildNLBResource(compartmentRef, subnet.name))
-		bsName := "__agent_bs"
-		lnName := "__agent_ln"
-		addResource(resourcesNode, bsName, buildNLBBackendSetResource(nlbName))
-		addResource(resourcesNode, lnName, buildNLBListenerResource(nlbName, bsName))
-		prevDep := lnName
-		for _, compute := range computes {
-			beName := fmt.Sprintf("__agent_be_%s", compute.name)
-			addResource(resourcesNode, beName, buildNLBBackendResource(nlbName, bsName, compute.name, prevDep))
-			prevDep = beName
-		}
-		modified = true
-	}
-
-	// For each existing NLB, add a backend set + listener + backends for each compute.
-	// Skipped when all instances have public IPs — Nebula reaches them directly.
+	// For each existing public NLB, inject per-node backend sets and listeners.
+	// Each compute node gets its own backend set + UDP listener at AgentNLBPortBase+i.
+	// Private NLBs (isPrivate: true) are skipped — validate.go emits a warning.
 	for _, nlb := range nlbs {
-		if publicIPInstances {
+		if nlb.isPrivate {
 			continue
 		}
-		bsName := fmt.Sprintf("__agent_bs_%s", nlb.name)
-		lnName := fmt.Sprintf("__agent_ln_%s", nlb.name)
+		for i, compute := range computes {
+			port := AgentNLBPortBase + i
+			bsName := fmt.Sprintf("__agent_bs_%s_%d", nlb.name, i)
+			lnName := fmt.Sprintf("__agent_ln_%s_%d", nlb.name, i)
+			addResource(resourcesNode, bsName, buildNLBBackendSetResourceN(nlb.name, i))
+			addResource(resourcesNode, lnName, buildNLBListenerResourceN(nlb.name, bsName, port))
+			beName := fmt.Sprintf("__agent_be_%s_%d", nlb.name, i)
+			addResource(resourcesNode, beName, buildNLBBackendResource(nlb.name, bsName, compute.name, lnName))
+			modified = true
+		}
 
-		addResource(resourcesNode, bsName, buildNLBBackendSetResource(nlb.name))
-		addResource(resourcesNode, lnName, buildNLBListenerResource(nlb.name, bsName))
-		modified = true
-
-		prevDep := lnName
-		for _, compute := range computes {
-			beName := fmt.Sprintf("__agent_be_%s_%s", nlb.name, compute.name)
-			addResource(resourcesNode, beName, buildNLBBackendResource(nlb.name, bsName, compute.name, prevDep))
-			prevDep = beName
+		// Pool-as-entity injection: one shared backend set at AgentNLBPortBase
+		for _, pool := range pools {
+			if pool.size == 0 {
+				continue // dynamic size — cannot pre-configure backends
+			}
+			bsName := fmt.Sprintf("__agent_bs_%s_pool", nlb.name)
+			lnName := fmt.Sprintf("__agent_ln_%s_pool", nlb.name)
+			// Use port AgentNLBPortBase + len(computes) to avoid port collision
+			poolPort := AgentNLBPortBase + len(computes)
+			addResource(resourcesNode, bsName, buildNLBBackendSetResourceN(nlb.name, -1))
+			addResource(resourcesNode, lnName, buildNLBListenerResourceN(nlb.name, bsName, poolPort))
+			prevDep := lnName
+			for j := 0; j < pool.size; j++ {
+				beName := fmt.Sprintf("__agent_be_%s_pool_%d", nlb.name, j)
+				targetRef := fmt.Sprintf("${%s.actualState.instances[%d].id}", pool.name, j)
+				addResource(resourcesNode, beName, buildNLBBackendResourceByTarget(nlb.name, bsName, targetRef, prevDep))
+				prevDep = beName
+			}
+			modified = true
 		}
 	}
 
@@ -305,9 +315,9 @@ func buildNLBBackendResource(nlbName, bsName, computeName, prevDep string) *yaml
 		"type": "oci:NetworkLoadBalancer/backend:Backend",
 		"properties": map[string]interface{}{
 			"networkLoadBalancerId": fmt.Sprintf("${%s.id}", nlbName),
-			"backendSetName":       fmt.Sprintf("${%s.name}", bsName),
-			"port":                 AgentPort,
-			"targetId":             fmt.Sprintf("${%s.id}", computeName),
+			"backendSetName":        fmt.Sprintf("${%s.name}", bsName),
+			"port":                  AgentPort,
+			"targetId":              fmt.Sprintf("${%s.id}", computeName),
 		},
 		"options": map[string]interface{}{
 			"dependsOn": []string{fmt.Sprintf("${%s}", prevDep)},
@@ -315,51 +325,59 @@ func buildNLBBackendResource(nlbName, bsName, computeName, prevDep string) *yaml
 	})
 }
 
-// computeHasPublicIP returns true if the named compute instance has
-// assignPublicIp set to true (or "true") inside createVnicDetails.
-// Handles both proper YAML mapping nodes and flow-mapping scalar strings.
-func computeHasPublicIP(resourcesNode *yaml.Node, instanceName string) bool {
-	for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
-		if resourcesNode.Content[i].Value != instanceName {
-			continue
-		}
-		resNode := resourcesNode.Content[i+1]
-		if resNode.Kind != yaml.MappingNode {
-			continue
-		}
-		props := findMapValue(resNode, "properties")
-		if props == nil || props.Kind != yaml.MappingNode {
-			continue
-		}
-		vnicDetails := findMapValue(props, "createVnicDetails")
-		if vnicDetails == nil {
-			return false
-		}
-		if vnicDetails.Kind == yaml.ScalarNode {
-			vnicDetails = promoteScalarToMapping(props, "createVnicDetails")
-		}
-		if vnicDetails == nil || vnicDetails.Kind != yaml.MappingNode {
-			return false
-		}
-		v := findMapValue(vnicDetails, "assignPublicIp")
-		return v != nil && v.Value == "true"
+// buildNLBBackendSetResourceN creates a per-node backend set.
+// nodeIdx >= 0 produces name "agent-backend-set-N"; nodeIdx < 0 produces "agent-backend-set-pool".
+func buildNLBBackendSetResourceN(nlbName string, nodeIdx int) *yaml.Node {
+	name := fmt.Sprintf("agent-backend-set-%d", nodeIdx)
+	if nodeIdx < 0 {
+		name = "agent-backend-set-pool"
 	}
-	return false
+	return buildMappingNode(map[string]interface{}{
+		"type": "oci:NetworkLoadBalancer/backendSet:BackendSet",
+		"properties": map[string]interface{}{
+			"networkLoadBalancerId": fmt.Sprintf("${%s.id}", nlbName),
+			"name":                  name,
+			"policy":                "FIVE_TUPLE",
+			"healthChecker": map[string]interface{}{
+				"protocol": "TCP",
+				"port":     22,
+			},
+			"isPreserveSource": false,
+		},
+	})
 }
 
-// allComputesHavePublicIP returns true when every discovered compute instance
-// has assignPublicIp: true. When true, the engine skips NLB creation because
-// the Nebula lighthouse can be reached directly via the instance's public IP.
-func allComputesHavePublicIP(resourcesNode *yaml.Node, computes []discoveredResource) bool {
-	if len(computes) == 0 {
-		return false
-	}
-	for _, c := range computes {
-		if !computeHasPublicIP(resourcesNode, c.name) {
-			return false
-		}
-	}
-	return true
+// buildNLBListenerResourceN creates a listener on the given UDP port.
+func buildNLBListenerResourceN(nlbName, bsName string, port int) *yaml.Node {
+	return buildMappingNode(map[string]interface{}{
+		"type": "oci:NetworkLoadBalancer/listener:Listener",
+		"properties": map[string]interface{}{
+			"networkLoadBalancerId":  fmt.Sprintf("${%s.id}", nlbName),
+			"name":                   fmt.Sprintf("agent-listener-%d", port),
+			"defaultBackendSetName":  fmt.Sprintf("${%s.name}", bsName),
+			"port":                   port,
+			"protocol":               "UDP",
+		},
+		"options": map[string]interface{}{
+			"dependsOn": []string{fmt.Sprintf("${%s}", bsName)},
+		},
+	})
+}
+
+// buildNLBBackendResourceByTarget creates a backend resource using a raw targetId expression.
+func buildNLBBackendResourceByTarget(nlbName, bsName, targetRef, prevDep string) *yaml.Node {
+	return buildMappingNode(map[string]interface{}{
+		"type": "oci:NetworkLoadBalancer/backend:Backend",
+		"properties": map[string]interface{}{
+			"networkLoadBalancerId": fmt.Sprintf("${%s.id}", nlbName),
+			"backendSetName":        fmt.Sprintf("${%s.name}", bsName),
+			"port":                  AgentPort,
+			"targetId":              targetRef,
+		},
+		"options": map[string]interface{}{
+			"dependsOn": []string{fmt.Sprintf("${%s}", prevDep)},
+		},
+	})
 }
 
 // extractSubnetFromCompute extracts the subnetId and compartmentId from a

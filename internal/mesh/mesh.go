@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -51,6 +52,111 @@ func NewManager(connStore *db.StackConnectionStore) *Manager {
 	}
 	go m.reaper()
 	return m
+}
+
+// GetOrStartPassive returns a cached tunnel for the stack, or creates a new one
+// that listens for incoming Nebula connections without a static_host_map entry
+// for the agent. Used before a deploy completes (agent real IP not yet known)
+// so that when the agent initiates a Nebula handshake to the server's real IP,
+// the server's Nebula instance accepts it. A subsequent call to CloseTunnel
+// (triggered by discoverAgentAddress) will replace this passive tunnel with an
+// active one that has the agent's real IP in its static_host_map.
+func (m *Manager) GetOrStartPassive(stackName string, conn *db.StackConnection) (*Tunnel, error) {
+	m.mu.Lock()
+	if t, ok := m.tunnels[stackName]; ok {
+		t.mu.Lock()
+		t.lastUsed = time.Now()
+		t.mu.Unlock()
+		m.mu.Unlock()
+		return t, nil
+	}
+	m.mu.Unlock()
+
+	t, err := m.connectPassive(conn)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	if existing, ok := m.tunnels[stackName]; ok {
+		m.mu.Unlock()
+		t.Close()
+		return existing, nil
+	}
+	m.tunnels[stackName] = t
+	m.mu.Unlock()
+	return t, nil
+}
+
+// connectPassive builds a Nebula service for the server side without a
+// static_host_map entry for the agent. The server will accept any handshake
+// from a peer with a cert signed by the stack CA.
+func (m *Manager) connectPassive(conn *db.StackConnection) (*Tunnel, error) {
+	cfgStr := fmt.Sprintf(`
+tun:
+  user: true
+pki:
+  ca: |
+%s
+  cert: |
+%s
+  key: |
+%s
+static_host_map: {}
+listen:
+  host: 0.0.0.0
+  port: 0
+lighthouse:
+  am_lighthouse: false
+  hosts: []
+punchy:
+  punch: true
+  respond: true
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: 8080
+      proto: tcp
+      host: any
+    - port: any
+      proto: icmp
+      host: any
+`,
+		indentPEM(string(conn.NebulaCACert), 4),
+		indentPEM(string(conn.NebulaUICert), 4),
+		indentPEM(string(conn.NebulaUIKey), 4),
+	)
+
+	var cfg config.C
+	if err := cfg.LoadString(cfgStr); err != nil {
+		return nil, fmt.Errorf("load passive nebula config: %w", err)
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.WarnLevel)
+
+	ctrl, err := nebula.Main(&cfg, false, "pulumi-ui-passive-"+conn.StackName, logger, overlay.NewUserDeviceFromConfig)
+	if err != nil {
+		return nil, fmt.Errorf("start passive nebula: %w", err)
+	}
+
+	svc, err := service.New(ctrl)
+	if err != nil {
+		log.Printf("[mesh] service.New failed for passive stack %s: %v (nebula goroutines may leak)", conn.StackName, err)
+		return nil, fmt.Errorf("create passive nebula service: %w", err)
+	}
+
+	// Passive tunnels have no agent addr; they accept incoming connections only.
+	return &Tunnel{
+		svc:       svc,
+		stackName: conn.StackName,
+		agentAddr: "",
+		token:     conn.AgentToken,
+		lastUsed:  time.Now(),
+	}, nil
 }
 
 // GetTunnel returns a cached or freshly created tunnel for the given stack.
@@ -104,8 +210,17 @@ func (m *Manager) connect(conn *db.StackConnection) (*Tunnel, error) {
 	}
 	agentIP := agentNebulaIP.Addr().String()
 
-	realIP := *conn.AgentRealIP
-	staticMap := fmt.Sprintf("'%s': ['%s:%d']", agentIP, realIP, nebulaUDPPort)
+	realIPRaw := *conn.AgentRealIP
+	udpHost, portStr, splitErr := net.SplitHostPort(realIPRaw)
+	udpPort := nebulaUDPPort
+	if splitErr == nil {
+		if p, _ := strconv.Atoi(portStr); p > 0 {
+			udpPort = p
+		}
+	} else {
+		udpHost = realIPRaw
+	}
+	staticMap := fmt.Sprintf("'%s': ['%s:%d']", agentIP, udpHost, udpPort)
 
 	cfgStr := fmt.Sprintf(`
 tun:
@@ -127,12 +242,16 @@ lighthouse:
   hosts: []
 punchy:
   punch: true
+  respond: true
 firewall:
   outbound:
     - port: any
       proto: any
       host: any
   inbound:
+    - port: 8080
+      proto: tcp
+      host: any
     - port: any
       proto: icmp
       host: any
@@ -158,9 +277,9 @@ firewall:
 
 	svc, err := service.New(ctrl)
 	if err != nil {
-		// ctrl.Stop() must NOT be called here — Nebula's main loop calls
-		// os.Exit(0) after "Goodbye", which would terminate the server process.
-		// Accept the goroutine leak on this rare error path.
+		// Do not call ctrl.Stop() — Nebula's interface.go calls os.Exit(2) on
+		// EOF if f.closed is not set, crashing the server. Accept the goroutine
+		// leak on this rare error path; goroutines exit when the server exits.
 		log.Printf("[mesh] service.New failed for stack %s: %v (nebula goroutines may leak)", conn.StackName, err)
 		return nil, fmt.Errorf("create nebula service: %w", err)
 	}
@@ -211,19 +330,18 @@ func (t *Tunnel) Token() string {
 }
 
 // Close tears down the Nebula tunnel.
-// Only svc.Close() is called — ctrl.Stop() must NOT be used here because
-// Nebula's main loop calls os.Exit(0) after logging "Goodbye", which would
-// terminate the entire server process. The service package manages the full
-// Nebula lifecycle in userspace mode and cleans up all goroutines on Close.
+//
+// WARNING: svc.Close() → control.Stop() → c.f.Close() triggers a race inside
+// Nebula's interface.go: the outbound-reader goroutine may receive EOF before
+// f.closed is set, causing Nebula to call os.Exit(2) and crash the server.
+// Until this is fixed upstream (slackhq/nebula), we do NOT call svc.Close()
+// here. The tunnel goroutines exit when the server process exits. The reaper
+// removes the tunnel from the cache (freeing the Tunnel struct) without
+// stopping the underlying Nebula service, which is acceptable — idle goroutines
+// consume only a few hundred KB and Nebula auto-expires inactive connections.
 func (t *Tunnel) Close() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[mesh] recovered panic closing tunnel for stack %s: %v", t.stackName, r)
-		}
-	}()
-	if t.svc != nil {
-		t.svc.Close()
-	}
+	// Intentionally a no-op: see the warning above.
+	log.Printf("[mesh] tunnel for stack %s removed from cache (nebula service left running to avoid os.Exit(2) race)", t.stackName)
 }
 
 // CloseTunnel tears down a specific stack's tunnel.

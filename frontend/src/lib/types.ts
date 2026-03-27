@@ -110,6 +110,12 @@ export interface AgentService {
   active: string;
 }
 
+export interface NodeInfo {
+  nodeIndex: number;
+  nebulaIp: string;
+  agentRealIp?: string;
+}
+
 export interface StackInfo {
   name: string;
   program: string;
@@ -125,6 +131,7 @@ export interface StackInfo {
   status: string;
   running: boolean;
   mesh?: MeshStatus;
+  nodes?: NodeInfo[];
   agentAccess?: boolean;
   deployed?: boolean;
   wasDeployed?: boolean;

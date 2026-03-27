@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { collectAllResources, getMissingAgentOutputs, COMPUTE_RESOURCE_TYPES, ACCEPTED_AGENT_IP_KEYS } from './collect-resources';
+import { collectAllResources, getMissingAgentOutputs, COMPUTE_RESOURCE_TYPES, ACCEPTED_AGENT_IP_KEYS, NLB_RESOURCE_TYPE } from './collect-resources';
 import type { ProgramItem, LoopItem, ConditionalItem, ResourceItem } from '$lib/types/program-graph';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -431,6 +431,74 @@ describe('getMissingAgentOutputs', () => {
     expect(result).toEqual([
       { key: 'instance-0-publicIp', value: '${vm.publicIp}' },
       { key: 'instance-1-publicIp', value: '${tpl.publicIp}' },
+    ]);
+  });
+
+  // NLB topology (allResources contains an NLB)
+  it('suggests nlbPublicIp when an NLB resource is present and output is missing', () => {
+    const result = getMissingAgentOutputs(
+      [compute('my-instance')],
+      [],
+      [compute('my-nlb', NLB_RESOURCE_TYPE)],
+    );
+    expect(result).toEqual([
+      { key: 'nlbPublicIp', value: '${my-nlb.ipAddresses[0].ipAddress}' },
+    ]);
+  });
+
+  it('suggests nlbPublicIp for multi-instance + NLB (one output regardless of count)', () => {
+    const result = getMissingAgentOutputs(
+      [compute('node-0'), compute('node-1'), compute('node-2')],
+      [],
+      [compute('my-nlb', NLB_RESOURCE_TYPE)],
+    );
+    expect(result).toEqual([
+      { key: 'nlbPublicIp', value: '${my-nlb.ipAddresses[0].ipAddress}' },
+    ]);
+  });
+
+  it('returns empty when NLB is present and nlbPublicIp output already exists', () => {
+    const result = getMissingAgentOutputs(
+      [compute('my-instance')],
+      [out('nlbPublicIp')],
+      [compute('my-nlb', NLB_RESOURCE_TYPE)],
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty when NLB is present and nlbPublicIP (uppercase) output exists', () => {
+    const result = getMissingAgentOutputs(
+      [compute('my-instance')],
+      [out('nlbPublicIP')],
+      [compute('my-nlb', NLB_RESOURCE_TYPE)],
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('falls back to per-instance outputs when allResources has no NLB', () => {
+    const result = getMissingAgentOutputs(
+      [compute('node-0'), compute('node-1')],
+      [],
+      [compute('my-vcn', 'oci:Core/vcn:Vcn')],
+    );
+    expect(result).toEqual([
+      { key: 'instance-0-publicIp', value: '${node-0.publicIp}' },
+      { key: 'instance-1-publicIp', value: '${node-1.publicIp}' },
+    ]);
+  });
+
+  it('uses NLB name from allResources for the suggested output value', () => {
+    const result = getMissingAgentOutputs(
+      [compute('my-instance')],
+      [],
+      [
+        compute('my-vcn', 'oci:Core/vcn:Vcn'),
+        compute('traefik-nlb', NLB_RESOURCE_TYPE),
+        compute('my-subnet', 'oci:Core/subnet:Subnet'),
+      ],
+    );
+    expect(result).toEqual([
+      { key: 'nlbPublicIp', value: '${traefik-nlb.ipAddresses[0].ipAddress}' },
     ]);
   });
 });

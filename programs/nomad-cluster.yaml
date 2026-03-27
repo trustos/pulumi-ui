@@ -1,0 +1,516 @@
+name: nomad-cluster
+runtime: yaml
+description: "Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible) — instance pool behind a public NLB with Traefik ingress"
+
+meta:
+  agentAccess: true
+  groups:
+    - key: iam
+      label: "IAM & Permissions"
+      fields: [skipDynamicGroup, adminGroupName, identityDomain]
+    - key: infrastructure
+      label: "Infrastructure"
+      fields: [nodeCount, compartmentName, compartmentDescription, vcnCidr, publicSubnetCidr, privateSubnetCidr, sshSourceCidr, shape, imageId]
+    - key: compute
+      label: "Compute & Storage"
+      fields: [ocpusPerNode, memoryGbPerNode, bootVolSizeGb, sshPublicKey]
+    - key: software
+      label: "Software Versions"
+      fields: [nomadVersion, consulVersion]
+  fields:
+    imageId:
+      ui_type: oci-image
+    shape:
+      ui_type: oci-shape
+    sshPublicKey:
+      ui_type: ssh-public-key
+
+config:
+  skipDynamicGroup:
+    type: string
+    default: "false"
+  adminGroupName:
+    type: string
+    default: ""
+  identityDomain:
+    type: string
+    default: ""
+  nodeCount:
+    type: integer
+    default: 3
+  compartmentName:
+    type: string
+    default: "nomad-compartment"
+  compartmentDescription:
+    type: string
+    default: "Compartment for Nomad cluster"
+  vcnCidr:
+    type: string
+    default: "10.0.0.0/16"
+  publicSubnetCidr:
+    type: string
+    default: "10.0.1.0/24"
+  privateSubnetCidr:
+    type: string
+    default: "10.0.2.0/24"
+  sshSourceCidr:
+    type: string
+    default: "0.0.0.0/0"
+  shape:
+    type: string
+    default: "VM.Standard.A1.Flex"
+  imageId:
+    type: string
+  ocpusPerNode:
+    type: integer
+    default: 1
+  memoryGbPerNode:
+    type: integer
+    default: 6
+  bootVolSizeGb:
+    type: integer
+    default: 50
+  nomadVersion:
+    type: string
+    default: "1.10.3"
+  consulVersion:
+    type: string
+    default: "1.21.3"
+  sshPublicKey:
+    type: string
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+
+resources:
+# --- section: identity ---
+  nomad-compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: {{ .Config.compartmentName }}
+      description: {{ .Config.compartmentDescription | quote }}
+      enableDelete: false
+
+# --- section: iam ---
+{{- if ne .Config.skipDynamicGroup "true" }}
+{{- if .Config.adminGroupName }}
+  nomad-iam-prereq-policy:
+    type: oci:Identity/policy:Policy
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: nomad-iam-prereq
+      description: "Grants admin group permission to manage dynamic groups and policies"
+      statements:
+        - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}
+        - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage policies in tenancy" | quote }}
+{{- end }}
+  nomad-cluster-dg:
+    type: oci:Identity/dynamicGroup:DynamicGroup
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: nomad-cluster-dg
+      description: "Dynamic group for Nomad cluster instances"
+      matchingRule: "ALL {instance.compartment.id = '${nomad-compartment.id}'}"
+{{- if .Config.adminGroupName }}
+    options:
+      dependsOn:
+        - ${nomad-iam-prereq-policy}
+{{- end }}
+  nomad-cluster-policy:
+    type: oci:Identity/policy:Policy
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      name: nomad-cluster-policy
+      description: "Allow Nomad cluster nodes to manage cluster resources"
+      statements:
+        - "Allow dynamic-group nomad-cluster-dg to inspect instances in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to inspect vnics in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to inspect compartments in tenancy"
+        - "Allow dynamic-group nomad-cluster-dg to inspect tenancies in tenancy"
+        - "Allow dynamic-group nomad-cluster-dg to read instance-family in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to read compute-management-family in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to read load-balancers in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to inspect private-ips in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to manage buckets in compartment id ${nomad-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to manage objects in compartment id ${nomad-compartment.id}"
+    options:
+      dependsOn:
+        - ${nomad-cluster-dg}
+{{- end }}
+
+# --- section: networking ---
+  nomad-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      cidrBlocks: [{{ .Config.vcnCidr | quote }}]
+      displayName: "nomad-vcn"
+      dnsLabel: "nomadvcn"
+
+  nomad-igw:
+    type: oci:Core/internetGateway:InternetGateway
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      enabled: true
+      displayName: "nomad-igw"
+
+  nomad-natgw:
+    type: oci:Core/natGateway:NatGateway
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "nomad-natgw"
+      blockTraffic: false
+
+  public-security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "Public Security List"
+      ingressSecurityRules:
+        - protocol: "6"
+          source: "0.0.0.0/0"
+          sourceType: CIDR_BLOCK
+          tcpOptions:
+            max: 80
+            min: 80
+        - protocol: "6"
+          source: "0.0.0.0/0"
+          sourceType: CIDR_BLOCK
+          tcpOptions:
+            max: 443
+            min: 443
+        - protocol: "6"
+          source: {{ .Config.sshSourceCidr | quote }}
+          sourceType: CIDR_BLOCK
+          tcpOptions:
+            max: 22
+            min: 22
+        - protocol: "all"
+          source: {{ .Config.vcnCidr | quote }}
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  private-security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "Private Security List"
+      ingressSecurityRules:
+        - protocol: "all"
+          source: {{ .Config.vcnCidr | quote }}
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  nomad-public-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "nomad-public-rt"
+      routeRules:
+        - networkEntityId: ${nomad-igw.id}
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  nomad-private-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "nomad-private-rt"
+      routeRules:
+        - networkEntityId: ${nomad-natgw.id}
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+
+  public-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      cidrBlock: {{ .Config.publicSubnetCidr | quote }}
+      displayName: "public-subnet"
+      dnsLabel: "nomadvcnpub"
+      prohibitPublicIpOnVnic: false
+      routeTableId: ${nomad-public-rt.id}
+      securityListIds:
+        - ${public-security-list.id}
+      dhcpOptionsId: ${nomad-vcn.defaultDhcpOptionsId}
+
+  private-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      cidrBlock: {{ .Config.privateSubnetCidr | quote }}
+      displayName: "private-subnet"
+      dnsLabel: "nomadvcnpriv"
+      prohibitPublicIpOnVnic: true
+      routeTableId: ${nomad-private-rt.id}
+      securityListIds:
+        - ${private-security-list.id}
+      dhcpOptionsId: ${nomad-vcn.defaultDhcpOptionsId}
+
+  ssh-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "ssh-nsg"
+
+  ssh-nsg-rule:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${ssh-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.sshSourceCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 22
+          max: 22
+      description: "Allow SSH"
+
+  nomad-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "nomad-nsg"
+
+  nomad-nsg-rule-4646:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${nomad-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.publicSubnetCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 4646
+          max: 4646
+      description: "Allow Nomad port 4646 from public subnet"
+
+  nomad-nsg-rule-4647:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${nomad-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.publicSubnetCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 4647
+          max: 4647
+      description: "Allow Nomad port 4647 from public subnet"
+
+  nomad-nsg-rule-4648:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${nomad-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.publicSubnetCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 4648
+          max: 4648
+      description: "Allow Nomad port 4648 from public subnet"
+
+  traefik-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      vcnId: ${nomad-vcn.id}
+      displayName: "traefik-nsg"
+
+  traefik-nsg-rule-80:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${traefik-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: "0.0.0.0/0"
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 80
+          max: 80
+      description: "Allow HTTP"
+
+  traefik-nsg-rule-443:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${traefik-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: "0.0.0.0/0"
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange:
+          min: 443
+          max: 443
+      description: "Allow HTTPS"
+
+# --- section: compute ---
+  nomad-ic:
+    type: oci:Core/instanceConfiguration:InstanceConfiguration
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      displayName: "nomad-ic"
+      instanceDetails:
+        instanceType: compute
+        launchDetails:
+          compartmentId: ${nomad-compartment.id}
+          availabilityDomain: ${availabilityDomains[0].name}
+          shape: {{ .Config.shape }}
+          shapeConfig:
+            ocpus: {{ .Config.ocpusPerNode }}
+            memoryInGbs: {{ .Config.memoryGbPerNode }}
+          sourceDetails:
+            sourceType: image
+            imageId: {{ .Config.imageId }}
+            bootVolumeSizeInGbs: {{ .Config.bootVolSizeGb | quote }}
+          createVnicDetails:
+            subnetId: ${private-subnet.id}
+            assignPublicIp: false
+            nsgIds:
+              - ${ssh-nsg.id}
+              - ${nomad-nsg.id}
+              - ${traefik-nsg.id}
+          metadata:
+            ssh_authorized_keys: {{ .Config.sshPublicKey }}
+            user_data: {{ cloudInit 0 .Config }}
+
+  nomad-pool:
+    type: oci:Core/instancePool:InstancePool
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      instanceConfigurationId: ${nomad-ic.id}
+      size: {{ .Config.nodeCount }}
+      displayName: "nomad-pool"
+      placementConfigurations:
+        - availabilityDomain: ${availabilityDomains[0].name}
+          primarySubnetId: ${private-subnet.id}
+    options:
+      dependsOn:
+        - ${nomad-ic}
+
+# --- section: loadbalancer ---
+  traefik-nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ${nomad-compartment.id}
+      subnetId: ${public-subnet.id}
+      displayName: "traefik-nlb"
+      isPrivate: false
+      networkSecurityGroupIds:
+        - ${traefik-nsg.id}
+
+  traefik-nlb-bs-80:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: bs-80
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: 80
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+
+  traefik-nlb-listener-80:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: listener-80
+      defaultBackendSetName: bs-80
+      protocol: TCP
+      port: 80
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+        - ${traefik-nlb-bs-80}
+
+  traefik-nlb-bs-443:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: bs-443
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: 443
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+        - ${traefik-nlb-listener-80}
+
+  traefik-nlb-listener-443:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: listener-443
+      defaultBackendSetName: bs-443
+      protocol: TCP
+      port: 443
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+        - ${traefik-nlb-bs-443}
+
+  traefik-nlb-bs-4646:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: bs-4646
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: 4646
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+        - ${traefik-nlb-listener-443}
+
+  traefik-nlb-listener-4646:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: listener-4646
+      defaultBackendSetName: bs-4646
+      protocol: TCP
+      port: 4646
+    options:
+      dependsOn:
+        - ${traefik-nlb}
+        - ${traefik-nlb-bs-4646}
+
+outputs:
+  traefikNlbIps: ${traefik-nlb.ipAddresses}
+  privateSubnetId: ${private-subnet.id}
+  nlbPublicIp: ${traefik-nlb.ipAddresses[0].ipAddress}

@@ -31,7 +31,7 @@ resources:
       metadata:
         ssh_authorized_keys: my-key
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	assert.Contains(t, result, "user_data")
 	assert.NotEqual(t, yaml, result, "YAML should be modified")
@@ -47,7 +47,7 @@ resources:
       compartmentId: ocid1.compartment
       cidrBlock: 10.0.0.0/16
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	assert.Equal(t, yaml, result, "non-compute resources should not be modified")
 }
@@ -64,7 +64,7 @@ resources:
       metadata:
         user_data: ` + existing + "\n"
 
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	assert.NotEqual(t, yaml, result)
 
@@ -97,7 +97,7 @@ resources:
       metadata:
         user_data: ` + existing + "\n"
 
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	assert.Equal(t, yaml, result, "already-injected YAML should not be modified again")
 }
@@ -117,7 +117,7 @@ resources:
           metadata:
             ssh_authorized_keys: my-key
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	assert.Contains(t, result, "user_data")
 }
@@ -132,7 +132,7 @@ resources:
       compartmentId: ocid1.compartment
       shape: VM.Standard.A1.Flex
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	assert.Contains(t, result, "metadata")
 	assert.Contains(t, result, "user_data")
@@ -165,7 +165,7 @@ resources:
         launchDetails:
           shape: VM.Standard.A1.Flex
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	assert.Contains(t, result, "metadata")
 	assert.Contains(t, result, "user_data")
@@ -182,7 +182,7 @@ resources:
       instanceDetails:
         instanceType: compute
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	assert.Contains(t, result, "launchDetails")
 	assert.Contains(t, result, "metadata")
@@ -196,7 +196,7 @@ resources:
   my-instance:
     type: oci:Core/instance:Instance
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	assert.Equal(t, yaml, result, "instance without properties section cannot be injected")
 }
@@ -212,14 +212,14 @@ resources:
       metadata:
         ssh_authorized_keys: my-key
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	assert.Contains(t, result, "user_data")
 	assert.Contains(t, result, "ssh_authorized_keys")
 }
 
 func TestInjectIntoYAML_InvalidYAML(t *testing.T) {
-	result, err := InjectIntoYAML("not: valid: yaml: {{broken", []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML("not: valid: yaml: {{broken", []AgentVars{testAgentVars})
 	assert.Error(t, err)
 	assert.Contains(t, result, "not: valid: yaml:")
 }
@@ -239,7 +239,7 @@ resources:
       compartmentId: ocid1.compartment
       shape: VM.Standard.A1.Flex
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	// Both instances should have user_data injected
 	count := strings.Count(result, "user_data:")
@@ -264,7 +264,7 @@ resources:
         launchDetails:
           shape: VM.Standard.A1.Flex
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	count := strings.Count(result, "user_data:")
 	assert.Equal(t, 2, count, "both Instance and InstanceConfiguration should get user_data")
@@ -288,7 +288,7 @@ resources:
       compartmentId: ocid1.compartment
       shape: VM.Standard.A1.Flex
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
 	count := strings.Count(result, "user_data:")
 	assert.Equal(t, 1, count, "only compute resource should get user_data")
@@ -315,8 +315,9 @@ resources:
     properties:
       compartmentId: ocid1.compartment
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{vars0, vars1})
+	result, count, err := InjectIntoYAML(yaml, []AgentVars{vars0, vars1})
 	require.NoError(t, err)
+	assert.Equal(t, 2, count, "injected count should match number of instances")
 	assert.Equal(t, 2, strings.Count(result, "user_data:"), "each node should get user_data")
 
 	// Decode both user_data values and confirm they contain distinct certs.
@@ -352,8 +353,9 @@ resources:
     properties:
       compartmentId: ocid1.compartment
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
+	result, count, err := InjectIntoYAML(yaml, []AgentVars{testAgentVars})
 	require.NoError(t, err)
+	assert.Equal(t, 2, count, "injected count should match number of instances")
 	assert.Equal(t, 2, strings.Count(result, "user_data:"), "both instances should still get user_data")
 }
 
@@ -366,7 +368,7 @@ resources:
     properties:
       compartmentId: ocid1.compartment
 `
-	result, err := InjectIntoYAML(yaml, []AgentVars{})
+	result, _, err := InjectIntoYAML(yaml, []AgentVars{})
 	require.NoError(t, err)
 	assert.Equal(t, yaml, result, "empty vars list should leave YAML unchanged")
 }

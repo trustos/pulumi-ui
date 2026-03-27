@@ -27,7 +27,7 @@ resources:
     type: oci:Core/vcn:Vcn
     properties:
       compartmentId: ${my-compartment.id}
-      cidrBlock: "{{ .Config.vcnCidr }}"
+      cidrBlocks: ["{{ .Config.vcnCidr }}"]
       displayName: "my-vcn"
       dnsLabel: "myvcn"
     options:

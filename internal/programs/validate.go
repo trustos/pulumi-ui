@@ -396,19 +396,43 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 	hasVCN := false
 	hasSubnet := false
 	hasNSG := false
-	hasNLB := false
+	hasPublicNLB := false
+	hasPrivateNLB := false
+	hasNAT := false
+	hasLayerSevenLB := false
+	hasInstancePool := false
+	hasPublicIP := false
 	hasSubnetRef := false
 
 	for _, res := range doc.Resources {
-		switch {
-		case res.Type == "oci:Core/vcn:Vcn":
+		switch res.Type {
+		case "oci:Core/vcn:Vcn":
 			hasVCN = true
-		case res.Type == "oci:Core/subnet:Subnet":
+		case "oci:Core/subnet:Subnet":
 			hasSubnet = true
-		case res.Type == "oci:Core/networkSecurityGroup:NetworkSecurityGroup":
+		case "oci:Core/networkSecurityGroup:NetworkSecurityGroup":
 			hasNSG = true
-		case res.Type == "oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer":
-			hasNLB = true
+		case "oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer":
+			isPriv := false
+			if v, ok := res.Properties["isPrivate"]; ok {
+				switch val := v.(type) {
+				case bool:
+					isPriv = val
+				case string:
+					isPriv = val == "true"
+				}
+			}
+			if isPriv {
+				hasPrivateNLB = true
+			} else {
+				hasPublicNLB = true
+			}
+		case "oci:Core/natGateway:NatGateway":
+			hasNAT = true
+		case "oci:LoadBalancer/loadBalancer:LoadBalancer":
+			hasLayerSevenLB = true
+		case "oci:Core/instancePool:InstancePool":
+			hasInstancePool = true
 		}
 		if agentinject.IsComputeResource(res.Type) {
 			hasCompute = true
@@ -416,11 +440,25 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 				if _, hasKey := vnic["subnetId"]; hasKey {
 					hasSubnetRef = true
 				}
+				if v, ok := vnic["assignPublicIp"]; ok {
+					switch val := v.(type) {
+					case bool:
+						if val {
+							hasPublicIP = true
+						}
+					case string:
+						if val == "true" {
+							hasPublicIP = true
+						}
+					}
+				}
 			}
 		}
 	}
 
-	if !hasCompute {
+	hasAnyCompute := hasCompute || hasInstancePool
+
+	if !hasAnyCompute {
 		return []ValidationError{{
 			Level:   LevelAgentAccess,
 			Field:   "meta.agentAccess",
@@ -428,11 +466,48 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 		}}
 	}
 
-	if !hasVCN && !hasSubnet && !hasNSG && !hasNLB && !hasSubnetRef {
+	// T8b: Instance pool with no public NLB and no public IPs
+	if hasInstancePool && !hasPublicNLB && !hasPublicIP {
 		return []ValidationError{{
 			Level:   LevelAgentAccess,
 			Field:   "meta.agentAccess",
-			Message: "agentAccess is enabled but no networking context found — add a VCN + subnet, or set createVnicDetails.subnetId on the compute instance so the engine can create NSG and NLB for agent connectivity",
+			Message: "Instance pool has no inbound path; add a public Network Load Balancer (isPrivate: false) for agent connectivity",
+		}}
+	}
+
+	// T7: Layer 7 LB (no UDP support) and no public NLB, no public IPs
+	if hasLayerSevenLB && !hasPublicNLB && !hasPublicIP {
+		return []ValidationError{{
+			Level:   LevelAgentAccess,
+			Field:   "meta.agentAccess",
+			Message: "OCI Load Balancer (Layer 7) cannot forward UDP; Nebula requires UDP. Add a Network Load Balancer (oci:NetworkLoadBalancer) for agent connectivity",
+		}}
+	}
+
+	// T4: private NLB only — not externally reachable
+	if hasPrivateNLB && !hasPublicNLB && !hasPublicIP {
+		return []ValidationError{{
+			Level:   LevelAgentAccess,
+			Field:   "meta.agentAccess",
+			Message: "NLB is private (isPrivate: true) — not externally reachable; make the NLB public or assign public IPs to instances",
+		}}
+	}
+
+	// T5: NAT-only (outbound-only internet)
+	if hasNAT && !hasPublicNLB && !hasPublicIP {
+		return []ValidationError{{
+			Level:   LevelAgentAccess,
+			Field:   "meta.agentAccess",
+			Message: "Instances have outbound-only internet (NAT gateway); add a public Network Load Balancer so the engine can reach each agent",
+		}}
+	}
+
+	// T6: no internet path at all
+	if !hasVCN && !hasSubnet && !hasNSG && !hasPublicNLB && !hasPublicIP && !hasSubnetRef {
+		return []ValidationError{{
+			Level:   LevelAgentAccess,
+			Field:   "meta.agentAccess",
+			Message: "agentAccess is enabled but no networking context found — add a VCN + subnet, or set createVnicDetails.subnetId on the compute instance so the engine can create an NSG for agent connectivity",
 		}}
 	}
 
@@ -445,7 +520,7 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 // Accepted output key formats:
 //   - instance-{i}-publicIp   (per-node; engine scans sequentially)
 //   - instancePublicIp / instancePublicIP
-//   - nlbPublicIp / nlbPublicIP   (valid for NLB-fronted setups)
+//   - nlbPublicIp / nlbPublicIP   (required when a public NLB is present)
 //   - publicIp / publicIP
 //   - serverPublicIp / serverPublicIP
 //
@@ -454,7 +529,8 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 func validateAgentAccessOutputs(rendered string) []ValidationError {
 	var doc struct {
 		Resources map[string]struct {
-			Type string `yaml:"type"`
+			Type       string                 `yaml:"type"`
+			Properties map[string]interface{} `yaml:"properties"`
 		} `yaml:"resources"`
 		Outputs map[string]interface{} `yaml:"outputs"`
 	}
@@ -463,17 +539,50 @@ func validateAgentAccessOutputs(rendered string) []ValidationError {
 	}
 
 	hasCompute := false
+	hasPublicNLB := false
+	hasInstancePool := false
 	for _, res := range doc.Resources {
 		if agentinject.IsComputeResource(res.Type) {
 			hasCompute = true
-			break
+		}
+		if res.Type == "oci:Core/instancePool:InstancePool" {
+			hasInstancePool = true
+		}
+		if res.Type == "oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer" {
+			isPriv := false
+			if v, ok := res.Properties["isPrivate"]; ok {
+				switch val := v.(type) {
+				case bool:
+					isPriv = val
+				case string:
+					isPriv = val == "true"
+				}
+			}
+			if !isPriv {
+				hasPublicNLB = true
+			}
 		}
 	}
-	if !hasCompute {
+	if !hasCompute && !hasInstancePool {
 		return nil
 	}
 
-	// All output key names the engine accepts for agent IP discovery.
+	// Level 7b: NLB topology requires nlbPublicIp output.
+	if hasPublicNLB {
+		if _, ok := doc.Outputs["nlbPublicIp"]; ok {
+			return nil
+		}
+		if _, ok := doc.Outputs["nlbPublicIP"]; ok {
+			return nil
+		}
+		return []ValidationError{{
+			Level:   LevelAgentAccess,
+			Field:   "outputs",
+			Message: "NLB topology requires an nlbPublicIp output; add: nlbPublicIp: ${<nlb-name>.ipAddresses[0].ipAddress}",
+		}}
+	}
+
+	// All output key names the engine accepts for agent IP discovery (non-NLB paths).
 	knownIpKeys := []string{
 		"instancePublicIp", "instancePublicIP",
 		"nlbPublicIp", "nlbPublicIP",

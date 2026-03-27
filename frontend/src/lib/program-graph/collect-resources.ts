@@ -12,6 +12,9 @@ export const COMPUTE_RESOURCE_TYPES = new Set([
   'oci:Core/instanceConfiguration:InstanceConfiguration',
 ]);
 
+export const NLB_RESOURCE_TYPE =
+  'oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer';
+
 /**
  * Output key names accepted by the engine for agent IP discovery.
  * These cover single-endpoint architectures (NLB-fronted, single server, etc.).
@@ -27,19 +30,27 @@ export const ACCEPTED_AGENT_IP_KEYS = [
 const AGENT_IP_NODE_KEY_RE = /^instance-\d+-publicIp$/;
 
 /**
- * Returns the per-node outputs that must be present for the engine to discover
+ * Returns the outputs that must be present for the engine to discover
  * agent IPs after deploy, but are currently missing.
  *
- * The engine scans instance-0-publicIp, instance-1-publicIp … sequentially.
- * For a single instance any AGENT_IP_LEGACY_KEY also satisfies the requirement.
+ * When a public NLB is present, the engine uses nlbPublicIp (one per stack).
+ * Otherwise, per-node instance-{i}-publicIp outputs are required.
  */
 export function getMissingAgentOutputs(
   instances: ResourceRef[],
   outputs: { key: string }[],
+  allResources: ResourceRef[] = [],
 ): { key: string; value: string }[] {
   if (instances.length === 0) return [];
 
   const outputKeys = new Set(outputs.map(o => o.key));
+
+  // NLB topology: suggest nlbPublicIp if an NLB is present
+  const nlb = allResources.find(r => r.type === NLB_RESOURCE_TYPE);
+  if (nlb) {
+    if (outputKeys.has('nlbPublicIp') || outputKeys.has('nlbPublicIP')) return [];
+    return [{ key: 'nlbPublicIp', value: `\${${nlb.name}.ipAddresses[0].ipAddress}` }];
+  }
 
   // Single-compute-resource: any accepted key or instance-0-publicIp is enough
   if (instances.length === 1) {

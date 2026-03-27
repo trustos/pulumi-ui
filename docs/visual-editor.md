@@ -159,7 +159,9 @@ src/pages/ProgramEditor.svelte          ← page (owns state, fetches on mount, 
 - **Category pills** — clickable category filters (All / Networking / Compute / etc.).
 - **Agent Connect indicator** — templates with `agentAccess: true` show a globe icon with tooltip.
 - **Resource count** — computed dynamically from the graph, including resources inside loops/conditionals.
-- Templates are plain YAML files in `src/lib/program-graph/templates/*.yaml` — the same format the editor saves and exports. Loaded at runtime via Vite `?raw` imports and parsed through `yamlToGraph()`. To add or modify a template, edit the YAML file directly — no TypeScript changes required.
+- Templates are plain YAML files in `frontend/src/lib/program-graph/templates/*.yaml` — the same format the editor saves and exports. Loaded at runtime via Vite `?raw` imports and parsed through `yamlToGraph()`. To add or modify a template, edit the YAML file directly — no TypeScript changes required.
+
+**Built-in backend programs** (shown alongside user-defined programs in the New Stack dialog) live in `programs/*.yaml` at the repository root. This directory is separate from the editor template gallery and is embedded into the server binary at compile time via the `programs` Go package. To add a built-in program, add a YAML file to `programs/` and call `RegisterYAML()` in `internal/programs/registry.go`.
 
 ---
 
@@ -251,7 +253,7 @@ Sections can be renamed via double-click on the label in `SectionNavigator`. The
 The program editor header contains an **Agent Connect** toggle button (visible in both visual and YAML modes). When enabled:
 - The serializer emits `meta.agentAccess: true` in the YAML `meta:` block.
 - In YAML mode, toggling uses `insertAgentAccess()` / `removeAgentAccess()` from `$lib/program-graph/agent-access.ts` — pure functions that safely patch the YAML text (inserting into existing `meta:` or creating one, removing and cleaning up empty blocks).
-- An informational banner appears below the mode bar listing all resources that will be auto-injected at deploy time: user_data (with automatic intermediate node creation), NSG rules (added to existing or created from VCN), NLB (added to existing or created from subnet), and backends for each compute instance.
+- An informational banner appears below the mode bar listing all resources that will be auto-injected at deploy time: `user_data` bootstrap (with automatic intermediate node creation), NSG UDP 41820 rule (added to existing NSG or `__agent_nsg` created from VCN), and per-node NLB backend sets + listeners at ports 41821+ for each compute instance (only when a public NLB already exists in the program — no NLB is auto-created).
 - The toggle state round-trips correctly between visual and YAML modes.
 
 ### Agent Networking Scaffold
@@ -265,20 +267,39 @@ This works in both visual and YAML modes — in visual mode it mutates the graph
 
 When `agentAccess` is enabled and compute resources exist, the engine needs at least one IP output to discover agent addresses after deploy. The editor enforces this:
 
-- A warning banner appears (below the Agent Connect info block) listing the specific missing output keys (e.g. `instance-0-publicIp`, `instance-1-publicIp`).
+- A warning banner appears (below the Agent Connect info block) listing the specific missing output key(s).
 - An **"Add Outputs"** button in the banner inserts all missing entries in one click (visual mode only).
 - **Saving in visual mode is blocked** until the required outputs are present.
 - The Agent Connect toggle button renders in warning style when outputs are absent.
 - In YAML mode, the backend Level 7b check warns but does not block save.
 
-Accepted output key formats (mirrors engine IP discovery in `internal/engine/engine.go`):
-- `instance-{i}-publicIp` — per-node, one per compute resource, sequential
-- `instancePublicIp` / `instancePublicIP`
-- `nlbPublicIp` / `nlbPublicIP` — for NLB-fronted setups
-- `publicIp` / `publicIP`
-- `serverPublicIp` / `serverPublicIP`
+The required output depends on the **network topology** of the program:
 
-Logic lives in `$lib/program-graph/collect-resources.ts` (`getMissingAgentOutputs`, `ACCEPTED_AGENT_IP_KEYS`, `COMPUTE_RESOURCE_TYPES`).
+**NLB topology** — program contains an `oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer` resource:
+- The editor suggests `nlbPublicIp: ${<nlb-name>.ipAddresses[0].ipAddress}`.
+- One output suffices regardless of node count (the engine reads per-node NLB ports from the cert store).
+
+**Direct public-IP topology** — no NLB resource in the program:
+- Single instance: any accepted alias (`instancePublicIp`, `publicIp`, `serverPublicIp`, etc.) or `instance-0-publicIp`.
+- Multiple instances: sequential `instance-{i}-publicIp` keys, one per compute resource.
+
+The suggestion logic is in `$lib/program-graph/collect-resources.ts` (`getMissingAgentOutputs`), which now accepts `allResources` to detect the NLB topology:
+
+```typescript
+getMissingAgentOutputs(instanceResources, graph.outputs ?? [], allProgramResources)
+```
+
+Full list of accepted single-endpoint keys (any one silences the warning for a single-instance program):
+
+| Key | Topology |
+|---|---|
+| `nlbPublicIp` / `nlbPublicIP` | NLB (required when NLB present) |
+| `instance-0-publicIp`, `instance-1-publicIp`, … | Per-node direct |
+| `instancePublicIp` / `instancePublicIP` | Single instance |
+| `publicIp` / `publicIP` | Generic |
+| `serverPublicIp` / `serverPublicIP` | Single server |
+
+Constants: `ACCEPTED_AGENT_IP_KEYS`, `COMPUTE_RESOURCE_TYPES`, `NLB_RESOURCE_TYPE` in `collect-resources.ts`.
 
 Level 7 warnings are **non-blocking at the backend** — YAML-mode saves are allowed. The frontend blocks save in visual mode when outputs are missing. The backend `hasBlockingErrors()` helper (tested in `internal/api/programs_test.go`) only blocks on Levels 1–6.
 

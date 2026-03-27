@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+	builtins "github.com/trustos/pulumi-ui/programs"
 )
 
 // ConfigField describes one config field for the UI form.
@@ -53,11 +54,16 @@ func NewProgramRegistry() *ProgramRegistry {
 	return &ProgramRegistry{}
 }
 
-// RegisterBuiltins registers the built-in Go programs into r.
+// RegisterBuiltins registers the built-in programs into r.
 // Called explicitly from main.go — no init() self-registration.
+//
+// Built-in program YAML files live in the top-level programs/ directory of
+// the repository (easy to find, easy to edit). They are embedded at compile
+// time via the builtins package.
 func RegisterBuiltins(r *ProgramRegistry) {
-	r.Register(&NomadClusterProgram{})
-	r.Register(&TestVcnProgram{})
+	RegisterYAML(r, "nomad-cluster", "Nomad Cluster",
+		"Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible)",
+		builtins.ReadFile("nomad-cluster.yaml"))
 }
 
 // Register adds p to the registry.

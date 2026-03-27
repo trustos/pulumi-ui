@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"embed"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -33,6 +34,7 @@ type Handler struct {
 	NodeCertStore  *db.NodeCertStore
 	MeshManager    *mesh.Manager
 	LogBuffer      *logbuffer.Buffer
+	AgentBinaries  embed.FS // embedded agent_linux_{arm64,amd64} binaries
 }
 
 func NewHandler(

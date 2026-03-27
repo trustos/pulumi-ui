@@ -10,7 +10,7 @@
   import { scaffoldNetworkingGraph, scaffoldNetworkingYaml, hasNetworkingResources } from '$lib/program-graph/scaffold-networking';
   import { propagateRename, propagateRenameYaml } from '$lib/program-graph/rename-resource';
   import { collectAllResources, getMissingAgentOutputs, COMPUTE_RESOURCE_TYPES } from '$lib/program-graph/collect-resources';
-  import { getGraphExtras } from '$lib/program-graph/resource-defaults';
+  import { getGraphExtras, wireSubnetIntoInstances } from '$lib/program-graph/resource-defaults';
   import type { ProgramGraph, ProgramSection } from '$lib/types/program-graph';
   import type { ValidationError } from '$lib/types';
   import EditorModeBar from '$lib/components/EditorModeBar.svelte';
@@ -242,7 +242,7 @@
   );
   const missingAgentOutputs = $derived(
     agentAccess && instanceResources.length > 0
-      ? getMissingAgentOutputs(instanceResources, graph.outputs ?? [])
+      ? getMissingAgentOutputs(instanceResources, graph.outputs ?? [], allProgramResources)
       : []
   );
   const showAgentOutputsWarning = $derived(missingAgentOutputs.length > 0);
@@ -257,14 +257,27 @@
     if (!extras || extras.resources.length === 0) return;
     const existingNames = new Set(allProgramResourceNames);
     const resourcesToAdd = extras.resources.filter(r => !existingNames.has(r.name));
+    const addingSubnet = resourcesToAdd.some(r => r.name === 'subnet');
+
+    let updatedGraph = graph;
     if (resourcesToAdd.length > 0) {
-      graph = {
-        ...graph,
-        sections: graph.sections.map((s, i) =>
+      updatedGraph = {
+        ...updatedGraph,
+        sections: updatedGraph.sections.map((s, i) =>
           i === 0 ? { ...s, items: [...resourcesToAdd.map(r => ({ ...r })), ...s.items] } : s
         ),
       };
     }
+
+    // Wire the newly-added subnet into existing instances whose subnetId is blank.
+    if (addingSubnet) {
+      updatedGraph = {
+        ...updatedGraph,
+        sections: wireSubnetIntoInstances(updatedGraph.sections, 'subnet'),
+      };
+    }
+
+    graph = updatedGraph;
   }
 
   // Attach custom event listeners to the visual editor container

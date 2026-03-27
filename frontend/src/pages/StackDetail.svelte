@@ -656,8 +656,40 @@
             {/if}
           </div>
 
-          <!-- Mesh Info -->
-          {#if info?.mesh}
+          <!-- Nodes / Mesh Info -->
+          {#if info?.nodes && info.nodes.length > 0}
+            <Card.Root>
+              <Card.Header class="py-3">
+                <Card.Title class="text-sm flex items-center gap-2">
+                  Nodes
+                  <Badge variant="secondary">{info.nodes.length}</Badge>
+                </Card.Title>
+              </Card.Header>
+              <Card.Content class="py-2">
+                <div class="space-y-3">
+                  {#if info.mesh?.nebulaSubnet}
+                    <p class="text-xs text-muted-foreground font-mono">Subnet: {info.mesh.nebulaSubnet}</p>
+                  {/if}
+                  {#each info.nodes as node}
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm border-t pt-2 first:border-t-0 first:pt-0">
+                      <div>
+                        <span class="text-muted-foreground">Node</span>
+                        <div class="font-mono">#{node.nodeIndex}</div>
+                      </div>
+                      <div>
+                        <span class="text-muted-foreground">Nebula IP</span>
+                        <div class="font-mono">{node.nebulaIp ?? '—'}</div>
+                      </div>
+                      <div>
+                        <span class="text-muted-foreground">Real IP</span>
+                        <div class="font-mono">{node.agentRealIp ?? '—'}</div>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              </Card.Content>
+            </Card.Root>
+          {:else if info?.mesh}
             <Card.Root>
               <Card.Header class="py-3">
                 <Card.Title class="text-sm flex items-center gap-2">

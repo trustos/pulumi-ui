@@ -96,7 +96,7 @@ resources:
 		AgentVersion:   "latest",
 		AgentToken:     "test-token",
 	}
-	injected, err := agentinject.InjectIntoYAML(sanitized, []agentinject.AgentVars{agentVars})
+	injected, _, err := agentinject.InjectIntoYAML(sanitized, []agentinject.AgentVars{agentVars})
 	require.NoError(t, err)
 	assert.Contains(t, injected, "user_data", "agent bootstrap should be injected into instance")
 
@@ -104,9 +104,9 @@ resources:
 	netInjected, err := agentinject.InjectNetworkingIntoYAML(injected)
 	require.NoError(t, err)
 	assert.Contains(t, netInjected, "__agent_nsg_rule_my-nsg", "NSG rule should be injected")
-	assert.Contains(t, netInjected, "__agent_bs_my-nlb", "NLB backend set should be injected")
-	assert.Contains(t, netInjected, "__agent_ln_my-nlb", "NLB listener should be injected")
-	assert.Contains(t, netInjected, "__agent_be_my-nlb_my-instance", "NLB backend should be injected")
+	assert.Contains(t, netInjected, "__agent_bs_my-nlb_0", "per-node NLB backend set should be injected")
+	assert.Contains(t, netInjected, "__agent_ln_my-nlb_0", "per-node NLB listener should be injected")
+	assert.Contains(t, netInjected, "__agent_be_my-nlb_0", "per-node NLB backend should be injected")
 }
 
 // TestPipeline_SimpleProgram_NoAgentAccess verifies that a program
@@ -194,7 +194,7 @@ resources:
 		AgentVersion:   "latest",
 		AgentToken:     "test-token",
 	}
-	injected, err := agentinject.InjectIntoYAML(sanitized, []agentinject.AgentVars{agentVars})
+	injected, _, err := agentinject.InjectIntoYAML(sanitized, []agentinject.AgentVars{agentVars})
 	require.NoError(t, err)
 	assert.Contains(t, injected, "user_data", "agent bootstrap injected into instance")
 
@@ -204,10 +204,8 @@ resources:
 
 	assert.Contains(t, netInjected, "__agent_nsg", "should create NSG")
 	assert.Contains(t, netInjected, "__agent_nsg_rule", "should create NSG rule")
-	assert.Contains(t, netInjected, "__agent_nlb", "should create NLB")
-	assert.Contains(t, netInjected, "__agent_bs", "should create backend set")
-	assert.Contains(t, netInjected, "__agent_ln", "should create listener")
-	assert.Contains(t, netInjected, "__agent_be_my-instance", "should create backend for instance")
+	// NLB not auto-created when no existing NLB in template
+	assert.NotContains(t, netInjected, "__agent_nlb", "NLB should not be auto-created")
 	assert.Contains(t, netInjected, "nsgIds", "should attach NSG to instance")
 	assert.Contains(t, netInjected, "${__agent_nsg.id}", "NSG reference in instance")
 }
@@ -312,8 +310,8 @@ outputs:
 
 	assert.Contains(t, netInjected, "__agent_subnet_info", "should create fn::invoke variable")
 	assert.Contains(t, netInjected, "__agent_nsg", "should create NSG")
-	assert.Contains(t, netInjected, "__agent_nlb", "should create NLB")
-	assert.Contains(t, netInjected, "__agent_be_my-instance", "should create backend")
+	// NLB not auto-created when no existing NLB in template
+	assert.NotContains(t, netInjected, "__agent_nlb", "NLB should not be auto-created")
 	assert.Contains(t, netInjected, "ocid1.subnet.existing", "should reference the subnet OCID")
 }
 

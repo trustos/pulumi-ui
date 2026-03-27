@@ -17,28 +17,29 @@ import (
 //
 // Resources that already contain the agent bootstrap marker are skipped.
 // Resources without any existing user_data get the agent bootstrap as their
-// sole user_data. The modified YAML string is returned.
-func InjectIntoYAML(yamlBody string, agentVarsList []AgentVars) (string, error) {
+// sole user_data. Returns the modified YAML string and the number of compute
+// instances that were injected (useful for logging).
+func InjectIntoYAML(yamlBody string, agentVarsList []AgentVars) (string, int, error) {
 	if len(agentVarsList) == 0 {
-		return yamlBody, nil
+		return yamlBody, 0, nil
 	}
 
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(yamlBody), &doc); err != nil {
-		return yamlBody, fmt.Errorf("agentinject: parse YAML: %w", err)
+		return yamlBody, 0, fmt.Errorf("agentinject: parse YAML: %w", err)
 	}
 
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return yamlBody, nil
+		return yamlBody, 0, nil
 	}
 	root := doc.Content[0]
 	if root.Kind != yaml.MappingNode {
-		return yamlBody, nil
+		return yamlBody, 0, nil
 	}
 
 	resourcesNode := findMapValue(root, "resources")
 	if resourcesNode == nil || resourcesNode.Kind != yaml.MappingNode {
-		return yamlBody, nil
+		return yamlBody, 0, nil
 	}
 
 	modified := false
@@ -79,14 +80,14 @@ func InjectIntoYAML(yamlBody string, agentVarsList []AgentVars) (string, error) 
 	}
 
 	if !modified {
-		return yamlBody, nil
+		return yamlBody, 0, nil
 	}
 
 	out, err := yaml.Marshal(&doc)
 	if err != nil {
-		return yamlBody, fmt.Errorf("agentinject: marshal YAML: %w", err)
+		return yamlBody, 0, fmt.Errorf("agentinject: marshal YAML: %w", err)
 	}
-	return string(out), nil
+	return string(out), computeIndex, nil
 }
 
 // injectUserData navigates a YAML node tree along the given property path

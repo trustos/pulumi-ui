@@ -94,13 +94,26 @@ NEBULA_HOST_KEY
 
   chmod 600 /etc/nebula/host.key
 
+  # Build static_host_map: if server VPN IP + real IP are known, add the server
+  # so the agent can initiate the Nebula handshake and download via the overlay.
+  NEBULA_SERVER_VPN_IP="@@NEBULA_SERVER_VPN_IP@@"
+  NEBULA_SERVER_REAL_IP="@@NEBULA_SERVER_REAL_IP@@"
+  if [ -n "$NEBULA_SERVER_VPN_IP" ] && [ -n "$NEBULA_SERVER_REAL_IP" ]; then
+    STATIC_HOST_MAP="  '${NEBULA_SERVER_VPN_IP}': ['${NEBULA_SERVER_REAL_IP}:41820']"
+    echo "[agent-bootstrap] Server Nebula endpoint: ${NEBULA_SERVER_VPN_IP} -> ${NEBULA_SERVER_REAL_IP}:41820"
+  else
+    STATIC_HOST_MAP=""
+    echo "[agent-bootstrap] No server Nebula endpoint configured (PULUMI_UI_EXTERNAL_URL not set)."
+  fi
+
   cat > /etc/nebula/config.yml <<EOF
 pki:
   ca: /etc/nebula/ca.crt
   cert: /etc/nebula/host.crt
   key: /etc/nebula/host.key
 
-static_host_map: {}
+static_host_map:
+${STATIC_HOST_MAP}
 
 lighthouse:
   am_lighthouse: false
@@ -112,6 +125,7 @@ listen:
 
 punchy:
   punch: true
+  respond: true
 
 tun:
   disabled: false
@@ -162,6 +176,16 @@ install_agent() {
   echo "[agent-bootstrap] Installing pulumi-ui agent..."
 
   AGENT_URL="@@AGENT_DOWNLOAD_URL@@"
+
+  # Prefer Nebula overlay download when the server VPN IP is known and Nebula is up.
+  # The agent's static_host_map was configured with the server's real IP above, so
+  # the Nebula handshake should complete shortly after nebula.service starts.
+  if [ -z "$AGENT_URL" ] && [ -n "$NEBULA_SERVER_VPN_IP" ]; then
+    AGENT_URL="http://${NEBULA_SERVER_VPN_IP}:8080/api/agent/binary/linux/${AGENT_ARCH}"
+    echo "[agent-bootstrap] Will attempt Nebula overlay download from ${AGENT_URL}"
+  fi
+
+  # Final fallback: GitHub releases (may fail if CDN is unreachable from OCI).
   if [ -z "$AGENT_URL" ]; then
     AGENT_VERSION="@@AGENT_VERSION@@"
     if [ -z "$AGENT_VERSION" ] || [ "$AGENT_VERSION" = "latest" ]; then
@@ -170,7 +194,31 @@ install_agent() {
     AGENT_URL="https://github.com/trustos/pulumi-ui/releases/download/${AGENT_VERSION}/agent_linux_${AGENT_ARCH}"
   fi
 
-  curl -fsSL --retry 5 --retry-delay 5 --retry-connrefused "$AGENT_URL" -o /usr/local/bin/pulumi-ui-agent
+  local max_attempts=10
+  local attempt=0
+  local downloaded=false
+  while [ $attempt -lt $max_attempts ]; do
+    attempt=$((attempt + 1))
+    # Ensure the target host resolves before attempting download
+    local target_host
+    target_host=$(echo "$AGENT_URL" | sed 's|https\?://||' | cut -d/ -f1)
+    if ! getent hosts "$target_host" >/dev/null 2>&1; then
+      echo "[agent-bootstrap] DNS not ready for $target_host (attempt $attempt/$max_attempts), waiting..."
+      sleep 5
+      continue
+    fi
+    if curl -fsSL --max-time 60 "$AGENT_URL" -o /usr/local/bin/pulumi-ui-agent; then
+      downloaded=true
+      break
+    fi
+    echo "[agent-bootstrap] Download attempt $attempt/$max_attempts failed, retrying in 5s..."
+    sleep 5
+  done
+  if [ "$downloaded" != "true" ]; then
+    echo "[agent-bootstrap] ERROR: failed to download agent binary from $AGENT_URL after $max_attempts attempts." >&2
+    echo "[agent-bootstrap] Set PULUMI_UI_EXTERNAL_URL on the pulumi-ui server and redeploy." >&2
+    exit 1
+  fi
   chmod +x /usr/local/bin/pulumi-ui-agent
 
   mkdir -p /etc/pulumi-ui-agent
@@ -200,24 +248,27 @@ EOF
 
 setup_host_firewall
 
-# --- DNS fallback ---
-# OCI's VCN DNS (169.254.169.254) sometimes cannot resolve GitHub's CDN domain
-# (release-assets.githubusercontent.com) even when the instance has internet access.
-# Append public resolvers ONLY if the VCN DNS can't resolve github.com.
+# --- DNS / connectivity readiness ---
+# OCI instances sometimes take time for their internet route to become active.
+# Wait until both github.com and objects.githubusercontent.com resolve before
+# proceeding. Also ensure release-assets.githubusercontent.com resolves (newer
+# GitHub CDN used for some repos). Append public resolvers as fallback.
 ensure_dns() {
-  local retries=5
-  local delay=3
+  local retries=10
+  local delay=5
   for i in $(seq 1 $retries); do
-    if getent hosts github.com >/dev/null 2>&1; then
+    if getent hosts github.com >/dev/null 2>&1 && \
+       getent hosts objects.githubusercontent.com >/dev/null 2>&1; then
       return 0
     fi
-    echo "[agent-bootstrap] DNS not ready (attempt $i/$retries), retrying in ${delay}s..."
+    echo "[agent-bootstrap] Network not ready (attempt $i/$retries), retrying in ${delay}s..."
     sleep $delay
   done
   echo "[agent-bootstrap] Falling back to public DNS resolvers..."
-  # Prepend so public resolvers are tried first, keeping OCI metadata DNS as fallback
   { echo "nameserver 8.8.8.8"; echo "nameserver 1.1.1.1"; cat /etc/resolv.conf; } > /tmp/resolv.conf.new
   cp /tmp/resolv.conf.new /etc/resolv.conf
+  # Wait one more cycle to let the new resolvers take effect
+  sleep 3
 }
 ensure_dns
 

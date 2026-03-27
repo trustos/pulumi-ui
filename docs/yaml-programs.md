@@ -169,37 +169,84 @@ meta:
 ```
 
 When enabled, an informational banner in the editor lists exactly what will be auto-injected. At deploy time, the engine automatically:
-1. Injects the Nebula mesh + pulumi-ui agent bootstrap into every compute resource's `user_data` (via multipart MIME). Missing intermediate property nodes (e.g. `metadata`) are created automatically.
-2. **If NSG exists**: adds UDP ingress rules on port 41820 to each detected NSG. **If no NSG but VCN exists**: creates a new NSG (`__agent_nsg`) in the first VCN and attaches it to each compute instance.
-3. **If NLB exists**: adds backend set, listener, and backends for port 41820 to each detected NLB. **If no NLB but subnet exists**: creates a new NLB (`__agent_nlb`) in the first subnet with backend set, listener, and backends for each instance.
+1. **Bootstrap injection** — injects the Nebula mesh + pulumi-ui agent bootstrap into every compute resource's `user_data` (via multipart MIME). Missing intermediate property nodes (e.g. `metadata`) are created automatically.
+2. **NSG injection** — if an NSG exists: adds UDP ingress rule on port 41820. If no NSG but a VCN exists: creates `__agent_nsg` and attaches it to each compute instance.
+3. **NLB per-node injection** — if a **public** NLB exists: creates a dedicated backend set + listener per compute node at ports **41821, 41822, …** (one port per node, starting at `AgentPort + 1`). Each backend set has exactly one backend for deterministic routing. No NLB is auto-created — programs without an NLB use per-instance public IPs.
 
-Injected resources use a `__agent_` prefix to avoid naming collisions. If agent networking resources already exist (detected by prefix), injection is skipped. Compartment IDs are inferred from the VCN/subnet being referenced.
+Injected resources use a `__agent_` prefix to avoid naming collisions. Injection is idempotent — if resources with that prefix already exist, they are skipped. Compartment IDs are inferred from the VCN/subnet referenced by each resource.
 
 This is separate from the `ApplicationProvider` interface (which provides a full application catalog). A program can use `agentAccess: true` without implementing an application catalog.
 
-#### Required IP outputs
+#### Supported Network Topologies
 
-When `agentAccess: true` is set and compute resources exist, the program **must** expose at least one IP output so the engine can discover agent addresses after deploy. Without an IP output, deployed agents will be unreachable.
+The engine detects the network topology from the Pulumi YAML at validation time and either supports agent connectivity or emits a Level 7 warning:
 
-The engine accepts any of these output key formats:
+| Topology | Detection signal | Agent connectivity | Notes |
+|---|---|---|---|
+| **T1** — Public-IP instances | `createVnicDetails.assignPublicIp: "true"` | ✅ Direct via `instancePublicIp` | Fallback when no NLB present |
+| **T2** — Private subnet + public NLB | `oci:NetworkLoadBalancer/…` with `isPrivate` absent/`false` | ✅ Per-node NLB ports (41821+N) | Preferred; requires `nlbPublicIp` output |
+| **T3** — Public IPs + public NLB | Both T1 and T2 signals | ✅ NLB preferred | NLB injection runs regardless of public IPs |
+| **T4** — Private NLB only | NLB with `isPrivate: true`, no public IPs | ⚠️ Level 7a warning | Make NLB public or add public IPs |
+| **T5** — NAT gateway only | `oci:Core/natGateway:NatGateway`, no NLB, no public IPs | ⚠️ Level 7a warning | Add a public NLB for inbound access |
+| **T6** — No internet path | No VCN, no subnet ref, no NLB, no public IPs | ⚠️ Level 7 warning | Add VCN/subnet or `createVnicDetails.subnetId` |
+| **T7** — Layer 7 LB only | `oci:LoadBalancer/loadBalancer:LoadBalancer`, no NLB, no public IPs | ⚠️ Level 7a warning | OCI LB cannot forward UDP; add a NLB |
+| **T8** — Instance Pool + public NLB | `oci:Core/instancePool:InstancePool` + public NLB | ✅ Pool-as-entity; one backend set per node slot | `nlbPublicIp` output required |
+| **T8b** — Instance Pool, no connectivity | Instance pool, no public NLB, no public IPs | ⚠️ Level 7a warning | Add a public NLB |
 
-| Output key | Typical use |
-|---|---|
-| `instance-0-publicIp`, `instance-1-publicIp`, … | Per-node (recommended for multi-node setups) |
-| `instancePublicIp` / `instancePublicIP` | Single instance, no NLB |
-| `nlbPublicIp` / `nlbPublicIP` | NLB-fronted setup |
-| `publicIp` / `publicIP` | Generic single-endpoint |
-| `serverPublicIp` / `serverPublicIP` | Single server |
+**Key rules:**
+- A **public NLB** (`isPrivate` absent or `false`) satisfies T2/T3/T8 — no NLB is auto-created.
+- Private NLBs (`isPrivate: true`) are not externally reachable and trigger a T4 warning unless public-IP instances are also present.
 
-For multi-node programs, use sequential `instance-{i}-publicIp` keys (one per compute resource). The engine scans them in order and stops at the first gap.
+#### Required IP Outputs
+
+When `agentAccess: true` is set and compute resources exist, the program **must** expose at least one IP output so the engine can discover agent addresses after deploy.
+
+**NLB topology (T2/T3/T8):** expose `nlbPublicIp`. The engine stores `nlbIP:41821`, `nlbIP:41822`, … per node based on the Nebula cert count after deploy.
 
 ```yaml
 outputs:
-  instance-0-publicIp: ${node-0.publicIp}
-  instance-1-publicIp: ${node-1.publicIp}
+  nlbPublicIp: ${my-nlb.ipAddresses[0].ipAddress}
 ```
 
-The visual editor shows a warning banner and an **Add Outputs** button when required outputs are missing. In visual mode, saving is blocked until the outputs are present. The backend (Level 7 validation) also warns when saving YAML programs that lack IP outputs.
+**Direct public-IP topology (T1, no NLB):** expose per-node `instance-{i}-publicIp` keys, or any of the accepted single-endpoint aliases:
+
+```yaml
+# Multi-node
+outputs:
+  instance-0-publicIp: ${node-0.publicIp}
+  instance-1-publicIp: ${node-1.publicIp}
+
+# Single instance — any of these are accepted
+outputs:
+  instancePublicIp: ${my-instance.publicIp}   # or publicIp, serverPublicIp, etc.
+```
+
+Full list of accepted single-endpoint output keys (any one silences the warning for a single-instance program):
+
+| Output key | Typical use |
+|---|---|
+| `nlbPublicIp` / `nlbPublicIP` | NLB topology (T2/T3/T8) — **required when NLB present** |
+| `instance-0-publicIp`, `instance-1-publicIp`, … | Per-node direct (T1 multi-node) |
+| `instancePublicIp` / `instancePublicIP` | Single instance |
+| `publicIp` / `publicIP` | Generic single-endpoint |
+| `serverPublicIp` / `serverPublicIP` | Single server |
+
+The visual editor shows a warning banner and an **Add Outputs** button when required outputs are missing. The backend validation (Level 7b) also warns when an NLB is present but `nlbPublicIp` is not in `outputs:`.
+
+#### Level 7 Validation Summary
+
+| Sub-level | Code | Trigger | Message |
+|---|---|---|---|
+| 7 (context) | `LevelAgentAccess` | No compute resources | "agentAccess: no compute resources" |
+| 7 (context) | `LevelAgentAccess` | Compute but no networking context | "agentAccess: no networking context found" |
+| 7a | `LevelAgentAccess` | T4: private-only NLB | "NLB is private (isPrivate: true) — not externally reachable" |
+| 7a | `LevelAgentAccess` | T5: NAT-only, no public inbound | "Instances have outbound-only internet (NAT gateway); add a public NLB" |
+| 7a | `LevelAgentAccess` | T7: Layer 7 LB, no NLB | "OCI Load Balancer (Layer 7) cannot forward UDP; … add a Network Load Balancer" |
+| 7a | `LevelAgentAccess` | T8b: instance pool, no public NLB | "Instance pool has no inbound path; add a public Network Load Balancer" |
+| 7b | `LevelAgentAccess` | Public NLB present, `nlbPublicIp` missing | "NLB topology requires an nlbPublicIp output; add: nlbPublicIp: …" |
+| 7 (outputs) | `LevelAgentAccess` | Compute present, no IP output | "agentAccess: no instance IP outputs defined" |
+
+Level 7 warnings are **non-blocking** — programs save and deploy successfully. They indicate a likely misconfiguration that would prevent agent tunnels from opening.
 
 ---
 

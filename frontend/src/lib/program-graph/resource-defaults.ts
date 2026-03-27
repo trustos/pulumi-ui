@@ -96,6 +96,19 @@ const RECIPES: Record<string, ResourceRecipe> = {
 };
 
 /**
+ * Replaces `${resourceName.xxx}` interpolations with '' when the referenced
+ * resource is not present in existingResourceNames. Config-space refs like
+ * `${oci:tenancyOcid}` are left untouched (they contain ':').
+ */
+function resolveRefs(value: string, existingResourceNames: string[]): string {
+  return value.replace(/\$\{([^}]+)\}/g, (match, inner) => {
+    if (inner.includes(':')) return match; // config-space ref, always valid
+    const resourceName = inner.split('.')[0];
+    return existingResourceNames.includes(resourceName) ? match : '';
+  });
+}
+
+/**
  * If a `compartment` resource already exists in the graph, OCI resources
  * should reference it directly instead of requiring a separate config field.
  */
@@ -131,10 +144,17 @@ export function getResourceDefaults(
 
   const compartmentId = resolveCompartmentId(existingResourceNames);
   const recipeProps = applyCompartmentRef(recipe.properties, compartmentId);
-  const recipeByKey = new Map(recipeProps.map(p => [p.key, p]));
+
+  // Blank out ${resourceName.xxx} refs whose resource doesn't exist yet
+  const resolvedProps = recipeProps.map(p => ({
+    key: p.key,
+    value: resolveRefs(p.value, existingResourceNames),
+  }));
+
+  const recipeByKey = new Map(resolvedProps.map(p => [p.key, p]));
 
   // Start with recipe properties (preserving recipe order)
-  const result: PropertyEntry[] = [...recipeProps];
+  const result: PropertyEntry[] = [...resolvedProps];
 
   // Append any schema-required keys that the recipe doesn't already cover
   for (const key of schemaRequiredKeys) {
@@ -178,4 +198,40 @@ export function getGraphExtras(
     outputs: recipe.outputs,
     resources: dependentResources,
   };
+}
+
+/**
+ * For each Instance resource whose `createVnicDetails` property contains a
+ * blank subnetId (`subnetId: ""`), fill in `${<subnetName>.id}`.
+ *
+ * Called by ProgramEditor after "Add Networking" adds the recipe subnet
+ * resource, so instances that had their subnetId blanked by resolveRefs
+ * (because no subnet existed yet) are wired up automatically.
+ *
+ * Only updates instances with an explicitly blank subnetId — instances that
+ * already reference a differently-named subnet are left untouched.
+ */
+export function wireSubnetIntoInstances(
+  sections: import('$lib/types/program-graph').SectionDef[],
+  subnetName: string,
+): import('$lib/types/program-graph').SectionDef[] {
+  const ref = `\${${subnetName}.id}`;
+  return sections.map(s => ({
+    ...s,
+    items: s.items.map(item => {
+      if (item.kind !== 'resource' || item.resourceType !== 'oci:Core/instance:Instance') return item;
+      const hasBlankSubnetId = item.properties?.some(
+        p => p.key === 'createVnicDetails' && p.value.includes('subnetId: ""'),
+      );
+      if (!hasBlankSubnetId) return item;
+      return {
+        ...item,
+        properties: item.properties!.map(p =>
+          p.key === 'createVnicDetails'
+            ? { ...p, value: p.value.replace('subnetId: ""', `subnetId: "${ref}"`) }
+            : p,
+        ),
+      };
+    }),
+  }));
 }

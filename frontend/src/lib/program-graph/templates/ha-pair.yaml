@@ -174,4 +174,4 @@ resources:
         - ${node-b}
 
 outputs:
-  nlbIp: ${nlb.ipAddresses[0].ipAddress}
+  nlbPublicIp: ${nlb.ipAddresses[0].ipAddress}

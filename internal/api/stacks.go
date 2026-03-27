@@ -205,7 +205,8 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 	if shouldGeneratePKI && h.ConnStore != nil {
 		if existing, _ := h.ConnStore.Get(stackName); existing == nil {
 			if err := h.generateNebulaPKI(stackName); err != nil {
-				log.Printf("[stacks] Warning: failed to generate Nebula PKI for %s: %v", stackName, err)
+				http.Error(w, "failed to generate agent PKI: "+err.Error(), http.StatusInternalServerError)
+				return
 			}
 		}
 	}
@@ -238,6 +239,12 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		LastSeenAt     *int64  `json:"lastSeenAt,omitempty"`
 	}
 
+	type NodeInfo struct {
+		NodeIndex   int     `json:"nodeIndex"`
+		NebulaIP    string  `json:"nebulaIp"`
+		AgentRealIP *string `json:"agentRealIp,omitempty"`
+	}
+
 	type StackInfo struct {
 		Name         string                 `json:"name"`
 		Program      string                 `json:"program"`
@@ -254,6 +261,7 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		Running      bool                   `json:"running"`
 		Mesh              *MeshStatus            `json:"mesh,omitempty"`
 		AgentAccess       bool                   `json:"agentAccess"`
+		Nodes             []NodeInfo             `json:"nodes,omitempty"`
 		Deployed          bool                   `json:"deployed"`
 		WasDeployed       bool                   `json:"wasDeployed"`
 		LastOperationType string                 `json:"lastOperationType,omitempty"`
@@ -331,6 +339,21 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 				LastSeenAt:     conn.LastSeenAt,
 			}
 			info.Mesh = mesh
+		}
+	}
+
+	// Per-node cert data (always included when available, regardless of deploy state)
+	if h.NodeCertStore != nil {
+		if nodeCerts, err := h.NodeCertStore.ListForStack(stackName); err == nil && len(nodeCerts) > 0 {
+			nodes := make([]NodeInfo, len(nodeCerts))
+			for i, nc := range nodeCerts {
+				nodes[i] = NodeInfo{
+					NodeIndex:   nc.NodeIndex,
+					NebulaIP:    nc.NebulaIP,
+					AgentRealIP: nc.AgentRealIP,
+				}
+			}
+			info.Nodes = nodes
 		}
 	}
 

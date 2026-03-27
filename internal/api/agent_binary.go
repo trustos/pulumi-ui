@@ -2,14 +2,12 @@ package api
 
 import (
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 )
 
 // ServeAgentBinary serves a pre-compiled agent binary for the given OS/arch.
-// Looks for binaries in dist/agent_{os}_{arch} relative to the working directory.
+// Binaries are embedded in the server at compile time from cmd/server/dist/.
 func (h *Handler) ServeAgentBinary(w http.ResponseWriter, r *http.Request) {
 	osName := chi.URLParam(r, "os")
 	arch := chi.URLParam(r, "arch")
@@ -22,14 +20,15 @@ func (h *Handler) ServeAgentBinary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filename := "agent_" + osName + "_" + arch
-	path := filepath.Join("dist", filename)
+	embedPath := "dist/" + filename
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	data, err := h.AgentBinaries.ReadFile(embedPath)
+	if err != nil {
 		http.Error(w, "agent binary not found: "+filename, http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
-	http.ServeFile(w, r, path)
+	w.Write(data)
 }
