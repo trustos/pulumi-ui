@@ -349,7 +349,436 @@ stack.SetConfig(ctx, "oci:region",      auto.ConfigValue{Value: oci.Region})
 
 The private key is always passed as inline PEM content (`oci:privateKey`, `Secret: true`), never as a file path. A temp file path would be deleted after `Up` and cause 401 errors on subsequent `Refresh` operations.
 
-See `docs/yaml-programs.md` for the full YAML program authoring reference.
+---
+
+## YAML Program Authoring Reference
+
+A YAML program lets you define infrastructure as a Go-templated Pulumi YAML file stored in the database. Once created, it appears in the **New Stack** dialog alongside built-in programs and can be edited or deleted at any time — no server restart required.
+
+### How It Works
+
+```
+DB (program_yaml column)         Runtime rendering              Pulumi execution
+────────────────────────         ──────────────────────         ─────────────────
+Go-templated YAML  ─────────→   text/template.Execute()  ────→ UpsertStackLocalSource
+{{ range }}, {{ if }},           with config map + Sprig         on rendered plain YAML
+custom OCI functions             + custom OCI helpers
+```
+
+Two layers of resolution — keep them straight:
+
+| Syntax | Resolved by | When | Example |
+|---|---|---|---|
+| `{{ ... }}` | Go template | Before Pulumi runs | `{{ .Config.nodeCount }}` |
+| `${ ... }` | Pulumi | At apply time | `${my-compartment.id}` |
+
+Go template decides **structure** (loops, conditionals, how many resources). Pulumi resolves **runtime values** (actual OCIDs, outputs from other resources).
+
+> **Important:** Go template processes the entire file — including YAML comments. Do **not** write `{{ }}` inside comments. Use plain text instead.
+
+### Minimal Program
+
+```yaml
+name: my-vcn
+runtime: yaml
+description: "Creates a compartment and VCN"
+
+config:
+  compartmentName:
+    type: string
+    default: my-compartment
+  vcnCidr:
+    type: string
+    default: "10.0.0.0/16"
+
+resources:
+  my-compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: {{ .Config.compartmentName }}
+      description: "Created by Pulumi"
+      enableDelete: true
+
+  my-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${my-compartment.id}
+      cidrBlock: {{ .Config.vcnCidr | quote }}
+      displayName: my-vcn
+      dnsLabel: myvcn
+
+outputs:
+  compartmentId: ${my-compartment.id}
+  vcnId: ${my-vcn.id}
+```
+
+**Required top-level keys:** `name`, `runtime: yaml`, `resources`.
+
+### Config Section
+
+The `config:` block defines the fields shown in the UI form when creating a stack.
+
+```yaml
+config:
+  myField:
+    type: string        # string | integer | number | boolean
+    default: "hello"    # optional
+```
+
+#### Field Types → Form Controls
+
+| YAML type | Form field | Notes |
+|---|---|---|
+| `string` | Text input | Default for most values |
+| `integer` | Number input | Use for counts, sizes |
+| `number` | Number input | Use for floats |
+| `boolean` | Select (true/false) | |
+| key = `imageId` | OCI image picker | Convention — type must be `string` |
+| key = `shape` | OCI shape picker | Convention — type must be `string` |
+| key = `sshPublicKey` | SSH key picker | Convention — type must be `string` |
+| key = `compartmentId` | OCI compartment picker | Convention — type must be `string` |
+| key = `availabilityDomain` | OCI availability domain picker | Convention — type must be `string` |
+
+#### Accessing Config Values
+
+```yaml
+# Simple value
+name: {{ .Config.compartmentName }}
+
+# Quoted (required for YAML string values containing special chars)
+cidrBlock: {{ .Config.vcnCidr | quote }}
+
+# As integer for arithmetic
+{{ until (atoi .Config.nodeCount) }}
+```
+
+> **Defaults are applied automatically.** When a stack runs, declared `default:` values are merged into the config before the template renders. A field with a `default:` is always safe to reference as `{{ .Config.key }}` even if the user never edited it.
+
+#### Meta Section (UI Groups)
+
+Add a `meta:` block at the top of your file to group config fields in the UI form and override field types. It is stripped before Pulumi executes the program.
+
+```yaml
+meta:
+  groups:
+    - key: network
+      label: "Network"
+      fields: [compartmentName, vcnCidr, subnetCidr]
+    - key: compute
+      label: "Compute"
+      fields: [shape, imageId, nodeCount, bootVolSizeGb, sshPublicKey]
+  fields:
+    imageId:
+      ui_type: oci-image
+      description: "Ubuntu Minimal image for your region"
+    shape:
+      ui_type: oci-shape
+      label: "Instance Shape"
+      description: "VM.Standard.A1.Flex is Always Free eligible"
+    sshPublicKey:
+      ui_type: ssh-public-key
+      description: "Used to SSH into instances after deploy"
+```
+
+`meta:` supports these per-field properties:
+
+| Property | Description |
+|---|---|
+| `ui_type` | Override the form control. Options: `oci-image`, `oci-shape`, `oci-compartment`, `oci-ad`, `ssh-public-key`, `text`, `number`, `select`, `textarea` |
+| `label` | Override the auto-generated label (default: camelCase → Title Case) |
+| `description` | Help text shown below the field in the stack form |
+
+Fields not listed in any group appear at the bottom ungrouped.
+
+#### Display Name (meta.displayName)
+
+Set `displayName` in the `meta:` block to give the program a human-readable title separate from its machine-friendly `name` identifier:
+
+```yaml
+meta:
+  displayName: My Production Cluster
+```
+
+#### Agent Access (meta.agentAccess)
+
+Set `agentAccess: true` in the `meta:` block to opt into automatic agent connectivity injection. You can also toggle this via the **Agent Connect** button in the program editor header:
+
+```yaml
+meta:
+  agentAccess: true
+```
+
+When enabled, at deploy time the engine automatically:
+1. **Bootstrap injection** — injects the Nebula mesh + pulumi-ui agent bootstrap into every compute resource's `user_data` (via multipart MIME).
+2. **NSG injection** — if an NSG exists: adds UDP ingress rule on port 41820. If no NSG but a VCN exists: creates `__agent_nsg` and attaches it to each compute instance.
+3. **NLB per-node injection** — if a **public** NLB exists: creates a dedicated backend set + listener per compute node at ports **41821, 41822, …**. No NLB is auto-created — programs without an NLB use per-instance public IPs.
+
+See `docs/oci-networking-rules.md` for the full topology coverage table (T1–T8) and `docs/application-catalog-architecture.md` for the agent architecture.
+
+### Loops
+
+Use Sprig's `until` to iterate over a range of integers.
+
+```yaml
+config:
+  nodeCount:
+    type: integer
+    default: 3
+
+resources:
+  {{- range $i := until (atoi $.Config.nodeCount) }}
+  instance-{{ $i }}:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ${my-compartment.id}
+      displayName: {{ printf "node-%d" $i }}
+      shape: {{ $.Config.shape }}
+      shapeConfig:
+        ocpus: {{ instanceOcpus $i (atoi $.Config.nodeCount) }}
+        memoryInGbs: {{ instanceMemoryGb $i (atoi $.Config.nodeCount) }}
+  {{- end }}
+```
+
+> **Note:** Use `$.Config` (global `$` prefix) inside `range` blocks to access config. The loop variable `$i` shadows `.` inside the loop body.
+
+#### Iterating a Fixed List of Values
+
+```yaml
+{{- range $port := list 4646 4647 4648 }}
+  nsg-rule-{{ $port }}:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${my-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      tcpOptions:
+        destinationPortRange:
+          min: {{ $port }}
+          max: {{ $port }}
+{{- end }}
+```
+
+#### Serialized Loops (NLB Pattern)
+
+OCI Network Load Balancer rejects concurrent mutations with `409 Conflict`. Use a `dependsOn` chain:
+
+```yaml
+{{- $prevNlbResource := "my-nlb" }}
+{{- range $port := list 80 443 4646 }}
+  backend-set-{{ $port }}:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${my-nlb.id}
+      name: backend-set-{{ $port }}
+      policy: FIVE_TUPLE
+      healthChecker:
+        protocol: TCP
+        port: {{ $port }}
+    options:
+      dependsOn:
+        - {{ printf "${%s}" $prevNlbResource }}
+  {{- $prevNlbResource = printf "backend-set-%d" $port }}
+{{- end }}
+```
+
+> **Note:** `{{ printf "${%s}" $prevResource }}` is the correct way to build a Pulumi interpolation string inside a Go template. Do NOT write `${{{ $prevResource }}}`.
+
+### Conditionals
+
+```yaml
+{{- if ne .Config.skipOptionalResource "true" }}
+  optional-resource:
+    type: oci:Identity/dynamicGroup:DynamicGroup
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: my-dg
+      matchingRule: "ALL {instance.compartment.id = '${my-compartment.id}'}"
+{{- end }}
+```
+
+Common conditions:
+
+| Template | Meaning |
+|---|---|
+| `{{- if eq .Config.x "value" }}` | string equals |
+| `{{- if ne .Config.x "true" }}` | string not equals |
+| `{{- if .Config.x }}` | non-empty string |
+| `{{- if not .Config.x }}` | empty string |
+| `{{- if gt (atoi .Config.n) 2 }}` | integer greater than |
+
+### Sprig Functions
+
+All [Sprig](https://masterminds.github.io/sprig/) functions are available (same library as Helm).
+
+| Category | Function | Example | Result |
+|---|---|---|---|
+| Strings | `quote` | `{{ "hello" \| quote }}` | `"hello"` |
+| | `upper` / `lower` | `{{ .Config.name \| lower }}` | `my-name` |
+| | `printf` | `{{ printf "node-%d" $i }}` | `node-0` |
+| | `b64enc` | `{{ .Config.script \| b64enc }}` | base64 encoded |
+| Numbers | `atoi` | `{{ atoi .Config.nodeCount }}` | string → int |
+| | `add` / `sub` / `mul` / `div` | `{{ add $i 1 }}` | `$i + 1` |
+| Lists | `list` | `{{ list 80 443 8080 }}` | `[80, 443, 8080]` |
+| | `until` | `{{ until 3 }}` | `[0, 1, 2]` |
+| Logic | `default` | `{{ .Config.shape \| default "VM.Standard.A1.Flex" }}` | fallback |
+| | `ternary` | `{{ ternary "yes" "no" (eq .Config.x "1") }}` | conditional |
+| | `empty` | `{{ if empty .Config.name }}` | empty check |
+
+### Custom OCI Functions
+
+Four helper functions are built into the template engine specifically for OCI.
+
+#### `instanceOcpus` / `instanceMemoryGb`
+
+Distributes OCI Always Free quota (4 OCPUs / 24 GB) across nodes:
+
+| nodeCount | node 0 | node 1 | node 2 | node 3 | Total OCPUs |
+|---|---|---|---|---|---|
+| 1 | 4 | — | — | — | 4 |
+| 2 | 2 | 2 | — | — | 4 |
+| 3 | 1 | 1 | 2 | — | 4 |
+| 4 | 1 | 1 | 1 | 1 | 4 |
+
+```yaml
+ocpus: {{ instanceOcpus $i (atoi $.Config.nodeCount) }}
+memoryInGbs: {{ instanceMemoryGb $i (atoi $.Config.nodeCount) }}
+```
+
+#### `cloudInit`
+
+```
+cloudInit(nodeIndex int, config map[string]string) string
+```
+
+Renders the Nomad/Consul cluster cloud-init script, gzip-compresses it, and returns it base64-encoded. Uses config values such as `nodeCount`, `nomadVersion`, `consulVersion`.
+
+```yaml
+metadata:
+  user_data: {{ cloudInit $i $.Config }}
+```
+
+> **Limitation:** `cloudInit` runs at template render time. It cannot reference `${resource.id}` outputs. If the boot script needs a runtime OCID, use a built-in Go program where `pulumi.All(...).ApplyT(...)` is available.
+
+> **Agent injection:** For programs with `meta.agentAccess: true`, the engine automatically injects the Nebula mesh + agent bootstrap into every compute resource's `user_data` **after** template rendering, via multipart MIME composition. Program authors do not need to include agent setup in their `cloudInit` calls.
+
+#### `groupRef`
+
+Generates an IAM policy statement for old IDCS tenancies (no domain) and new Identity Domain tenancies:
+
+```yaml
+statements:
+  - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}
+```
+
+### OCI Resource Types
+
+Resource type tokens follow the canonical pattern `oci:[Module]/[subpath]:[Resource]`. Short-form aliases (`oci:core:Vcn`) work at runtime but will not receive schema assistance in the visual editor.
+
+| Short-form (accepted) | Canonical (preferred) |
+|---|---|
+| `oci:core:Vcn` | `oci:Core/vcn:Vcn` |
+| `oci:core:NatGateway` | `oci:Core/natGateway:NatGateway` |
+| `oci:identity:DynamicGroup` | `oci:Identity/dynamicGroup:DynamicGroup` |
+| `oci:networkloadbalancer:Backend` | `oci:NetworkLoadBalancer/backend:Backend` |
+
+**Use canonical form in new programs.** The visual editor's property autocomplete, required-field validation (Level 5), and the Resource Catalog all key off the canonical form.
+
+### Availability Domain (variables block)
+
+`availabilityDomain` is always resolved at apply time via a `variables:` block — never as a config field:
+
+```yaml
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+```
+
+Use `${availabilityDomains[0].name}` for the first domain. For clusters, use `mod` to round-robin:
+
+```yaml
+availabilityDomain: ${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}
+```
+
+### Outputs
+
+```yaml
+outputs:
+  compartmentId: ${my-compartment.id}
+  vcnId: ${my-vcn.id}
+  instancePublicIp: ${my-instance-0.publicIp}
+  nlbIp: ${my-nlb.ipAddresses[0].ipAddress}
+```
+
+### Special Variables
+
+```yaml
+# Tenancy OCID — always available, no config needed
+compartmentId: ${oci:tenancyOcid}
+
+# Config values injected by the engine (always available)
+# oci:tenancyOcid, oci:userOcid, oci:fingerprint, oci:privateKey, oci:region
+```
+
+### Validation
+
+Programs are validated on every save. Validation runs seven levels sequentially:
+
+| Level | Name | What it checks |
+|---|---|---|
+| 1 | Template syntax | Can the Go template be parsed? |
+| 2 | Template render | Can it render with all defaults applied? |
+| 3 | YAML structure | Does the rendered output have `name`, `runtime: yaml`, and `resources`? |
+| 4 | Config section | Are field types valid? Do `meta:` group references exist in `config:`? |
+| 5 | Resource structure | Does each resource have a valid type token? Are all required properties present? |
+| 6 | Variable references | Does every `${varName}` reference a name defined in `variables:` or `resources:`? |
+| 7a | Agent networking | If `agentAccess: true`, are there compute resources with networking context? |
+| 7b | Agent IP outputs | If `agentAccess: true`, is at least one IP output key defined? |
+
+Levels 1–6 are blocking. Level 7 produces non-blocking warnings.
+
+### Security
+
+- `fn::readFile` — any line containing this is stripped before execution via `SanitizeYAML()`. Programs cannot read server files.
+- Programs can only call OCI APIs through the Pulumi OCI provider using credentials you have configured.
+- OCI credentials are injected via Pulumi config, not environment variables.
+
+### Limitations vs Built-in Programs
+
+| Capability | Built-in Go | YAML program |
+|---|---|---|
+| Loops / Conditionals | Yes | Yes (via Go template) |
+| `pulumi.All(...).ApplyT(...)` | Yes | No |
+| Runtime OCIDs in cloud-init | Yes | No — use IMDS at boot |
+| Agent bootstrap injection | Yes | Yes |
+| Agent networking injection | Manual | Automatic (`meta.agentAccess`) |
+| Arbitrary Go logic | Yes | No |
+| No recompile needed | No | Yes |
+| Stored in database / editable via UI | No | Yes |
+
+### Troubleshooting
+
+| Error | Cause | Fix |
+|---|---|---|
+| `map has no entry for key "X"` | `{{ .Config.X }}` has no `default:` and was never set | Add a `default:` |
+| `{{ }}` in comments causes parse error | Go template processes comments | Use plain text in comments |
+| `yaml: unmarshal errors` | Invalid rendered YAML | Check quoting (`\| quote`) and indentation in `range` blocks |
+| `fn::readFile` lines disappear | Security sanitization | Use config fields for file content |
+| `atoi: parsing ""` | Config field used with `atoi` has no default | Add a numeric `default:` |
+| No property autocomplete | Short-form type used | Use canonical form (`oci:Core/natGateway:NatGateway`) |
+| `Metadata size > 32000 bytes` | Missing gzip before base64 | Use `cloudInit` which handles gzip automatically |
+
+### Reference Programs
+
+| File | Description |
+|---|---|
+| `frontend/src/lib/program-graph/templates/*.yaml` | 11 built-in template programs |
+| `docs/nomad-cluster-program.yaml` | v1 — short-form type aliases |
+| `docs/nomad-cluster-v2-program.yaml` | v2 — canonical types, full IAM, configurable backup |
 
 ---
 

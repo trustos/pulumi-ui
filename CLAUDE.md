@@ -258,17 +258,16 @@ Full detail: `docs/roadmap.md`
 |---|---|
 | `docs/architecture.md` | Layer diagram, single-binary design, two execution paths, security model |
 | `docs/database.md` | SQLite setup, migrations, encryption |
-| `docs/programs.md` | Program interface, built-in programs, YAML programs, OCI API client |
+| `docs/programs.md` | Program interface, built-in programs, YAML program authoring reference, OCI API client |
 | `docs/api.md` | All HTTP endpoints |
 | `docs/frontend.md` | SPA structure, routing, component overview, UX rules, type definitions |
 | `docs/deployment.md` | Docker multi-stage build, env vars |
-| `docs/yaml-programs.md` | YAML program format, template functions, full OCI resource reference |
 | `docs/coding-principles.md` | SOLID principles for this codebase |
-| `docs/visual-editor.md` | Visual editor design, Program Graph model, known bugs + fix plan |
+| `docs/visual-editor.md` | Visual editor design, Program Graph model, property system simplification roadmap, known bugs + fix plan |
 | `docs/roadmap.md` | Architecture improvement roadmap |
-| `docs/application-catalog-architecture.md` | Application catalog, Nebula mesh, agent binary, auto-injection, two-phase deploy |
-| `docs/oci-networking-rules.md` | **OCI networking rules**: subnet architecture (public vs private), security lists, NLB serialization, agent bootstrap requirements, topology decision tree |
-| `docs/visual-editor-simplification.md` | Visual editor property system simplification roadmap (3 phases) |
+| `docs/application-catalog-architecture.md` | Application catalog, Nebula mesh, per-node NLB architecture, agent binary, auto-injection, two-phase deploy |
+| `docs/oci-networking-rules.md` | OCI networking rules: subnet architecture, security lists, NLB serialization, agent topology coverage (T1–T8), topology decision tree |
+| `docs/phase1-manual-tests.md` | Manual test checklist for multi-node agent connect |
 
 ---
 

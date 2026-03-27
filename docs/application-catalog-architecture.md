@@ -103,6 +103,41 @@ The program declares how the agent is reachable based on the infrastructure it c
 **Private VM (nothing reachable):**
 - Cloud-init fallback: everything deployed at boot, no post-infra phases
 
+### Per-Node NLB Architecture (T2/T3)
+
+When a public NLB exists, each compute instance gets a dedicated NLB listener port for deterministic Nebula routing:
+
+```
+UI Mesh Manager (behind NAT is fine — it's the initiator)
+  static_host_map: '10.42.X.2': ['nlbIP:41821']   ← node-0
+  static_host_map: '10.42.X.3': ['nlbIP:41822']   ← node-1
+  static_host_map: '10.42.X.N': ['nlbIP:4182N+1'] ← node-N
+  │
+  ▼ Nebula UDP
+OCI NLB (public, isPrivate: false, isPreserveSourceDestination: false)
+  Listener 41821 UDP → BackendSet-0 (1 backend) → node-0:41820
+  Listener 41822 UDP → BackendSet-1 (1 backend) → node-1:41820
+  ...
+  │
+  ▼
+Instances (Nebula on port 41820)
+  After handshake: HTTP agent at Nebula overlay 10.42.X.N:41820
+```
+
+**N listeners, N backend sets, one backend each.** Each backend set holds exactly one instance so routing is deterministic. Port scheme: node-i uses NLB listener port `AgentPort + 1 + i` = 41821, 41822, …
+
+**How NLB forwarding works with Nebula:**
+- UI's Nebula sends UDP to `nlbPublicIp:41821` (from `static_host_map`)
+- NLB (`isPreserveSourceDestination: false`) forwards to `instance:41820`, replacing source with NLB IP
+- Instance Nebula responds to NLB — NLB session table routes response back to UI
+- `punchy: true` (in bootstrap) sends keepalives to maintain the NLB UDP session table
+
+**`agent_real_ip` storage:** stored as `"nlbIP:41821"` (IP:port string). Backward-compatible: plain IP entries default to port 41820 in mesh.go.
+
+**OCI NLB service limits (default):** 16 backend sets per NLB → supports up to 16 nodes. Listeners: 50.
+
+See `docs/oci-networking-rules.md` for the full topology coverage table (T1–T8).
+
 ### 3. Two-Tier Application Model
 
 **Tier 1 — Bootstrap** (cloud-init, runs at instance boot):

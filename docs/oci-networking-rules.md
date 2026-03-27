@@ -148,6 +148,26 @@ Programs with `agentAccess: true` need outputs for IP discovery:
 
 ---
 
+## Agent Connectivity Topology Coverage
+
+Every OCI compute program with `agentAccess: true` falls into one of these topologies, detectable from the YAML at validation time:
+
+| # | Topology | Detection signal | Agent connectivity | Outcome |
+|---|---|---|---|---|
+| **T1** | Public subnet + `assignPublicIp: true` | `assignPublicIp: "true"` on VNIC | ✅ Direct — use `instancePublicIp` | Fallback path |
+| **T2** | Private subnet + public NLB | NLB + `isPrivate: false` (or absent) | ✅ Per-node NLB ports (41821+) | NLB injection |
+| **T3** | Public IP + public NLB | Both T1 and T2 signals | ✅ Prefer NLB | NLB injection (NLB takes priority) |
+| **T4** | Private subnet + private NLB | NLB + `isPrivate: true` | ❌ Not externally reachable | Level 7a warning |
+| **T5** | Private subnet + NAT gateway only | `NatGateway`, no NLB, no public IPs | ⚠️ Outbound-only | Level 7a warning |
+| **T6** | Fully isolated (no internet) | No IGW, no NAT, no NLB, no public IPs | ❌ No internet path | Level 7a warning |
+| **T7** | Layer 7 LB (HTTP/HTTPS only) | `oci:LoadBalancer/loadBalancer:LoadBalancer`, no NLB, no public IPs | ❌ No UDP support | Level 7a warning |
+| **T8** | Instance Pool + public NLB | `oci:Core/instancePool:InstancePool` + NLB | ✅ Pool-as-entity | NLB injection |
+| **T8b** | Instance Pool, no NLB, no public IPs | Instance pool, no connectivity | ⚠️ No inbound path | Level 7a warning |
+
+**Out of scope (agent model not applicable):** container instances, OKE node pools, serverless functions — no persistent process to host an agent.
+
+---
+
 ## Topology Decision Tree
 
 ```

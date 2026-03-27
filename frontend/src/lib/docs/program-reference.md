@@ -229,6 +229,8 @@ config:
 | key = `imageId` | OCI image picker | Convention — type must be `string` |
 | key = `shape` | OCI shape picker | Convention — type must be `string` |
 | key = `sshPublicKey` | SSH key picker | Convention — type must be `string` |
+| key = `compartmentId` | OCI compartment picker | Convention — type must be `string` |
+| key = `availabilityDomain` | OCI availability domain picker | Convention — type must be `string` |
 
 ### Accessing Config Values
 
@@ -277,7 +279,7 @@ meta:
 
 | Property | Description |
 |---|---|
-| `ui_type` | Override the form control. Options: `oci-image`, `oci-shape`, `ssh-public-key`, `text`, `number`, `select`, `textarea` |
+| `ui_type` | Override the form control. Options: `oci-image`, `oci-shape`, `oci-compartment`, `oci-ad`, `ssh-public-key`, `text`, `number`, `select`, `textarea` |
 | `label` | Override the auto-generated label (default: camelCase → Title Case) |
 | `description` | Help text shown below the field in the stack form |
 
@@ -370,7 +372,7 @@ Common required properties:
 | `oci:Core/instancePool:InstancePool` | `compartmentId`, `instanceConfigurationId`, `size`, `placementConfigurations` |
 | `oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer` | `compartmentId`, `displayName`, `subnetId` |
 | `oci:NetworkLoadBalancer/backendSet:BackendSet` | `networkLoadBalancerId`, `name`, `policy`, `healthChecker` |
-| `oci:NetworkLoadBalancer/backend:Backend` | `networkLoadBalancerId`, `backendSetName`, `port`, `ipAddress` |
+| `oci:NetworkLoadBalancer/backend:Backend` | `networkLoadBalancerId`, `backendSetName`, `port`, `targetId` (for OCI instances) or `ipAddress` (for external IPs) |
 | `oci:NetworkLoadBalancer/listener:Listener` | `networkLoadBalancerId`, `name`, `defaultBackendSetName`, `port`, `protocol` |
 
 ---
@@ -740,6 +742,7 @@ my-subnet:
     cidrBlock: {{ .Config.subnetCidr | quote }}
     displayName: my-subnet
     dnsLabel: mysubnet
+    dhcpOptionsId: ${my-vcn.defaultDhcpOptionsId}
     routeTableId: ${public-rt.id}
     securityListIds:
       - ${my-sl.id}
@@ -878,13 +881,13 @@ my-backend-set:
       protocol: TCP
       port: 80
 
-# Backend
+# Backend — use targetId for OCI instances, ipAddress for external IPs
 my-backend-0:
   type: oci:NetworkLoadBalancer/backend:Backend
   properties:
     networkLoadBalancerId: ${my-nlb.id}
     backendSetName: backend-set-80
-    ipAddress: ${my-instance.privateIp}
+    targetId: ${my-instance.id}
     port: 80
 
 # Listener
@@ -955,6 +958,32 @@ If your program already sets `user_data` (e.g. via `cloudInit`), the engine wrap
 
 ---
 
+## Agent IP Outputs (required when agentAccess is enabled)
+
+When `meta.agentAccess: true` is set and your program contains compute resources, you **must** expose at least one IP output so the engine can discover agent addresses after deploy. The visual editor shows a warning banner and an **"Add Outputs"** button when these are missing.
+
+**With NLB** — expose the NLB's public IP (one output regardless of node count):
+```yaml
+outputs:
+  nlbPublicIp: ${my-nlb.ipAddresses[0].ipAddress}
+```
+
+**Without NLB (direct public IPs)** — expose per-node IPs:
+```yaml
+# Single instance — any of these work
+outputs:
+  instancePublicIp: ${my-instance.publicIp}
+
+# Multi-node — sequential keys
+outputs:
+  instance-0-publicIp: ${node-0.publicIp}
+  instance-1-publicIp: ${node-1.publicIp}
+```
+
+Accepted single-endpoint output key aliases: `nlbPublicIp`, `nlbPublicIP`, `instancePublicIp`, `instancePublicIP`, `publicIp`, `publicIP`, `serverPublicIp`, `serverPublicIP`.
+
+---
+
 ## Outputs
 
 Declare stack outputs to expose values after a successful `pulumi up`:
@@ -973,7 +1002,7 @@ Outputs appear in the Stack detail view and can be referenced by other stacks or
 
 ## Validation
 
-Programs are validated on every save (and checked live as you type in the YAML editor). Validation runs six levels sequentially:
+Programs are validated on every save (and checked live as you type in the YAML editor). Validation runs seven levels sequentially:
 
 | Level | Name | What it checks |
 |---|---|---|
@@ -983,8 +1012,12 @@ Programs are validated on every save (and checked live as you type in the YAML e
 | 4 | Config section | Are field types valid? Do `meta:` group references exist in `config:`? |
 | 5 | Resource structure | Does each resource have a valid type token? Are all required properties present (schema-validated)? |
 | 6 | Variable references | Does every `${varName}` in resource properties reference a name defined in `variables:` or `resources:`? Provider config refs (containing `:`) are skipped. |
+| 7a | Agent networking | If `agentAccess: true`, are there compute resources with networking context? |
+| 7b | Agent IP outputs | If `agentAccess: true` and compute exists, is at least one IP output key defined? |
 
-A program that fails any level cannot be saved. The visual editor shows errors inline before even calling the backend. In visual mode, `collectVisualErrors()` additionally checks for undefined `${varName}` references client-side.
+Levels 1–6 are **blocking** — a program that fails cannot be saved. Level 7 produces **non-blocking warnings** — the program saves, but the visual editor shows inline action buttons ("Add VCN + Subnet", "Add Outputs") to fix common issues. Saving in visual mode is blocked when required IP outputs are missing.
+
+The visual editor additionally runs client-side checks via `collectVisualErrors()` for undefined `${varName}` references and missing required properties.
 
 ---
 
@@ -1144,6 +1177,7 @@ resources:
       cidrBlock: {{ .Config.subnetCidr | quote }}
       displayName: cluster-subnet
       dnsLabel: clustersubnet
+      dhcpOptionsId: ${cluster-vcn.defaultDhcpOptionsId}
       routeTableId: ${cluster-rt.id}
       securityListIds:
         - ${cluster-sl.id}
@@ -1205,3 +1239,15 @@ outputs:
 
 **Duplicate resource key errors**
 : Resources inside a loop must have unique names per iteration. The visual editor appends the loop variable automatically (`instance` → `instance-{{ $i }}`). In YAML mode, include the variable explicitly in the resource name.
+
+**NLB Backend: `ipAddress` validation error when using `targetId`**
+: Use `targetId: ${my-instance.id}` for OCI instances. `ipAddress` is only needed when routing to an external IP.
+
+**NLB `409 Conflict` on deploy**
+: OCI NLB rejects concurrent mutations. All NLB child resources (BackendSet, Listener, Backend) must be chained via `dependsOn`. In the visual editor, enable **Serialize operations** on the loop. In YAML, use the `{{ printf "${%s}" $prevNlbResource }}` pattern.
+
+**`Metadata size is X bytes and cannot be larger than 32000 bytes`**
+: The `cloudInit` template function gzip+base64 encodes the script automatically. If you are base64-encoding manually without gzip, the result exceeds the 32 KB OCI metadata limit. Always use `cloudInit` or the engine's agent injection.
+
+**Subnet DNS not resolving**
+: Add `dhcpOptionsId: ${vcn.defaultDhcpOptionsId}` to your subnet resource. Without this, DNS resolution may not work.

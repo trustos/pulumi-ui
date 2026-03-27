@@ -272,6 +272,224 @@ Use `ValidationHint` from Part 0 to drive `onBlur` validators in ConfigForm. Inl
 
 ---
 
+## BE-6 — OCI Object Storage State Backend
+
+### Problem
+Pulumi state is stored on the local filesystem (`PULUMI_UI_STATE_DIR`, default `/data/state`). This works for single-node deployments but prevents multi-node HA, makes backups manual, and loses state if the volume is lost. The Settings page already shows "OCI Object Storage (S3-compatible) — coming soon" as a backend option.
+
+### Solution
+Add an OCI Object Storage backend option using the S3-compatible API. OCI buckets support the S3 API via a regional endpoint (`https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`). Pulumi's built-in S3 backend (`s3://<bucket>`) works with any S3-compatible provider when configured with a custom endpoint.
+
+**Configuration via Settings page:**
+- Bucket name
+- OCI namespace (auto-detected from tenancy)
+- Region (from the linked OCI account)
+- Credentials: reuse existing OCI account credentials (Customer Secret Keys for S3 compat)
+
+**Engine changes:**
+- `engine.go` stack creation switches from `auto.UpsertStackLocalSource` to `auto.UpsertStackRemoteSource` with an S3 backend URL when the backend type is `oci-object-storage`
+- Backend URL format: `s3://<bucket>?endpoint=<s3-compat-endpoint>&region=<region>`
+- Environment variables `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` set from OCI Customer Secret Keys
+
+**Migration path:**
+- Existing local state remains readable — no migration needed for existing stacks
+- New stacks created after switching use the remote backend
+- A `migrate` command could be added later to move existing state to the bucket
+
+### Files
+- `internal/engine/engine.go` — backend selection logic in stack creation
+- `internal/api/settings.go` — backend configuration endpoint
+- `internal/db/credentials.go` — store Customer Secret Key pair
+- `frontend/src/pages/Settings.svelte` — enable the OCI Object Storage option
+- `docs/deployment.md` — document the new backend option
+
+**Scope: Medium | Dependencies: none | Priority: pending**
+
+---
+
+## FE-5 — Goal-Driven Stack Creation
+
+### Problem
+The current flow is resource-first: user picks a program, fills config fields, deploys. Users who don't know OCI well struggle with "which program do I need?" and "what do these fields mean?" The template gallery helps, but the entry point is still "pick a template" rather than "describe what you want."
+
+### Solution
+Add an intent-first flow before the existing program selection:
+
+**Step 0 — "What do you want to build?"** (new, before current Step 1)
+- Cards: "Public web app", "Private database", "VM with SSH", "Nomad cluster", "Network foundation", "Start from scratch"
+- Each card shows: description, difficulty badge, estimated cost range, resource count
+- Selecting a card filters the program/template list or directly selects the best-fit program
+
+**Architecture recommender** (rule-based, not AI):
+- Short questionnaire: public/private? HA? storage? budget level? cloud experience?
+- Output: recommended program + preset + optional extras
+- Can be rule-based initially (`if public && HA → ha-pair template`)
+
+The existing program selection (current Step 1) becomes the fallback for users who click "Start from scratch" or "Advanced."
+
+### Files
+- new `frontend/src/lib/components/GoalSelector.svelte`
+- `frontend/src/lib/components/NewStackDialog.svelte` — add Step 0
+- `frontend/src/lib/program-graph/templates/` — add metadata for goal mapping (tags, difficulty, cost hints)
+
+**Scope: Large | Dependencies: FE-1 (wizard restructure) | Priority: future**
+
+---
+
+## FE-6 — Deployment Presets
+
+### Problem
+Every config field requires a value. Users who don't know OCI face decision fatigue: "How many OCPUs? What boot volume size? Which CIDR?" The defaults are reasonable but one-size-fits-all. A dev cluster and a production cluster need very different settings.
+
+### Solution
+Add named presets per program that fill multiple config fields at once:
+
+```typescript
+interface Preset {
+  key: string;           // "dev-cheap", "staging", "production-secure"
+  label: string;
+  description: string;
+  values: Record<string, string>;  // config field overrides
+}
+```
+
+**UI**: A preset selector (radio group or dropdown) above the config form in the stack creation wizard. Selecting a preset fills all fields; user can still override individual values after.
+
+**Built-in presets for nomad-cluster:**
+
+| Preset | nodeCount | shape | bootVolSizeGb | Notes |
+|--------|-----------|-------|---------------|-------|
+| Dev (cheap) | 1 | VM.Standard.A1.Flex | 50 | Single node, minimal resources |
+| Balanced | 3 | VM.Standard.A1.Flex | 50 | 3-node cluster, Always Free eligible |
+| Production | 4 | VM.Standard.A1.Flex | 100 | Max Always Free nodes, larger volumes |
+
+Presets are defined in program `meta:` section or as a separate `presets:` block.
+
+### Files
+- `internal/programs/yaml_config.go` — parse `meta.presets` from YAML programs
+- `internal/programs/registry.go` — add `Presets []Preset` to `ProgramMeta`
+- `frontend/src/lib/components/ConfigForm.svelte` — preset selector UI
+- `frontend/src/lib/types.ts` — `Preset` interface
+
+**Scope: Medium | Dependencies: none | Priority: future**
+
+---
+
+## FE-7 — Resource Explainability
+
+### Problem
+Users see a list of resources (VCN, subnet, IGW, NAT, route table, NSG, instance, NLB) but don't understand why each exists or what happens if it's removed. This is especially true for auto-injected `__agent_*` resources.
+
+### Solution
+Add explainability metadata to resources, shown as tooltips and an optional "Why?" panel:
+
+**Per resource type**: static explanations ("A NAT Gateway provides outbound internet for private instances without exposing them publicly").
+
+**Per injected resource**: explain the injection reason ("This NSG rule was added because Agent Connect is enabled — it allows the Nebula mesh to reach your instances on UDP port 41820").
+
+**Security/cost impact badges**: visual indicators per resource — "increases cost", "required for security", "enables connectivity".
+
+### Files
+- new `frontend/src/lib/program-graph/resource-explanations.ts` — static explanation map by resource type
+- `frontend/src/lib/components/ResourceCard.svelte` — "Why?" tooltip/popover
+- `frontend/src/pages/StackDetail.svelte` — resource explanation in deployed state
+
+**Scope: Medium | Dependencies: none | Priority: future**
+
+---
+
+## FE-8 — Cost Estimation
+
+### Problem
+Users have no idea what their stack will cost before deploying. OCI Always Free has limits; exceeding them incurs charges. Even approximate cost feedback would prevent surprises.
+
+### Solution
+Approximate monthly cost estimation based on:
+- Compute: shape → OCPU/memory pricing (from OCI price list, hardcoded or fetched)
+- Storage: boot volume GB + block volume GB pricing
+- NLB: per-hour + per-GB pricing
+- Always Free eligibility detection (A1 Flex ≤ 4 OCPU / 24 GB → $0)
+
+**UI**: A cost badge on the architecture preview in the stack creation wizard. Updates live as config fields change. Shows "Always Free eligible" or "~$X/month" estimate.
+
+**Non-goal**: exact billing. This is order-of-magnitude guidance.
+
+### Files
+- new `frontend/src/lib/cost-estimator.ts` — pricing rules per resource type
+- `frontend/src/lib/components/NewStackDialog.svelte` — cost badge in wizard
+- `frontend/src/pages/StackDetail.svelte` — cost estimate for deployed stack
+
+**Scope: Medium | Dependencies: none | Priority: future**
+
+---
+
+## FE-9 — Node Graph Editor (Svelte Flow)
+
+### Problem
+The visual editor uses a section-based card layout — great for building programs, but it doesn't show the dependency graph. Users can't see at a glance how resources connect (VCN → subnet → instance → NLB). The YAML editor shows raw text. Neither mode gives a topological view of the infrastructure.
+
+### Solution
+Add a third editor mode — **Graph** — using [Svelte Flow](https://svelteflow.dev/) (part of the xyflow ecosystem, ~35k GitHub stars, Svelte 5 native, ~70k weekly npm installs). This could start as a **read-only visualization** of the program graph and evolve into an interactive editor.
+
+**Phase 1 — Read-only graph view:**
+- Render each resource as a custom Svelte Flow node (typed by OCI category: Network, Compute, Identity, NLB)
+- Derive edges from `${resource.property}` references and `dependsOn` arrays
+- Group nodes by section (collapsible subflows)
+- Auto-layout via ELK or Dagre
+- Clicking a node opens a side panel showing its properties
+- The mode bar gains a third option: **Visual | YAML | Graph**
+
+**Phase 2 — Interactive editing:**
+- Drag-and-drop resource addition from a catalog palette
+- Connect nodes to create `${source.id}` references
+- Delete edges to remove references
+- Inline property editing via node inspector panel
+- Bidirectional sync with the Program Graph model (same as Visual ↔ YAML today)
+
+**Phase 3 — Component-level view:**
+- Collapse resource groups into high-level component nodes ("Network", "Compute", "NLB")
+- Expand on click to show underlying resources
+- Beginner sees 5–8 clean nodes; expert expands to 30+ resources
+
+### Node type mapping
+
+| OCI category | Node style | Example resources |
+|---|---|---|
+| Network | Blue | VCN, Subnet, IGW, NAT, Route Table |
+| Security | Orange | NSG, NSG Rule, Security List |
+| Compute | Green | Instance, Instance Configuration, Instance Pool |
+| Storage | Purple | Volume, Volume Attachment |
+| Identity | Gray | Compartment, Dynamic Group, Policy |
+| Load Balancer | Teal | NLB, Backend Set, Listener, Backend |
+| Injected (`__agent_*`) | Dashed border | Auto-injected agent resources |
+
+### Edge type mapping
+
+| Edge type | Visual | Source |
+|---|---|---|
+| Property reference | Solid arrow | `${resource.property}` in values |
+| dependsOn | Dashed arrow | `options.dependsOn` array |
+| Loop membership | Dotted enclosure | `{{- range }}` block |
+| Conditional | Half-opacity enclosure | `{{- if }}` block |
+
+### Technology choice
+Svelte Flow is the best fit because:
+- Native Svelte 5 support (same as our frontend)
+- Custom node/edge rendering via Svelte components
+- Built-in minimap, controls, background grid
+- Part of xyflow ecosystem with extensive documentation
+- Rete.js would be stronger for typed-port visual programming, but our use case is infrastructure dependency visualization, not dataflow execution
+
+### Files
+- new `frontend/src/lib/components/GraphEditor.svelte` — Svelte Flow canvas
+- new `frontend/src/lib/program-graph/graph-layout.ts` — ProgramGraph → Svelte Flow nodes/edges conversion
+- `frontend/src/pages/ProgramEditor.svelte` — add Graph mode toggle
+- `frontend/package.json` — add `@xyflow/svelte` dependency
+
+**Scope: Large | Dependencies: none (Phase 1 is read-only, uses existing ProgramGraph model) | Priority: future**
+
+---
+
 ## Cloud-Init Redesign ✓ PARTIALLY DONE
 
 ### Current Implementation
@@ -332,11 +550,23 @@ PKI generation extended to `AgentAccessProvider` programs. Dedicated agent cert 
 | 11 | Cloud-init redesign | Medium | — | **partial** (agent injection done, user scripts pending) |
 | 12 | Agent bootstrap pipeline (Phase 1) | Medium | — | **done** (PKI, agent cert, token, binary endpoint, migration 012) |
 | 13 | Nebula mesh (Phase 2) | Large | Phase 1 | **done** (userspace tunnels, post-deploy discovery, agent proxy) |
-| 14 | Interactive web terminal (Phase 3) | Small | Phase 2 | **done** (WebSocket PTY via Nebula) |
+| 14 | Interactive web terminal (Phase 3) | Small | Phase 2 | **done** (WebSocket PTY via Nebula, per-node health/terminal) |
 | 15 | Agent health monitoring (Phase 4) | Medium | Phase 3 | pending |
 | 16 | Multi-stack mesh (Phase 5) | Large | Phase 4 | pending |
+| 17 | Visual editor property system (3 phases) | Medium | — | pending (see `visual-editor.md` simplification roadmap) |
+| 18 | Private-instance NLB templates | Small | — | pending (bastion-host, database-server, multi-tier-app need NLBs) |
+| 19 | Serializer expanded YAML format | Small | — | **done** (arrays-of-objects emitted as expanded YAML) |
+| 20 | NLB serialization fix | Small | — | **done** (dependsOn chains for 409 prevention) |
+| 21 | Level 6 dependsOn validation | Small | — | **done** |
+| 22 | Built-in program fork support | Small | — | **done** (`POST /api/programs/{name}/fork`) |
+| 23 | BE-6 — OCI Object Storage state backend | Medium | — | pending (S3-compatible bucket for Pulumi state; replaces local filesystem for multi-node/HA) |
+| 24 | FE-5 — Goal-driven stack creation | Large | FE-1 | pending (intent-first "What do you want to build?" flow → recommended blueprint) |
+| 25 | FE-6 — Deployment presets | Medium | — | pending (dev-cheap / staging / production-secure sizing presets per program) |
+| 26 | FE-7 — Resource explainability | Medium | — | pending ("why is this resource here?" tooltips + cost/security impact) |
+| 27 | FE-8 — Cost estimation | Medium | — | pending (approximate monthly cost from OCI shape pricing + storage + NLB) |
+| 28 | FE-9 — Node graph editor (Svelte Flow) | Large | — | pending (third editor mode: interactive dependency graph with custom nodes per resource type) |
 
-See `docs/visual-editor.md` for the visual program editor fix plan (G1 + P1/P2/P3 bugs).
+See `docs/visual-editor.md` for the visual program editor fix plan (G1 + P1/P2/P3 bugs) and property system simplification roadmap.
 See `docs/application-catalog-architecture.md` for the complete agent/mesh architecture.
 
 ---

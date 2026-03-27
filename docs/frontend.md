@@ -226,7 +226,7 @@ Show error messages inline beneath the field. Block step navigation and form sub
 `ProgramEditor.svelte` runs client-side validation before save and live during editing:
 
 ### Backend validation (on save)
-The backend `ValidateProgram` pipeline runs six levels (see `docs/yaml-programs.md`). Errors are shown in the validation panel below the mode bar.
+The backend `ValidateProgram` pipeline runs seven levels (see `docs/programs.md` — Validation section). Errors are shown in the validation panel below the mode bar.
 
 ### Visual mode validation (`collectVisualErrors`)
 Before saving in visual mode, `collectVisualErrors()` checks:
