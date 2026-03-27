@@ -56,10 +56,15 @@ watch-frontend:
 	cd frontend && npm run dev
 
 ## dev-watch: Build the Go binary, then run Go server + Vite HMR in parallel (Ctrl-C stops both)
-# kill 0 sends SIGTERM to the entire process group, which covers npm AND the
-# vite/node child it spawns (simple PID capture only kills npm, leaving node running).
+# Kills any stale server/vite processes first, then starts fresh.
+# kill 0 on exit sends SIGTERM to the entire process group so npm AND its
+# vite/node child are both cleaned up — simple PID capture only kills npm.
 dev-watch: backend
 	@mkdir -p $(DATA_DIR)/state
+	@echo "Killing any stale pulumi-ui / vite processes..."
+	@pkill -f './$(BINARY)' 2>/dev/null || true
+	@pkill -f 'vite' 2>/dev/null || true
+	@sleep 0.3
 	@echo "Starting Vite HMR on http://localhost:5173 and Go server on $(ADDR) ..."
 	@trap 'kill 0' INT TERM EXIT; \
 	 cd frontend && npm run dev & \
