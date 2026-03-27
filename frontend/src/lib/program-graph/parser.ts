@@ -470,19 +470,24 @@ function tryParseConditional(content: string): ConditionalItem | null {
   const condition = m[1].trim();
   const afterIf = content.slice(content.indexOf('}}', content.indexOf('{{')) + 2);
 
-  const elseIdx = afterIf.search(/\{\{-?\s*else\s*\}\}/);
-  const endMatch = /\{\{-?\s*end\s*\}\}/.exec(afterIf);
-  if (!endMatch) return null;
+  // Find the matching {{- end }} at depth 0 (accounting for nested if/range blocks)
+  const endIdx = findOuterEndIndex(afterIf);
+  if (endIdx === -1) return null;
+
+  const body = afterIf.slice(0, endIdx);
+
+  // Look for {{- else }} at depth 0 within the body
+  const elseIdx = findOuterElseIndex(body);
 
   let thenContent: string;
   let elseContent: string | undefined;
 
-  if (elseIdx !== -1 && elseIdx < endMatch.index) {
-    const elseEnd = afterIf.indexOf('}}', elseIdx) + 2;
-    thenContent = afterIf.slice(0, elseIdx);
-    elseContent = afterIf.slice(elseEnd, endMatch.index);
+  if (elseIdx !== -1) {
+    thenContent = body.slice(0, elseIdx);
+    const elseEnd = body.indexOf('}}', elseIdx) + 2;
+    elseContent = body.slice(elseEnd);
   } else {
-    thenContent = afterIf.slice(0, endMatch.index);
+    thenContent = body;
   }
 
   return {
@@ -491,6 +496,54 @@ function tryParseConditional(content: string): ConditionalItem | null {
     items: parseItems(thenContent),
     elseItems: elseContent ? parseItems(elseContent) : undefined,
   };
+}
+
+/** Find the index (in `text`) of the `{{- end }}` that closes the outer block at depth 0. */
+function findOuterEndIndex(text: string): number {
+  const openRe = /\{\{-?\s*(range|if)\b/g;
+  const closeRe = /\{\{-?\s*end\s*-?\}\}/g;
+  let depth = 0;
+
+  // Scan for all opens and closes, tracking depth
+  interface Marker { index: number; len: number; type: 'open' | 'close' }
+  const markers: Marker[] = [];
+  let mm: RegExpExecArray | null;
+  while ((mm = openRe.exec(text)) !== null) markers.push({ index: mm.index, len: mm[0].length, type: 'open' });
+  while ((mm = closeRe.exec(text)) !== null) markers.push({ index: mm.index, len: mm[0].length, type: 'close' });
+  markers.sort((a, b) => a.index - b.index);
+
+  for (const marker of markers) {
+    if (marker.type === 'open') {
+      depth++;
+    } else {
+      if (depth === 0) return marker.index; // this is our matching end
+      depth--;
+    }
+  }
+  return -1;
+}
+
+/** Find the index (in `text`) of `{{- else }}` at depth 0. */
+function findOuterElseIndex(text: string): number {
+  const openRe = /\{\{-?\s*(range|if)\b/g;
+  const elseRe = /\{\{-?\s*else\s*-?\}\}/g;
+  const closeRe = /\{\{-?\s*end\s*-?\}\}/g;
+  let depth = 0;
+
+  interface Marker { index: number; len: number; type: 'open' | 'close' | 'else' }
+  const markers: Marker[] = [];
+  let mm: RegExpExecArray | null;
+  while ((mm = openRe.exec(text)) !== null) markers.push({ index: mm.index, len: mm[0].length, type: 'open' });
+  while ((mm = closeRe.exec(text)) !== null) markers.push({ index: mm.index, len: mm[0].length, type: 'close' });
+  while ((mm = elseRe.exec(text)) !== null) markers.push({ index: mm.index, len: mm[0].length, type: 'else' });
+  markers.sort((a, b) => a.index - b.index);
+
+  for (const marker of markers) {
+    if (marker.type === 'open') depth++;
+    else if (marker.type === 'close') depth--;
+    else if (marker.type === 'else' && depth === 0) return marker.index;
+  }
+  return -1;
 }
 
 // ── Expanded YAML collectors ──────────────────────────────────────────────
