@@ -257,6 +257,34 @@ describe('scaffoldNetworkingGraph', () => {
     expect(names.filter(n => n === 'my-instance')).toHaveLength(1);
   });
 
+  it('fixes blank subnetId in inline createVnicDetails format', () => {
+    const graph = makeGraph({
+      sections: [{
+        id: 'main', label: 'Resources', items: [
+          { kind: 'resource', name: 'agent-vcn', resourceType: 'oci:Core/vcn:Vcn', properties: [] },
+          { kind: 'resource', name: 'agent-igw', resourceType: 'oci:Core/internetGateway:InternetGateway', properties: [] },
+          { kind: 'resource', name: 'agent-route-table', resourceType: 'oci:Core/routeTable:RouteTable', properties: [] },
+          { kind: 'resource', name: 'agent-subnet', resourceType: 'oci:Core/subnet:Subnet', properties: [] },
+          {
+            kind: 'resource', name: 'my-instance',
+            resourceType: 'oci:Core/instance:Instance',
+            properties: [
+              { key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' },
+            ],
+          },
+        ],
+      }],
+    });
+
+    const result = scaffoldNetworkingGraph(graph);
+    const instance = result.sections[0].items.find(
+      i => i.kind === 'resource' && i.name === 'my-instance'
+    ) as any;
+    const vnic = instance.properties.find((p: any) => p.key === 'createVnicDetails');
+    expect(vnic.value).toContain('${agent-subnet.id}');
+    expect(vnic.value).not.toContain('subnetId: ""');
+  });
+
   it('returns graph unchanged when no sections exist', () => {
     const graph = makeGraph({ sections: [] });
     const result = scaffoldNetworkingGraph(graph);

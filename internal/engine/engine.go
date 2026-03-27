@@ -589,10 +589,10 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 				log.Printf("[agent-discover] nodeCertStore.ListForStack error for %s: %v", stackName, err)
 				break
 			}
-			for i := range nodes {
-				addr := fmt.Sprintf("%s:%d", nlbIP, agentinject.AgentNLBPortBase+i)
-				if err := e.nodeCertStore.UpdateAgentRealIP(stackName, i, addr); err != nil {
-					log.Printf("[agent-discover] failed to store node %d NLB addr for %s: %v", i, stackName, err)
+			for i, nc := range nodes {
+				addr := fmt.Sprintf("%s:%d", nlbIP, agentinject.AgentNLBPortBase+nc.NodeIndex)
+				if err := e.nodeCertStore.UpdateAgentRealIP(stackName, nc.NodeIndex, addr); err != nil {
+					log.Printf("[agent-discover] failed to store node %d NLB addr for %s: %v", nc.NodeIndex, stackName, err)
 				}
 				if i == 0 {
 					_ = e.connStore.UpdateAgentRealIP(stackName, addr)

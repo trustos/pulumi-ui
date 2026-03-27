@@ -94,6 +94,15 @@
 
   let rootEl: HTMLDivElement;
 
+  function uniqueName(base: string, existing: string[]): string {
+    const names = new Set(existing);
+    if (!names.has(base)) return base;
+    for (let i = 1; ; i++) {
+      const candidate = `${base}-${i}`;
+      if (!names.has(candidate)) return candidate;
+    }
+  }
+
   function confirm() {
     if (!selectedType) return;
     const typeParts = selectedType.split(':');
@@ -105,9 +114,10 @@
       : [];
     const properties = getResourceDefaults(selectedType, schemaRequired, existingResourceNames);
 
+    const baseName = shortName.toLowerCase().replace(/[A-Z]/g, c => '-' + c.toLowerCase()).replace(/^-/, '');
     const resource: ResourceItem = {
       kind: 'resource',
-      name: shortName.toLowerCase().replace(/[A-Z]/g, c => '-' + c.toLowerCase()).replace(/^-/, ''),
+      name: uniqueName(baseName, existingResourceNames),
       resourceType: selectedType,
       properties,
     };

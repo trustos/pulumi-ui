@@ -58,17 +58,30 @@ export function getMissingAgentOutputs(
     if (outputKeys.has('instance-0-publicIp')) return [];
   }
 
-  // Check whether any per-node key already covers all instances
+  // Check whether any per-node key already covers all instances with correct values
   if ([...outputKeys].some(k => AGENT_IP_NODE_KEY_RE.test(k))) {
-    // Verify all indices are covered
-    const allCovered = instances.every((_, i) => outputKeys.has(`instance-${i}-publicIp`));
-    if (allCovered) return [];
+    const outputsByKey = new Map(outputs.map(o => [o.key, o]));
+    const allCorrect = instances.every((inst, i) => {
+      const key = `instance-${i}-publicIp`;
+      const existing = outputsByKey.get(key);
+      if (!existing || !('value' in existing)) return false;
+      return (existing as { value: string }).value === `\${${inst.name}.publicIp}`;
+    });
+    if (allCorrect) return [];
   }
 
-  // Return only the missing per-node outputs
+  // Return missing OR misconfigured per-node outputs.
+  // An output is "misconfigured" if the key exists but the value doesn't reference
+  // the correct resource (e.g. instance-0-publicIp pointing to ${instance-1.publicIp}).
+  const existingByKey = new Map(outputs.map(o => [o.key, o]));
   return instances
     .map((inst, i) => ({ key: `instance-${i}-publicIp`, value: `\${${inst.name}.publicIp}` }))
-    .filter(({ key }) => !outputKeys.has(key));
+    .filter(({ key, value }) => {
+      const existing = existingByKey.get(key);
+      if (!existing) return true; // missing
+      if ('value' in existing && (existing as { value: string }).value !== value) return true; // wrong value
+      return false;
+    });
 }
 
 /**

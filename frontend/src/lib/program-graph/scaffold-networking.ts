@@ -113,10 +113,18 @@ export function scaffoldNetworkingGraph(graph: ProgramGraph): ProgramGraph {
     if (item.kind !== 'resource') return item;
     if (!COMPUTE_TYPES.includes(item.resourceType)) return item;
 
-    const hasSubnet = item.properties.some(p => p.key === 'createVnicDetails.subnetId');
-    const hasPublicIp = item.properties.some(p => p.key === 'createVnicDetails.assignPublicIp');
+    // Check both dot-notation (createVnicDetails.subnetId) and inline format
+    // (createVnicDetails: { subnetId: "..." }).
+    const hasDotSubnet = item.properties.some(p => p.key === 'createVnicDetails.subnetId');
+    const inlineVnic = item.properties.find(p => p.key === 'createVnicDetails');
+    const hasPublicIp = item.properties.some(p =>
+      p.key === 'createVnicDetails.assignPublicIp' ||
+      (p.key === 'createVnicDetails' && p.value.includes('assignPublicIp'))
+    );
     const extraProps = hasPublicIp ? [] : [{ key: 'createVnicDetails.assignPublicIp', value: 'true' }];
-    if (hasSubnet) {
+
+    // Dot-notation format: overwrite the subnetId value
+    if (hasDotSubnet) {
       return {
         ...item,
         properties: [
@@ -127,6 +135,27 @@ export function scaffoldNetworkingGraph(graph: ProgramGraph): ProgramGraph {
         ],
       };
     }
+
+    // Inline object format: fix blank or missing subnetId inside the value string
+    if (inlineVnic) {
+      const val = inlineVnic.value;
+      const needsFix = val.includes('subnetId: ""') || val.includes('subnetId: \'\'') ||
+        (val.includes('subnetId') && !val.includes('agent-subnet'));
+      if (needsFix) {
+        const fixed = val
+          .replace(/subnetId:\s*"[^"]*"/, 'subnetId: "${agent-subnet.id}"')
+          .replace(/subnetId:\s*'[^']*'/, 'subnetId: "${agent-subnet.id}"');
+        return {
+          ...item,
+          properties: item.properties.map(p =>
+            p.key === 'createVnicDetails' ? { ...p, value: fixed } : p
+          ),
+        };
+      }
+      return item; // inline vnic already has a non-blank subnetId
+    }
+
+    // No createVnicDetails at all: add dot-notation properties
     return {
       ...item,
       properties: [

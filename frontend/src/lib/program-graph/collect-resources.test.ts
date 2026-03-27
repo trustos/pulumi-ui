@@ -326,8 +326,8 @@ function compute(name: string, type = 'oci:Core/instance:Instance') {
   return { name, type };
 }
 
-function out(key: string) {
-  return { key };
+function out(key: string, value?: string) {
+  return value !== undefined ? { key, value } : { key };
 }
 
 describe('getMissingAgentOutputs', () => {
@@ -499,6 +499,47 @@ describe('getMissingAgentOutputs', () => {
     );
     expect(result).toEqual([
       { key: 'nlbPublicIp', value: '${traefik-nlb.ipAddresses[0].ipAddress}' },
+    ]);
+  });
+
+  // Misconfigured output detection
+  it('detects output pointing to wrong resource and returns correction', () => {
+    // instance-0-publicIp exists but references instance-1 instead of instance
+    const result = getMissingAgentOutputs(
+      [compute('instance'), compute('instance-1')],
+      [
+        out('instance-0-publicIp', '${instance-1.publicIp}'),
+        out('instance-1-publicIp', '${instance-1.publicIp}'),
+      ],
+    );
+    // instance-0-publicIp should reference instance, not instance-1
+    expect(result).toEqual([
+      { key: 'instance-0-publicIp', value: '${instance.publicIp}' },
+    ]);
+  });
+
+  it('returns empty when all outputs reference the correct resources', () => {
+    const result = getMissingAgentOutputs(
+      [compute('instance'), compute('instance-1')],
+      [
+        out('instance-0-publicIp', '${instance.publicIp}'),
+        out('instance-1-publicIp', '${instance-1.publicIp}'),
+      ],
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('detects all outputs misconfigured and returns all corrections', () => {
+    const result = getMissingAgentOutputs(
+      [compute('node-a'), compute('node-b')],
+      [
+        out('instance-0-publicIp', '${wrong.publicIp}'),
+        out('instance-1-publicIp', '${also-wrong.publicIp}'),
+      ],
+    );
+    expect(result).toEqual([
+      { key: 'instance-0-publicIp', value: '${node-a.publicIp}' },
+      { key: 'instance-1-publicIp', value: '${node-b.publicIp}' },
     ]);
   });
 });

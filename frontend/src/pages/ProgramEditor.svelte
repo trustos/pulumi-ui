@@ -238,7 +238,10 @@
 
   function addAgentOutputs() {
     if (missingAgentOutputs.length === 0) return;
-    graph = { ...graph, outputs: [...(graph.outputs ?? []), ...missingAgentOutputs] };
+    const fixKeys = new Set(missingAgentOutputs.map(o => o.key));
+    // Replace outputs with wrong values, append truly missing ones.
+    const kept = (graph.outputs ?? []).filter(o => !fixKeys.has(o.key));
+    graph = { ...graph, outputs: [...kept, ...missingAgentOutputs] };
   }
 
   // Attach custom event listeners to the visual editor container
@@ -310,6 +313,16 @@
     syncStatus = 'synced';
   }
 
+  // Auto-sync graph → YAML and re-validate when the graph changes in visual mode.
+  // Uses JSON.stringify as a deep-comparison signal so validation stays current
+  // after any visual edit (add/remove/rename resource, change properties, etc.).
+  let graphSignal = $derived(mode === 'visual' ? JSON.stringify(graph) : '');
+  $effect(() => {
+    if (!graphSignal) return; // skip in YAML mode or empty
+    syncGraphToYaml();
+    scheduleValidation();
+  });
+
   // ── Tab switch ────────────────────────────────────────────────────────────
   function switchToYaml() {
     syncGraphToYaml();
@@ -357,9 +370,7 @@
       if (agentAccess && !hasNetworkingResources(graph)) {
         graph = scaffoldNetworkingGraph(graph);
       }
-      // Keep yamlText in sync so backend validation sees the scaffold.
-      syncGraphToYaml();
-      scheduleValidation();
+      // graph $effect handles sync + validation
     }
     if (turningOff && hasScaffoldedResources()) {
       showRemoveScaffoldPrompt = true;
@@ -375,8 +386,7 @@
       // scaffoldNetworkingGraph is idempotent: skips existing resources, still wires instances.
       graph = scaffoldNetworkingGraph(graph);
       validationErrors = validationErrors.filter(e => e.level !== 7);
-      // Sync YAML so subsequent backend validation sees the scaffold.
-      syncGraphToYaml();
+      // graph $effect handles sync + validation
     } else {
       // scaffoldNetworkingYaml is idempotent: skips if agent-vcn already exists.
       yamlText = scaffoldNetworkingYaml(yamlText);
@@ -793,7 +803,7 @@
       <AlertDescription class="text-xs">
         <div class="flex items-center gap-3">
           <span>
-            <strong>Agent Connect</strong> requires an IP output for each instance so the engine can establish the Nebula mesh after deploy. Missing: <span class="font-mono">{missingAgentOutputs.map(o => o.key).join(', ')}</span>.
+            <strong>Agent Connect</strong> requires a correct IP output for each instance so the engine can establish the Nebula mesh after deploy. Fix: <span class="font-mono">{missingAgentOutputs.map(o => o.key).join(', ')}</span>.
           </span>
           {#if mode === 'visual'}
             <Button variant="outline" size="sm" class="h-7 text-[11px] shrink-0" onclick={addAgentOutputs}>

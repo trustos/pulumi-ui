@@ -43,15 +43,31 @@ const RECIPES: Record<string, ResourceRecipe> = {
 };
 
 /**
+ * Known resource name aliases — when a recipe references `subnet`, the
+ * scaffold system may have created `agent-subnet` instead. This map lets
+ * resolveRefs substitute the correct reference.
+ */
+const RESOURCE_ALIASES: Record<string, string> = {
+  'subnet': 'agent-subnet',
+};
+
+/**
  * Replaces `${resourceName.xxx}` interpolations with '' when the referenced
  * resource is not present in existingResourceNames. Config-space refs like
  * `${oci:tenancyOcid}` are left untouched (they contain ':').
+ * Falls back to known aliases (e.g. subnet → agent-subnet) before blanking.
  */
 function resolveRefs(value: string, existingResourceNames: string[]): string {
+  const names = new Set(existingResourceNames);
   return value.replace(/\$\{([^}]+)\}/g, (match, inner) => {
     if (inner.includes(':')) return match; // config-space ref, always valid
     const resourceName = inner.split('.')[0];
-    return existingResourceNames.includes(resourceName) ? match : '';
+    if (names.has(resourceName)) return match;
+    const alias = RESOURCE_ALIASES[resourceName];
+    if (alias && names.has(alias)) {
+      return match.replace(resourceName, alias);
+    }
+    return '';
   });
 }
 

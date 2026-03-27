@@ -147,6 +147,13 @@ describe('getResourceDefaults', () => {
     const byKey = new Map(props.map(p => [p.key, p.value]));
     expect(byKey.get('createVnicDetails')).toContain('${subnet.id}');
   });
+
+  it('resolves subnet alias to agent-subnet when agent-subnet exists', () => {
+    const props = getResourceDefaults(INSTANCE_TYPE, ['availabilityDomain', 'compartmentId'], ['agent-subnet']);
+    const byKey = new Map(props.map(p => [p.key, p.value]));
+    expect(byKey.get('createVnicDetails')).toContain('${agent-subnet.id}');
+    expect(byKey.get('createVnicDetails')).not.toContain('${subnet.id}');
+  });
 });
 
 // ── getGraphExtras ──────────────────────────────────────────────────────────
