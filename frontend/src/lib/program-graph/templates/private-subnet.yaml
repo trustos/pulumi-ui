@@ -40,6 +40,20 @@ resources:
     options:
       dependsOn:
         - ${nat-gw}
+  security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      displayName: "private-security-list"
+      ingressSecurityRules:
+        - protocol: "all"
+          source: "10.0.0.0/16"
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
   private-subnet:
     type: oci:Core/subnet:Subnet
     properties:
@@ -50,6 +64,9 @@ resources:
       dnsLabel: "private"
       routeTableId: ${route-table.id}
       prohibitPublicIpOnVnic: "true"
+      securityListIds:
+        - ${security-list.id}
+      dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:
         - ${route-table}

@@ -63,6 +63,20 @@ resources:
     options:
       dependsOn:
         - ${igw}
+  security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      displayName: "web-security-list"
+      ingressSecurityRules:
+        - protocol: "all"
+          source: "0.0.0.0/0"
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
   nsg:
     type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
     properties:
@@ -118,6 +132,9 @@ resources:
       dnsLabel: "web"
       routeTableId: ${route-table.id}
       prohibitPublicIpOnVnic: "false"
+      securityListIds:
+        - ${security-list.id}
+      dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:
         - ${route-table}

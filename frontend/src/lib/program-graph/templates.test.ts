@@ -224,14 +224,14 @@ describe('built-in YAML templates — agentAccess flag', () => {
     expect(graph.metadata.agentAccess).toBe(true);
   });
 
-  it('bastion-host has agentAccess === true', () => {
+  it('bastion-host does NOT have agentAccess (private instance, no NLB)', () => {
     const { graph } = yamlToGraph(bastionHostYaml);
-    expect(graph.metadata.agentAccess).toBe(true);
+    expect(graph.metadata.agentAccess).toBeFalsy();
   });
 
-  it('database-server has agentAccess === true', () => {
+  it('database-server does NOT have agentAccess (private, no NLB)', () => {
     const { graph } = yamlToGraph(databaseServerYaml);
-    expect(graph.metadata.agentAccess).toBe(true);
+    expect(graph.metadata.agentAccess).toBeFalsy();
   });
 
   it('web-server has agentAccess === true', () => {
@@ -244,9 +244,9 @@ describe('built-in YAML templates — agentAccess flag', () => {
     expect(graph.metadata.agentAccess).toBe(true);
   });
 
-  it('multi-tier-app has agentAccess === true', () => {
+  it('multi-tier-app does NOT have agentAccess (private tiers, no NLB)', () => {
     const { graph } = yamlToGraph(multiTierAppYaml);
-    expect(graph.metadata.agentAccess).toBe(true);
+    expect(graph.metadata.agentAccess).toBeFalsy();
   });
 
   it('single-instance does NOT have agentAccess', () => {
@@ -275,11 +275,11 @@ describe('built-in YAML templates — resource counts', () => {
     expect(total).toBe(1);
   });
 
-  it('single-instance has 5 resources across 2 sections (4 networking + 1 instance)', () => {
+  it('single-instance has 6 resources across 2 sections (5 networking + 1 instance)', () => {
     const { graph } = yamlToGraph(singleInstanceYaml);
     expect(graph.sections).toHaveLength(2);
     const total = graph.sections.reduce((sum, s) => sum + countResources(s.items), 0);
-    expect(total).toBe(5);
+    expect(total).toBe(6);
   });
 
   it('ha-pair has more than 5 resources', () => {

@@ -64,39 +64,109 @@ resources:
     options:
       dependsOn:
         - ${vcn}
-  route-table:
+  nat-gw:
+    type: oci:Core/natGateway:NatGateway
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      displayName: "nat-gw"
+    options:
+      dependsOn:
+        - ${vcn}
+  public-security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      displayName: "public-security-list"
+      ingressSecurityRules:
+        - protocol: "all"
+          source: "0.0.0.0/0"
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+  private-security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      displayName: "private-security-list"
+      ingressSecurityRules:
+        - protocol: "all"
+          source: "10.0.0.0/16"
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+  public-rt:
     type: oci:Core/routeTable:RouteTable
     properties:
       compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
-      displayName: "app-rt"
-      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
+      displayName: "public-rt"
+      routeRules:
+        - destination: "0.0.0.0/0"
+          networkEntityId: ${igw.id}
     options:
       dependsOn:
         - ${igw}
-  subnet:
+  private-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      displayName: "private-rt"
+      routeRules:
+        - destination: "0.0.0.0/0"
+          networkEntityId: ${nat-gw.id}
+    options:
+      dependsOn:
+        - ${nat-gw}
+  public-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.0.0/24"
+      displayName: "public-subnet"
+      dnsLabel: "pub"
+      routeTableId: ${public-rt.id}
+      prohibitPublicIpOnVnic: "false"
+      securityListIds:
+        - ${public-security-list.id}
+      dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
+    options:
+      dependsOn:
+        - ${public-rt}
+  private-subnet:
     type: oci:Core/subnet:Subnet
     properties:
       compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       cidrBlock: "10.0.1.0/24"
-      displayName: "app-subnet"
-      dnsLabel: "app"
-      routeTableId: ${route-table.id}
-      prohibitPublicIpOnVnic: "false"
+      displayName: "private-subnet"
+      dnsLabel: "priv"
+      routeTableId: ${private-rt.id}
+      prohibitPublicIpOnVnic: "true"
+      securityListIds:
+        - ${private-security-list.id}
+      dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:
-        - ${route-table}
+        - ${private-rt}
   nlb:
     type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
     properties:
       compartmentId: {{ .Config.compartmentId }}
       displayName: "app-nlb"
-      subnetId: ${subnet.id}
+      subnetId: ${public-subnet.id}
       isPrivate: "false"
     options:
       dependsOn:
-        - ${subnet}
+        - ${public-subnet}
   # --- section: compute ---
 {{- range $i := until (atoi $.Config.nodeCount) }}
   node-{{ $i }}:
@@ -107,12 +177,12 @@ resources:
       shape: "{{ $.Config.shape }}"
       displayName: "node-{{ $i }}"
       sourceDetails: { sourceType: "image", sourceId: "{{ $.Config.imageId }}" }
-      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: false }
+      createVnicDetails: { subnetId: "${private-subnet.id}", assignPublicIp: false }
       metadata: { ssh_authorized_keys: "{{ $.Config.sshPublicKey }}" }
       shapeConfig: { ocpus: {{ $.Config.ocpus }}, memoryInGbs: {{ $.Config.memoryInGbs }} }
     options:
       dependsOn:
-        - ${subnet}
+        - ${private-subnet}
 {{- end }}
 
 outputs:

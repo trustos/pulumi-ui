@@ -64,6 +64,20 @@ resources:
     options:
       dependsOn:
         - ${igw}
+  security-list:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      displayName: "ha-security-list"
+      ingressSecurityRules:
+        - protocol: "all"
+          source: "0.0.0.0/0"
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
   subnet:
     type: oci:Core/subnet:Subnet
     properties:
@@ -74,6 +88,9 @@ resources:
       dnsLabel: "hasub"
       routeTableId: ${route-table.id}
       prohibitPublicIpOnVnic: "false"
+      securityListIds:
+        - ${security-list.id}
+      dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:
         - ${route-table}
