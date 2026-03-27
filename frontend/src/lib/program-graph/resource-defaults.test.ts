@@ -487,4 +487,3 @@ describe('wireSubnetIntoInstances', () => {
     expect(sections[0].items[0].properties![0].value).toBe('{ subnetId: "", assignPublicIp: true }');
   });
 });
-});

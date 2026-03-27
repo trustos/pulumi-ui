@@ -189,7 +189,7 @@ install_agent() {
   if [ -z "$AGENT_URL" ]; then
     AGENT_VERSION="@@AGENT_VERSION@@"
     if [ -z "$AGENT_VERSION" ] || [ "$AGENT_VERSION" = "latest" ]; then
-      AGENT_VERSION="v0.1.0"
+      AGENT_VERSION="v0.1.1"
     fi
     AGENT_URL="https://github.com/trustos/pulumi-ui/releases/download/${AGENT_VERSION}/agent_linux_${AGENT_ARCH}"
   fi
