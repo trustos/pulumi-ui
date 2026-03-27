@@ -54,12 +54,13 @@ resources:
       cidrBlocks: ["10.0.0.0/16"]
       displayName: "app-vcn"
       dnsLabel: "appvcn"
-  natgateway:
-    type: oci:Core/natGateway:NatGateway
+  igw:
+    type: oci:Core/internetGateway:InternetGateway
     properties:
       compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
-      displayName: "app-natgw"
+      displayName: "app-igw"
+      enabled: "true"
     options:
       dependsOn:
         - ${vcn}
@@ -69,10 +70,10 @@ resources:
       compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "app-rt"
-      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${natgateway.id}" }]
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
     options:
       dependsOn:
-        - ${natgateway}
+        - ${igw}
   subnet:
     type: oci:Core/subnet:Subnet
     properties:

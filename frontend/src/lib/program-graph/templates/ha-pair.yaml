@@ -1,6 +1,6 @@
 name: ha-pair
 runtime: yaml
-description: "Two private instances behind a public NLB with NAT gateway — active/active or active/passive HA"
+description: "Two instances behind a Network Load Balancer with TCP health checks — active/active or active/passive HA"
 
 meta:
   displayName: High-Availability Pair with NLB
@@ -54,71 +54,39 @@ resources:
     options:
       dependsOn:
         - ${vcn}
-  natgateway:
-    type: oci:Core/natGateway:NatGateway
-    properties:
-      compartmentId: {{ .Config.compartmentId }}
-      vcnId: ${vcn.id}
-      displayName: "ha-natgw"
-    options:
-      dependsOn:
-        - ${vcn}
-  public-route-table:
+  route-table:
     type: oci:Core/routeTable:RouteTable
     properties:
       compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
-      displayName: "ha-public-rt"
+      displayName: "ha-rt"
       routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
     options:
       dependsOn:
         - ${igw}
-  private-route-table:
-    type: oci:Core/routeTable:RouteTable
-    properties:
-      compartmentId: {{ .Config.compartmentId }}
-      vcnId: ${vcn.id}
-      displayName: "ha-private-rt"
-      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${natgateway.id}" }]
-    options:
-      dependsOn:
-        - ${natgateway}
-  public-subnet:
+  subnet:
     type: oci:Core/subnet:Subnet
     properties:
       compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       cidrBlock: "10.0.1.0/24"
-      displayName: "ha-public-subnet"
-      dnsLabel: "hapub"
-      routeTableId: ${public-route-table.id}
+      displayName: "ha-subnet"
+      dnsLabel: "hasub"
+      routeTableId: ${route-table.id}
       prohibitPublicIpOnVnic: "false"
     options:
       dependsOn:
-        - ${public-route-table}
-  private-subnet:
-    type: oci:Core/subnet:Subnet
-    properties:
-      compartmentId: {{ .Config.compartmentId }}
-      vcnId: ${vcn.id}
-      cidrBlock: "10.0.2.0/24"
-      displayName: "ha-private-subnet"
-      dnsLabel: "hapriv"
-      routeTableId: ${private-route-table.id}
-      prohibitPublicIpOnVnic: "false"
-    options:
-      dependsOn:
-        - ${private-route-table}
+        - ${route-table}
   nlb:
     type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
     properties:
       compartmentId: {{ .Config.compartmentId }}
       displayName: "ha-nlb"
-      subnetId: ${public-subnet.id}
+      subnetId: ${subnet.id}
       isPrivate: "false"
     options:
       dependsOn:
-        - ${public-subnet}
+        - ${subnet}
   backend-set:
     type: oci:NetworkLoadBalancer/backendSet:BackendSet
     properties:
@@ -149,12 +117,12 @@ resources:
       shape: "{{ .Config.shape }}"
       displayName: "node-a"
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
-      createVnicDetails: { subnetId: "${private-subnet.id}", assignPublicIp: true }
+      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: true }
       metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
       shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
     options:
       dependsOn:
-        - ${private-subnet}
+        - ${subnet}
   node-b:
     type: oci:Core/instance:Instance
     properties:
@@ -163,12 +131,12 @@ resources:
       shape: "{{ .Config.shape }}"
       displayName: "node-b"
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
-      createVnicDetails: { subnetId: "${private-subnet.id}", assignPublicIp: true }
+      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: true }
       metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
       shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
     options:
       dependsOn:
-        - ${private-subnet}
+        - ${subnet}
   backend-a:
     type: oci:NetworkLoadBalancer/backend:Backend
     properties:
