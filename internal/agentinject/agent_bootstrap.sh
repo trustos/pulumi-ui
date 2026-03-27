@@ -174,9 +174,6 @@ EOF
 # --- pulumi-ui agent ---
 # try_download URL — attempts a single curl download.
 # Returns 0 on success, 1 on failure.
-# Uses --connect-timeout so both hostnames and raw IPs (e.g. Nebula overlay
-# addresses) fail fast without a DNS pre-check, which would do a reverse PTR
-# lookup on IPs and incorrectly report private overlay addresses as unreachable.
 try_download() {
   local url="$1"
   curl -fsSL --max-time 60 --connect-timeout 10 "$url" -o /usr/local/bin/pulumi-ui-agent
@@ -187,47 +184,10 @@ install_agent() {
 
   local downloaded=false
 
-  # Priority 1: explicit server URL (only set when PULUMI_UI_EXTERNAL_URL is configured
-  # and the server is known to be publicly reachable — not auto-detected).
-  EXPLICIT_URL="@@AGENT_DOWNLOAD_URL@@"
-  if [ -n "$EXPLICIT_URL" ]; then
-    echo "[agent-bootstrap] Trying explicit download URL: ${EXPLICIT_URL}/${AGENT_ARCH}"
-    local attempt=0
-    while [ $attempt -lt 10 ] && [ "$downloaded" != "true" ]; do
-      attempt=$((attempt + 1))
-      if try_download "${EXPLICIT_URL}/${AGENT_ARCH}"; then
-        downloaded=true
-      else
-        echo "[agent-bootstrap] Explicit URL attempt $attempt/10 failed, retrying in 5s..."
-        sleep 5
-      fi
-    done
-  fi
-
-  # Priority 2: Nebula overlay download.
-  # Only attempted when NEBULA_SERVER_REAL_IP is set — that means the server's
-  # real IP was injected into static_host_map and the Nebula handshake can
-  # actually complete. Without a real IP the agent has no way to reach the
-  # server and every attempt would just time out.
-  if [ "$downloaded" != "true" ] && [ -n "$NEBULA_SERVER_VPN_IP" ] && [ -n "$NEBULA_SERVER_REAL_IP" ]; then
-    NEBULA_URL="http://${NEBULA_SERVER_VPN_IP}:8080/api/agent/binary/linux/${AGENT_ARCH}"
-    echo "[agent-bootstrap] Trying Nebula overlay download: ${NEBULA_URL}"
-    local attempt=0
-    while [ $attempt -lt 10 ] && [ "$downloaded" != "true" ]; do
-      attempt=$((attempt + 1))
-      if try_download "$NEBULA_URL"; then
-        downloaded=true
-      else
-        echo "[agent-bootstrap] Nebula overlay attempt $attempt/10 failed (handshake may still be completing), retrying in 5s..."
-        sleep 5
-      fi
-    done
-    if [ "$downloaded" != "true" ]; then
-      echo "[agent-bootstrap] Nebula overlay download failed after 10 attempts — falling back to GitHub releases."
-    fi
-  fi
-
-  # Priority 3: GitHub releases (public CDN — may be unreachable from some OCI regions).
+  # Primary: GitHub releases (versioned).
+  # The agent binary is always downloaded from GitHub — the server HTTP port
+  # is never exposed. After the agent starts, it initiates the Nebula handshake
+  # using NEBULA_SERVER_REAL_IP from static_host_map.
   if [ "$downloaded" != "true" ]; then
     AGENT_VERSION="@@AGENT_VERSION@@"
     if [ -z "$AGENT_VERSION" ] || [ "$AGENT_VERSION" = "latest" ]; then
@@ -247,8 +207,8 @@ install_agent() {
     done
   fi
 
-  # Priority 4: GitHub latest redirect — safety net when the pinned version
-  # was released without the agent asset (e.g. v0.1.1 pre-CI fix).
+  # Fallback: GitHub latest redirect — safety net when the pinned version
+  # asset is missing from the release.
   if [ "$downloaded" != "true" ]; then
     GH_LATEST_URL="https://github.com/trustos/pulumi-ui/releases/latest/download/agent_linux_${AGENT_ARCH}"
     echo "[agent-bootstrap] Trying GitHub latest release: ${GH_LATEST_URL}"
@@ -261,7 +221,7 @@ install_agent() {
 
   if [ "$downloaded" != "true" ]; then
     echo "[agent-bootstrap] ERROR: failed to download agent binary from all sources." >&2
-    echo "[agent-bootstrap] Sources tried: explicit URL, Nebula overlay (${NEBULA_SERVER_VPN_IP:-none}), GitHub releases (versioned + latest)." >&2
+    echo "[agent-bootstrap] Sources tried: GitHub releases (versioned + latest)." >&2
     exit 1
   fi
   chmod +x /usr/local/bin/pulumi-ui-agent

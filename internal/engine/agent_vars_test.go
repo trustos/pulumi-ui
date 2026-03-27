@@ -88,7 +88,7 @@ func TestAgentVarsForStack_Normal(t *testing.T) {
 	assert.Equal(t, "v1.10.3", vars.NebulaVersion)
 	assert.Equal(t, "v0.1.2", vars.AgentVersion)
 	assert.Equal(t, "hex-token-abc123", vars.AgentToken)
-	assert.Empty(t, vars.AgentDownloadURL, "should be empty when PULUMI_UI_EXTERNAL_URL is unset")
+	assert.Empty(t, vars.NebulaServerRealIP, "should be empty when PULUMI_UI_EXTERNAL_URL is unset")
 }
 
 func TestAgentVarsForStack_EmptyToken_FallsBackToPlaceholder(t *testing.T) {
@@ -121,7 +121,7 @@ func TestAgentVarsForStack_ExternalURL_Set(t *testing.T) {
 	e := &Engine{connStore: store}
 	vars := e.agentVarsForStack("ext-url")
 	require.NotNil(t, vars)
-	assert.Equal(t, "https://pulumi.example.com/api/agent/binary/linux", vars.AgentDownloadURL)
+	assert.Equal(t, "pulumi.example.com", vars.NebulaServerRealIP)
 }
 
 func TestAgentVarsForStack_ExternalURL_TrailingSlash(t *testing.T) {
@@ -133,7 +133,7 @@ func TestAgentVarsForStack_ExternalURL_TrailingSlash(t *testing.T) {
 	e := &Engine{connStore: store}
 	vars := e.agentVarsForStack("trailing")
 	require.NotNil(t, vars)
-	assert.Equal(t, "https://pulumi.example.com/api/agent/binary/linux", vars.AgentDownloadURL)
+	assert.Equal(t, "pulumi.example.com", vars.NebulaServerRealIP)
 }
 
 func TestAgentVarsForStack_ExternalURL_Unset(t *testing.T) {
@@ -145,7 +145,7 @@ func TestAgentVarsForStack_ExternalURL_Unset(t *testing.T) {
 	e := &Engine{connStore: store}
 	vars := e.agentVarsForStack("no-ext")
 	require.NotNil(t, vars)
-	assert.Empty(t, vars.AgentDownloadURL, "should be empty when PULUMI_UI_EXTERNAL_URL is unset")
+	assert.Empty(t, vars.NebulaServerRealIP, "should be empty when PULUMI_UI_EXTERNAL_URL is unset")
 }
 
 // --- ensureNebulaPKI / generateNebulaPKI tests ---

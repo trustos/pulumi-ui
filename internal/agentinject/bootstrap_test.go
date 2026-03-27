@@ -8,13 +8,12 @@ import (
 
 func TestRenderAgentBootstrap_ReplacesPlaceholders(t *testing.T) {
 	vars := AgentVars{
-		NebulaCACert:     "ca-cert-data",
-		NebulaHostCert:   "host-cert-data",
-		NebulaHostKey:    "host-key-data",
-		NebulaVersion:    "v1.10.3",
-		AgentVersion:     "v1.2.3",
-		AgentDownloadURL: "https://example.com/agent",
-		AgentToken:       "secret-token-123",
+		NebulaCACert:   "ca-cert-data",
+		NebulaHostCert: "host-cert-data",
+		NebulaHostKey:  "host-key-data",
+		NebulaVersion:  "v1.10.3",
+		AgentVersion:   "v1.2.3",
+		AgentToken:     "secret-token-123",
 	}
 
 	result := string(RenderAgentBootstrap(vars))
@@ -24,7 +23,6 @@ func TestRenderAgentBootstrap_ReplacesPlaceholders(t *testing.T) {
 	assert.Contains(t, result, "host-key-data")
 	assert.Contains(t, result, "v1.10.3")
 	assert.Contains(t, result, "v1.2.3")
-	assert.Contains(t, result, "https://example.com/agent")
 	assert.Contains(t, result, "secret-token-123")
 
 	assert.NotContains(t, result, "@@NEBULA_CA_CERT@@")
@@ -32,7 +30,6 @@ func TestRenderAgentBootstrap_ReplacesPlaceholders(t *testing.T) {
 	assert.NotContains(t, result, "@@NEBULA_HOST_KEY@@")
 	assert.NotContains(t, result, "@@NEBULA_VERSION@@")
 	assert.NotContains(t, result, "@@AGENT_VERSION@@")
-	assert.NotContains(t, result, "@@AGENT_DOWNLOAD_URL@@")
 	assert.NotContains(t, result, "@@AGENT_TOKEN@@")
 }
 

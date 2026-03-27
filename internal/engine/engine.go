@@ -72,9 +72,9 @@ func (e *Engine) WithMeshManager(m *mesh.Manager) {
 }
 
 // SetExternalURL sets the server's publicly reachable base URL (e.g.
-// "http://1.2.3.4:8080"). Used to construct AgentDownloadURL and to inject
-// the server's real IP into the agent's Nebula static_host_map so it can
-// initiate the Nebula handshake and download the agent binary over the overlay.
+// "http://1.2.3.4:8080"). Used to inject the server's real IP into the
+// agent's Nebula static_host_map so the agent can initiate the Nebula
+// handshake after it starts. Agent binaries are always downloaded from GitHub.
 func (e *Engine) SetExternalURL(url string) {
 	e.externalURL = url
 }
@@ -410,17 +410,18 @@ func (e *Engine) ensureNebulaPKI(stackName string) error {
 	return e.generateNebulaPKI(stackName)
 }
 
-// agentURLFields returns the AgentDownloadURL, NebulaServerVPNIP, and
-// NebulaServerRealIP fields common to all AgentVars entries for a stack.
-// It also pre-starts a passive Nebula tunnel so the server is listening
-// before the agent tries to initiate a handshake at boot time.
-func (e *Engine) agentURLFields(stackName string, conn *db.StackConnection) (downloadURL, serverVPNIP, serverRealIP string) {
+// agentURLFields returns the NebulaServerVPNIP and NebulaServerRealIP fields
+// common to all AgentVars entries for a stack. The server real IP is injected
+// into the agent's Nebula static_host_map so the agent can initiate the
+// handshake after it starts. Agent binaries are always downloaded from GitHub.
+// It also pre-starts a passive Nebula tunnel so the server is listening before
+// the agent tries to initiate a handshake at boot time.
+func (e *Engine) agentURLFields(stackName string, conn *db.StackConnection) (serverVPNIP, serverRealIP string) {
 	extURL := e.externalURL
 	if extURL == "" {
 		extURL = os.Getenv("PULUMI_UI_EXTERNAL_URL")
 	}
 	if extURL != "" {
-		downloadURL = strings.TrimRight(extURL, "/") + "/api/agent/binary/linux"
 		serverRealIP = extractHost(extURL)
 	}
 
@@ -443,13 +444,18 @@ func (e *Engine) agentURLFields(stackName string, conn *db.StackConnection) (dow
 	return
 }
 
-// extractHost strips the scheme and port from a URL, returning just the host.
-// "http://1.2.3.4:8080" → "1.2.3.4", "https://example.com" → "example.com".
+// extractHost strips the scheme, port, and path from a URL, returning just the host.
+// "http://1.2.3.4:8080" → "1.2.3.4", "https://example.com/" → "example.com".
 func extractHost(rawURL string) string {
 	s := rawURL
 	if i := strings.Index(s, "://"); i >= 0 {
 		s = s[i+3:]
 	}
+	// Strip path (everything from the first "/" onwards).
+	if i := strings.Index(s, "/"); i >= 0 {
+		s = s[:i]
+	}
+	// Strip port.
 	if i := strings.LastIndex(s, ":"); i >= 0 {
 		s = s[:i]
 	}
@@ -487,15 +493,14 @@ func (e *Engine) agentVarsForStack(stackName string) *agentinject.AgentVars {
 		token = "placeholder-token"
 	}
 
-	downloadURL, serverVPNIP, serverRealIP := e.agentURLFields(stackName, conn)
+	serverVPNIP, serverRealIP := e.agentURLFields(stackName, conn)
 
 	return &agentinject.AgentVars{
 		NebulaCACert:       string(conn.NebulaCACert),
 		NebulaHostCert:     hostCert,
 		NebulaHostKey:      hostKey,
 		NebulaVersion:      "v1.10.3",
-		AgentVersion:     "v0.1.2",
-		AgentDownloadURL:   downloadURL,
+		AgentVersion:       "v0.1.2",
 		AgentToken:         token,
 		NebulaServerVPNIP:  serverVPNIP,
 		NebulaServerRealIP: serverRealIP,
@@ -519,7 +524,7 @@ func (e *Engine) agentVarListForStack(stackName string) []agentinject.AgentVars 
 				log.Printf("[agent-vars] cannot load conn for stack %s (needed for CA cert / token)", stackName)
 				return nil
 			}
-			downloadURL, serverVPNIP, serverRealIP := e.agentURLFields(stackName, conn)
+			serverVPNIP, serverRealIP := e.agentURLFields(stackName, conn)
 			result := make([]agentinject.AgentVars, len(nodeCerts))
 			for i, nc := range nodeCerts {
 				result[i] = agentinject.AgentVars{
@@ -527,8 +532,7 @@ func (e *Engine) agentVarListForStack(stackName string) []agentinject.AgentVars 
 					NebulaHostCert:     string(nc.NebulaCert),
 					NebulaHostKey:      string(nc.NebulaKey),
 					NebulaVersion:      "v1.10.3",
-					AgentVersion:     "v0.1.2",
-					AgentDownloadURL:   downloadURL,
+					AgentVersion:       "v0.1.2",
 					AgentToken:         conn.AgentToken,
 					NebulaServerVPNIP:  serverVPNIP,
 					NebulaServerRealIP: serverRealIP,

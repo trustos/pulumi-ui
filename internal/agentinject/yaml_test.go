@@ -13,9 +13,8 @@ var testAgentVars = AgentVars{
 	NebulaHostCert:   "test-host-cert",
 	NebulaHostKey:    "test-host-key",
 	NebulaVersion:    "v1.10.3",
-	AgentVersion:     "latest",
-	AgentDownloadURL: "",
-	AgentToken:       "test-token",
+	AgentVersion: "latest",
+	AgentToken:   "test-token",
 }
 
 func TestInjectIntoYAML_SingleInstance(t *testing.T) {
