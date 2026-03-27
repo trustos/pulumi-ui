@@ -267,6 +267,8 @@ Full detail: `docs/roadmap.md`
 | `docs/visual-editor.md` | Visual editor design, Program Graph model, known bugs + fix plan |
 | `docs/roadmap.md` | Architecture improvement roadmap |
 | `docs/application-catalog-architecture.md` | Application catalog, Nebula mesh, agent binary, auto-injection, two-phase deploy |
+| `docs/oci-networking-rules.md` | **OCI networking rules**: subnet architecture (public vs private), security lists, NLB serialization, agent bootstrap requirements, topology decision tree |
+| `docs/visual-editor-simplification.md` | Visual editor property system simplification roadmap (3 phases) |
 
 ---
 
