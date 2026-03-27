@@ -24,11 +24,14 @@ jobs:
       - name: Create frontend embed placeholder
         run: mkdir -p cmd/server/frontend/dist && echo "placeholder" > cmd/server/frontend/dist/index.html
 
-      - name: Build binary
-        run: CGO_ENABLED=0 go build -o /dev/null ./cmd/server
+      - name: Build agent binaries (required for server embed)
+        run: |
+          mkdir -p cmd/server/dist
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o cmd/server/dist/agent_linux_arm64 ./cmd/agent
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o cmd/server/dist/agent_linux_amd64 ./cmd/agent
 
-      - name: Build agent
-        run: CGO_ENABLED=0 go build -o /dev/null ./cmd/agent
+      - name: Build server binary
+        run: CGO_ENABLED=0 go build -o /dev/null ./cmd/server
 
   frontend-check:
     name: Frontend Check
