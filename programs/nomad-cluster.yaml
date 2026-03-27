@@ -373,48 +373,32 @@ resources:
       description: "Allow HTTPS"
 
 # --- section: compute ---
-  nomad-ic:
-    type: oci:Core/instanceConfiguration:InstanceConfiguration
+{{- range $i := until (atoi $.Config.nodeCount) }}
+  nomad-instance-{{ $i }}:
+    type: oci:Core/instance:Instance
     properties:
       compartmentId: ${nomad-compartment.id}
-      displayName: "nomad-ic"
-      instanceDetails:
-        instanceType: compute
-        launchDetails:
-          compartmentId: ${nomad-compartment.id}
-          availabilityDomain: ${availabilityDomains[0].name}
-          shape: {{ .Config.shape }}
-          shapeConfig:
-            ocpus: {{ .Config.ocpusPerNode }}
-            memoryInGbs: {{ .Config.memoryGbPerNode }}
-          sourceDetails:
-            sourceType: image
-            imageId: {{ .Config.imageId }}
-            bootVolumeSizeInGbs: {{ .Config.bootVolSizeGb | quote }}
-          createVnicDetails:
-            subnetId: ${private-subnet.id}
-            assignPublicIp: false
-            nsgIds:
-              - ${ssh-nsg.id}
-              - ${nomad-nsg.id}
-              - ${traefik-nsg.id}
-          metadata:
-            ssh_authorized_keys: {{ .Config.sshPublicKey }}
-            user_data: {{ cloudInit 0 .Config }}
-
-  nomad-pool:
-    type: oci:Core/instancePool:InstancePool
-    properties:
-      compartmentId: ${nomad-compartment.id}
-      instanceConfigurationId: ${nomad-ic.id}
-      size: {{ .Config.nodeCount }}
-      displayName: "nomad-pool"
-      placementConfigurations:
-        - availabilityDomain: ${availabilityDomains[0].name}
-          primarySubnetId: ${private-subnet.id}
-    options:
-      dependsOn:
-        - ${nomad-ic}
+      availabilityDomain: ${availabilityDomains[0].name}
+      displayName: {{ printf "nomad-node-%d" $i | quote }}
+      shape: {{ $.Config.shape }}
+      shapeConfig:
+        ocpus: {{ $.Config.ocpusPerNode }}
+        memoryInGbs: {{ $.Config.memoryGbPerNode }}
+      sourceDetails:
+        sourceType: image
+        imageId: {{ $.Config.imageId }}
+        bootVolumeSizeInGbs: {{ $.Config.bootVolSizeGb | quote }}
+      createVnicDetails:
+        subnetId: ${private-subnet.id}
+        assignPublicIp: false
+        nsgIds:
+          - ${ssh-nsg.id}
+          - ${nomad-nsg.id}
+          - ${traefik-nsg.id}
+      metadata:
+        ssh_authorized_keys: {{ $.Config.sshPublicKey }}
+        user_data: {{ cloudInit $i $.Config }}
+{{- end }}
 
 # --- section: loadbalancer ---
   traefik-nlb:
@@ -427,90 +411,54 @@ resources:
       networkSecurityGroupIds:
         - ${traefik-nsg.id}
 
-  traefik-nlb-bs-80:
+{{- $prevNlbResource := "traefik-nlb" }}
+{{- range $port := list 80 443 4646 }}
+  traefik-nlb-bs-{{ $port }}:
     type: oci:NetworkLoadBalancer/backendSet:BackendSet
     properties:
       networkLoadBalancerId: ${traefik-nlb.id}
-      name: bs-80
+      name: {{ printf "bs-%d" $port | quote }}
       policy: FIVE_TUPLE
       isPreserveSource: false
       healthChecker:
         protocol: TCP
-        port: 80
+        port: {{ $port }}
     options:
       dependsOn:
-        - ${traefik-nlb}
+        - {{ printf "${%s}" $prevNlbResource }}
 
-  traefik-nlb-listener-80:
+  traefik-nlb-listener-{{ $port }}:
     type: oci:NetworkLoadBalancer/listener:Listener
     properties:
       networkLoadBalancerId: ${traefik-nlb.id}
-      name: listener-80
-      defaultBackendSetName: bs-80
+      name: {{ printf "listener-%d" $port | quote }}
+      defaultBackendSetName: {{ printf "bs-%d" $port | quote }}
       protocol: TCP
-      port: 80
+      port: {{ $port }}
     options:
       dependsOn:
-        - ${traefik-nlb}
-        - ${traefik-nlb-bs-80}
+        - {{ printf "${%s}" $prevNlbResource }}
+        - ${traefik-nlb-bs-{{ $port }}}
+  {{- $prevNlbResource = printf "traefik-nlb-listener-%d" $port }}
 
-  traefik-nlb-bs-443:
-    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+  {{- range $i := until (atoi $.Config.nodeCount) }}
+  traefik-nlb-backend-{{ $port }}-{{ $i }}:
+    type: oci:NetworkLoadBalancer/backend:Backend
     properties:
       networkLoadBalancerId: ${traefik-nlb.id}
-      name: bs-443
-      policy: FIVE_TUPLE
-      isPreserveSource: false
-      healthChecker:
-        protocol: TCP
-        port: 443
+      backendSetName: {{ printf "bs-%d" $port | quote }}
+      targetId: ${nomad-instance-{{ $i }}.id}
+      port: {{ $port }}
     options:
       dependsOn:
-        - ${traefik-nlb}
-        - ${traefik-nlb-listener-80}
-
-  traefik-nlb-listener-443:
-    type: oci:NetworkLoadBalancer/listener:Listener
-    properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
-      name: listener-443
-      defaultBackendSetName: bs-443
-      protocol: TCP
-      port: 443
-    options:
-      dependsOn:
-        - ${traefik-nlb}
-        - ${traefik-nlb-bs-443}
-
-  traefik-nlb-bs-4646:
-    type: oci:NetworkLoadBalancer/backendSet:BackendSet
-    properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
-      name: bs-4646
-      policy: FIVE_TUPLE
-      isPreserveSource: false
-      healthChecker:
-        protocol: TCP
-        port: 4646
-    options:
-      dependsOn:
-        - ${traefik-nlb}
-        - ${traefik-nlb-listener-443}
-
-  traefik-nlb-listener-4646:
-    type: oci:NetworkLoadBalancer/listener:Listener
-    properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
-      name: listener-4646
-      defaultBackendSetName: bs-4646
-      protocol: TCP
-      port: 4646
-    options:
-      dependsOn:
-        - ${traefik-nlb}
-        - ${traefik-nlb-bs-4646}
+        - ${traefik-nlb-bs-{{ $port }}}
+  {{- end }}
+{{- end }}
 
 outputs:
   traefikNlbIps: ${traefik-nlb.ipAddresses}
   privateSubnetId: ${private-subnet.id}
   nlbPublicIp: ${traefik-nlb.ipAddresses[0].ipAddress}
+{{- range $i := until (atoi $.Config.nodeCount) }}
+  instance-{{ $i }}-privateIp: ${nomad-instance-{{ $i }}.privateIp}
+{{- end }}
