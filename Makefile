@@ -156,12 +156,12 @@ _release-preflight:
 
 ## release: Bump agent version, test, commit, tag, and push
 release: _release-preflight
-	@# Patch version in source files
-	sed -i'' -e 's/AgentVersion:.*"v[0-9]*\.[0-9]*\.[0-9]*"/AgentVersion:     "$(VERSION)"/' \
+	@# Patch version in source files (perl -i avoids the macOS sed backup-file quirk)
+	perl -i -pe 's/AgentVersion:\s*"v[\d.]+"/AgentVersion:       "$(VERSION)"/g' \
 	  internal/engine/engine.go
-	sed -i'' -e 's/assert\.Equal(t, "v[0-9]*\.[0-9]*\.[0-9]*", vars\.AgentVersion)/assert.Equal(t, "$(VERSION)", vars.AgentVersion)/' \
+	perl -i -pe 's/assert\.Equal\(t, "v[\d.]+", vars\.AgentVersion\)/assert.Equal(t, "$(VERSION)", vars.AgentVersion)/g' \
 	  internal/engine/agent_vars_test.go
-	sed -i'' -e 's/AGENT_VERSION="v[0-9]*\.[0-9]*\.[0-9]*"/AGENT_VERSION="$(VERSION)"/' \
+	perl -i -pe 's/AGENT_VERSION="v[\d.]+"/AGENT_VERSION="$(VERSION)"/g' \
 	  internal/agentinject/agent_bootstrap.sh
 	@# Run full test suite
 	@echo "Running tests..."
