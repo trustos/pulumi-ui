@@ -204,9 +204,12 @@ install_agent() {
     done
   fi
 
-  # Priority 2: Nebula overlay download (server VPN IP is always injected when Nebula PKI exists).
-  # The agent just started nebula.service above; give the handshake a few seconds to complete.
-  if [ "$downloaded" != "true" ] && [ -n "$NEBULA_SERVER_VPN_IP" ]; then
+  # Priority 2: Nebula overlay download.
+  # Only attempted when NEBULA_SERVER_REAL_IP is set — that means the server's
+  # real IP was injected into static_host_map and the Nebula handshake can
+  # actually complete. Without a real IP the agent has no way to reach the
+  # server and every attempt would just time out.
+  if [ "$downloaded" != "true" ] && [ -n "$NEBULA_SERVER_VPN_IP" ] && [ -n "$NEBULA_SERVER_REAL_IP" ]; then
     NEBULA_URL="http://${NEBULA_SERVER_VPN_IP}:8080/api/agent/binary/linux/${AGENT_ARCH}"
     echo "[agent-bootstrap] Trying Nebula overlay download: ${NEBULA_URL}"
     local attempt=0
