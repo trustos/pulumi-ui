@@ -102,6 +102,13 @@ func (r *ProgramRegistry) Get(name string) (Program, bool) {
 	return nil, false
 }
 
+// IsBuiltin returns true if the named program was registered via RegisterBuiltins.
+func (r *ProgramRegistry) IsBuiltin(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.builtins[name]
+}
+
 // List returns a serialisable snapshot of all registered programs.
 func (r *ProgramRegistry) List() []ProgramMeta {
 	r.mu.RLock()

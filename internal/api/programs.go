@@ -198,12 +198,21 @@ func (h *Handler) ForkProgram(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "program not found", http.StatusNotFound)
 		return
 	}
-	// Only built-in programs can be forked.
-	if _, isYAML := prog.(programs.YAMLProgramProvider); isYAML {
+	// Custom (user-created) programs should be edited directly, not forked.
+	// Built-in programs (including YAML built-ins like nomad-cluster) can be forked.
+	if !h.Registry.IsBuiltin(name) {
 		http.Error(w, "custom programs cannot be forked (edit them directly)", http.StatusBadRequest)
 		return
 	}
 
+	// For built-in YAML programs, return their YAML body directly.
+	if yamlProg, ok := prog.(programs.YAMLProgramProvider); ok {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"programYaml": yamlProg.YAMLBody()})
+		return
+	}
+
+	// For Go-based built-in programs, generate a config stub.
 	yaml := buildForkYAML(prog)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"programYaml": yaml})
