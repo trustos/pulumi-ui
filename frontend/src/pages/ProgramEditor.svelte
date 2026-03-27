@@ -314,11 +314,17 @@
   }
 
   // Auto-sync graph → YAML and re-validate when the graph changes in visual mode.
-  // Uses JSON.stringify as a deep-comparison signal so validation stays current
-  // after any visual edit (add/remove/rename resource, change properties, etc.).
+  // Skip the first change (initial parse on load) to avoid overwriting pristine YAML.
   let graphSignal = $derived(mode === 'visual' ? JSON.stringify(graph) : '');
+  let graphChangeCount = 0;
   $effect(() => {
     if (!graphSignal) return; // skip in YAML mode or empty
+    graphChangeCount++;
+    if (graphChangeCount <= 1) {
+      // First change is from onMount parsing — just validate, don't rewrite YAML.
+      scheduleValidation();
+      return;
+    }
     syncGraphToYaml();
     scheduleValidation();
   });
