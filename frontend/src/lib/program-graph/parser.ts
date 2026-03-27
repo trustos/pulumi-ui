@@ -12,6 +12,7 @@ import type {
   VariableDef,
   PropertyEntry,
 } from '$lib/types/program-graph';
+import { serializeArrayValue, serializeObjectValue } from '$lib/program-graph/object-value';
 
 export interface ParseResult {
   graph: ProgramGraph;
@@ -362,11 +363,21 @@ function tryParseResource(name: string, block: string): ResourceItem | null {
     const propsBlock = nextSiblingIdx === -1 ? remainder : remainder.slice(0, nextSiblingIdx);
     // Capture property lines at exactly 6 spaces: both scalar (key: value) and
     // object-type (key: alone, value will be empty string — counts as present).
-    const propRe = /^      (\w[\w-]*):\s*(.*)$/gm;
+    const propRe = /^      (\w[\w-]*):[ \t]*(.*)$/gm;
     let pm: RegExpExecArray | null;
     while ((pm = propRe.exec(propsBlock)) !== null) {
       const key = pm[1];
-      const raw = pm[2].trim();
+      let raw = pm[2].trim();
+
+      // When a property key has no inline value, check for expanded YAML
+      // on subsequent lines (array items at 8-space + "- " or object fields at 8-space).
+      if (raw === '') {
+        const afterKey = propsBlock.slice(pm.index + pm[0].length);
+        raw = tryCollectExpandedArray(afterKey)
+           ?? tryCollectExpandedObject(afterKey)
+           ?? '';
+      }
+
       // Normalise @auto: both the plain [0] form and the mod round-robin form
       // are treated as equivalent — stored as @auto so the serializer can
       // re-emit the correct expression based on loop context.
@@ -480,4 +491,69 @@ function tryParseConditional(content: string): ConditionalItem | null {
     items: parseItems(thenContent),
     elseItems: elseContent ? parseItems(elseContent) : undefined,
   };
+}
+
+// ── Expanded YAML collectors ──────────────────────────────────────────────
+// These convert multi-line expanded YAML (arrays/objects at 8-space indent)
+// back to the inline string format the graph uses for PropertyEntry.value.
+
+function stripYamlQuotes(s: string): string {
+  if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') return s.slice(1, -1);
+  if (s.length >= 2 && s[0] === "'" && s[s.length - 1] === "'") return s.slice(1, -1);
+  return s;
+}
+
+/**
+ * Collect expanded YAML array items starting with "        - key: val" (8-space + dash).
+ * Returns inline format like `[{ key: "val", ... }]` or null if no array found.
+ */
+function tryCollectExpandedArray(text: string): string | null {
+  const lines = text.split('\n');
+  const items: Record<string, string>[] = [];
+  let current: Record<string, string> | null = null;
+
+  for (const line of lines) {
+    // Array item start: 8 spaces + "- key: value"
+    const itemStart = line.match(/^        - (\w[\w.-]*):\s*(.*)$/);
+    if (itemStart) {
+      if (current) items.push(current);
+      current = {};
+      current[itemStart[1]] = stripYamlQuotes(itemStart[2].trim());
+      continue;
+    }
+    // Continuation field: 10 spaces + "key: value"
+    const contField = line.match(/^          (\w[\w.-]*):\s*(.*)$/);
+    if (contField && current) {
+      current[contField[1]] = stripYamlQuotes(contField[2].trim());
+      continue;
+    }
+    // Empty line — continue looking
+    if (line.trim() === '') continue;
+    // Different indent or format — stop
+    break;
+  }
+  if (current) items.push(current);
+  if (items.length === 0) return null;
+  return serializeArrayValue(items);
+}
+
+/**
+ * Collect expanded YAML object fields at "        key: val" (8-space, no dash).
+ * Returns inline format like `{ key: "val", ... }` or null if no object found.
+ */
+function tryCollectExpandedObject(text: string): string | null {
+  const lines = text.split('\n');
+  const fields: Record<string, string> = {};
+
+  for (const line of lines) {
+    const fieldMatch = line.match(/^        (\w[\w.-]*):\s*(.*)$/);
+    if (fieldMatch) {
+      fields[fieldMatch[1]] = stripYamlQuotes(fieldMatch[2].trim());
+      continue;
+    }
+    if (line.trim() === '') continue;
+    break;
+  }
+  if (Object.keys(fields).length === 0) return null;
+  return serializeObjectValue(fields);
 }

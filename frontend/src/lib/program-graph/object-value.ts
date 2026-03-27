@@ -84,6 +84,22 @@ export function serializeArrayValue(
   return `[${parts.join(', ')}]`;
 }
 
+/**
+ * Detect whether a value string represents an array of objects (needs expanded
+ * YAML format) vs a simple string array or scalar (stays inline).
+ *
+ * `[{ protocol: "all", source: "0.0.0.0/0" }]` → true  (expand)
+ * `["10.0.0.0/16"]`                             → false (inline)
+ * `["${nsg.id}"]`                                → false (inline)
+ * `{ key: "val" }`                               → false (not an array)
+ */
+export function isArrayOfObjects(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return false;
+  const parsed = parseArrayValue(trimmed);
+  return parsed.length > 0;
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────
 
 /**

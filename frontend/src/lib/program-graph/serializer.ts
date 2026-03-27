@@ -1,4 +1,5 @@
 import type { ProgramGraph, ProgramSection, ProgramItem, LoopSource, ConfigFieldDef, OutputDef, VariableDef } from '$lib/types/program-graph';
+import { parseArrayValue, isArrayOfObjects } from '$lib/program-graph/object-value';
 
 // Loop context threaded through serializeItem to resolve @auto for availabilityDomain.
 type LoopContext = {
@@ -205,6 +206,22 @@ export function graphToYaml(graph: ProgramGraph): string {
  * as proper YAML sub-mappings instead of flat keys with literal dots.
  * A flat key takes precedence over dotted children with the same parent.
  */
+/** Emit an array of objects in expanded YAML format (one `- key: val` block per item). */
+function emitExpandedArray(lines: string[], items: Record<string, string>[], indent: string): void {
+  for (const item of items) {
+    let first = true;
+    for (const [k, v] of Object.entries(item)) {
+      if (v === '') continue;
+      if (first) {
+        lines.push(`${indent}  - ${k}: ${yamlValue(v)}`);
+        first = false;
+      } else {
+        lines.push(`${indent}    ${k}: ${yamlValue(v)}`);
+      }
+    }
+  }
+}
+
 function emitProperties(lines: string[], props: {key: string; value: string}[], indent: string): void {
   const flatKeys = new Set(props.filter(p => !p.key.includes('.')).map(p => p.key));
 
@@ -229,10 +246,20 @@ function emitProperties(lines: string[], props: {key: string; value: string}[], 
       const children = dottedGroups.get(parent)!;
       lines.push(`${indent}${parent}:`);
       for (const c of children) {
-        lines.push(`${indent}  ${c.child}: ${yamlValue(c.value)}`);
+        if (isArrayOfObjects(c.value)) {
+          const items = parseArrayValue(c.value);
+          lines.push(`${indent}  ${c.child}:`);
+          emitExpandedArray(lines, items, `${indent}  `);
+        } else {
+          lines.push(`${indent}  ${c.child}: ${yamlValue(c.value)}`);
+        }
       }
     } else {
-      if (p.value.includes('\n')) {
+      if (isArrayOfObjects(p.value)) {
+        const items = parseArrayValue(p.value);
+        lines.push(`${indent}${p.key}:`);
+        emitExpandedArray(lines, items, indent);
+      } else if (p.value.includes('\n')) {
         lines.push(`${indent}${p.key}:`);
         for (const rawLine of p.value.split('\n')) {
           if (rawLine.trim()) lines.push(`${indent}  ${rawLine}`);

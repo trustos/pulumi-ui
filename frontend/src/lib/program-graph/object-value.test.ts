@@ -4,6 +4,7 @@ import {
   serializeObjectValue,
   parseArrayValue,
   serializeArrayValue,
+  isArrayOfObjects,
 } from './object-value';
 
 describe('parseObjectValue', () => {
@@ -198,5 +199,37 @@ describe('round-trip', () => {
     const parsed = parseObjectValue(original);
     const serialized = serializeObjectValue(parsed);
     expect(serialized).toBe(original);
+  });
+});
+
+// ── isArrayOfObjects ──────────────────────────────────────────────────────
+
+describe('isArrayOfObjects', () => {
+  it('returns true for array of objects', () => {
+    expect(isArrayOfObjects('[{ protocol: "all", source: "0.0.0.0/0" }]')).toBe(true);
+  });
+
+  it('returns true for array of multiple objects', () => {
+    expect(isArrayOfObjects('[{ a: "1" }, { a: "2" }]')).toBe(true);
+  });
+
+  it('returns false for simple string array', () => {
+    expect(isArrayOfObjects('["10.0.0.0/16"]')).toBe(false);
+  });
+
+  it('returns false for array of refs', () => {
+    expect(isArrayOfObjects('["${nsg.id}"]')).toBe(false);
+  });
+
+  it('returns false for inline object (not array)', () => {
+    expect(isArrayOfObjects('{ key: "val" }')).toBe(false);
+  });
+
+  it('returns false for plain string', () => {
+    expect(isArrayOfObjects('hello')).toBe(false);
+  });
+
+  it('returns false for empty array', () => {
+    expect(isArrayOfObjects('[]')).toBe(false);
   });
 });

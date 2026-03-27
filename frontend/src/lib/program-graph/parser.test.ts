@@ -302,3 +302,149 @@ describe('parser — meta.displayName', () => {
     expect(yaml).not.toContain('displayName:');
   });
 });
+
+// ── Expanded YAML format ──────────────────────────────────────────────────
+
+describe('expanded YAML arrays — parse and serialize roundtrip', () => {
+  it('parses expanded array back to inline format', () => {
+    const yaml = `name: test
+runtime: yaml
+resources:
+  my-sl:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: ocid1.compartment
+      vcnId: \${vcn.id}
+      ingressSecurityRules:
+        - protocol: "all"
+          source: "10.0.0.0/16"
+          sourceType: CIDR_BLOCK
+      egressSecurityRules:
+        - protocol: "all"
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+`;
+    const { graph } = yamlToGraph(yaml);
+    const sl = graph.sections[0].items.find(
+      i => i.kind === 'resource' && i.name === 'my-sl'
+    ) as ResourceItem;
+    expect(sl).toBeDefined();
+
+    const ingress = sl.properties.find(p => p.key === 'ingressSecurityRules');
+    expect(ingress).toBeDefined();
+    // Should be parsed into inline array-of-objects format
+    expect(ingress!.value.startsWith('[')).toBe(true);
+    expect(ingress!.value).toContain('protocol:');
+    expect(ingress!.value).toContain('all');
+    expect(ingress!.value).toContain('source:');
+    expect(ingress!.value).toContain('10.0.0.0/16');
+
+    const egress = sl.properties.find(p => p.key === 'egressSecurityRules');
+    expect(egress).toBeDefined();
+    expect(egress!.value.startsWith('[')).toBe(true);
+    expect(egress!.value).toContain('destination:');
+    expect(egress!.value).toContain('0.0.0.0/0');
+  });
+
+  it('serializer emits expanded format for arrays of objects', () => {
+    const graph: ProgramGraph = {
+      metadata: { name: 'test', displayName: '', description: '' },
+      configFields: [],
+      variables: [],
+      sections: [{
+        id: 'main', label: 'Resources', items: [{
+          kind: 'resource',
+          name: 'my-rt',
+          resourceType: 'oci:Core/routeTable:RouteTable',
+          properties: [
+            { key: 'compartmentId', value: 'ocid1.compartment' },
+            { key: 'routeRules', value: '[{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]' },
+          ],
+        }],
+      }],
+      outputs: [],
+    };
+    const yaml = graphToYaml(graph);
+    // Should be expanded, not inline
+    expect(yaml).toContain('routeRules:');
+    expect(yaml).toContain('- destination:');
+    expect(yaml).toContain('  networkEntityId:');
+    expect(yaml).not.toContain('routeRules: [');
+  });
+
+  it('serializer keeps simple arrays inline', () => {
+    const graph: ProgramGraph = {
+      metadata: { name: 'test', displayName: '', description: '' },
+      configFields: [],
+      variables: [],
+      sections: [{
+        id: 'main', label: 'Resources', items: [{
+          kind: 'resource',
+          name: 'my-vcn',
+          resourceType: 'oci:Core/vcn:Vcn',
+          properties: [
+            { key: 'cidrBlocks', value: '["10.0.0.0/16"]' },
+          ],
+        }],
+      }],
+      outputs: [],
+    };
+    const yaml = graphToYaml(graph);
+    expect(yaml).toContain('cidrBlocks: ["10.0.0.0/16"]');
+  });
+
+  it('roundtrip: expanded YAML → parse → serialize → same structure', () => {
+    const input = `name: test
+runtime: yaml
+resources:
+  my-sl:
+    type: oci:Core/securityList:SecurityList
+    properties:
+      compartmentId: ocid1.compartment
+      ingressSecurityRules:
+        - protocol: "6"
+          source: "0.0.0.0/0"
+          sourceType: CIDR_BLOCK
+          tcpOptions: { min: 80, max: 80 }
+        - protocol: "all"
+          source: "10.0.0.0/16"
+          sourceType: CIDR_BLOCK
+`;
+    const { graph } = yamlToGraph(input);
+    const yaml = graphToYaml(graph);
+
+    // Re-parse the serialized output
+    const { graph: graph2 } = yamlToGraph(yaml);
+    const sl1 = (graph.sections[0].items[0] as ResourceItem);
+    const sl2 = (graph2.sections[0].items[0] as ResourceItem);
+
+    const ingress1 = sl1.properties.find(p => p.key === 'ingressSecurityRules')!.value;
+    const ingress2 = sl2.properties.find(p => p.key === 'ingressSecurityRules')!.value;
+    expect(ingress1).toBe(ingress2);
+  });
+
+  it('parses expanded object (non-array) back to inline format', () => {
+    const yaml = `name: test
+runtime: yaml
+resources:
+  my-inst:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      sourceDetails:
+        sourceType: image
+        sourceId: ocid1.image
+`;
+    const { graph } = yamlToGraph(yaml);
+    const inst = graph.sections[0].items.find(
+      i => i.kind === 'resource' && i.name === 'my-inst'
+    ) as ResourceItem;
+
+    // Check that the expanded object was collected
+    const sd = inst.properties.find(p => p.key === 'sourceDetails');
+    expect(sd).toBeDefined();
+    expect(sd!.value).toContain('sourceType');
+    expect(sd!.value).toContain('sourceId');
+    expect(sd!.value.startsWith('{')).toBe(true);
+  });
+});
