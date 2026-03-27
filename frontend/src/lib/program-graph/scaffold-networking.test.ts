@@ -233,6 +233,30 @@ describe('scaffoldNetworkingGraph', () => {
     expect(names[4]).toBe('my-instance');
   });
 
+  it('is idempotent — calling twice does not duplicate resources', () => {
+    const graph = makeGraph({
+      sections: [{
+        id: 'main', label: 'Resources', items: [{
+          kind: 'resource', name: 'my-instance',
+          resourceType: 'oci:Core/instance:Instance',
+          properties: [],
+        }],
+      }],
+    });
+
+    const once = scaffoldNetworkingGraph(graph);
+    const twice = scaffoldNetworkingGraph(once);
+
+    const names = twice.sections[0].items
+      .filter(i => i.kind === 'resource')
+      .map(i => (i as any).name);
+    expect(names.filter(n => n === 'agent-vcn')).toHaveLength(1);
+    expect(names.filter(n => n === 'agent-igw')).toHaveLength(1);
+    expect(names.filter(n => n === 'agent-route-table')).toHaveLength(1);
+    expect(names.filter(n => n === 'agent-subnet')).toHaveLength(1);
+    expect(names.filter(n => n === 'my-instance')).toHaveLength(1);
+  });
+
   it('returns graph unchanged when no sections exist', () => {
     const graph = makeGraph({ sections: [] });
     const result = scaffoldNetworkingGraph(graph);
@@ -412,6 +436,28 @@ resources:
       const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
       expect(indent % 2).toBe(0);
     }
+  });
+
+  it('is idempotent — calling twice does not duplicate networking YAML', () => {
+    const yaml = `name: test
+runtime: yaml
+
+config:
+  compartmentId:
+    type: string
+
+resources:
+  instance:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.test`;
+
+    const once = scaffoldNetworkingYaml(yaml);
+    const twice = scaffoldNetworkingYaml(once);
+    expect((twice.match(/agent-vcn:/g) ?? []).length).toBe(1);
+    expect((twice.match(/agent-igw:/g) ?? []).length).toBe(1);
+    expect((twice.match(/agent-route-table:/g) ?? []).length).toBe(1);
+    expect((twice.match(/agent-subnet:/g) ?? []).length).toBe(1);
   });
 
   it('includes IGW and route table in YAML output', () => {

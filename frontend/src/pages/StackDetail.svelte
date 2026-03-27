@@ -51,10 +51,14 @@
   const hasApps = $derived(appCatalog.length > 0);
   const hasAgent = $derived(info?.agentAccess === true);
   const isInfraDeployed = $derived(info?.deployed === true);
-  let agentHealth = $state<AgentHealth | null>(null);
+  // Per-node health: nodeIndex -> AgentHealth | null (null = unreachable, undefined = not yet checked)
+  let nodeHealthMap = $state<Map<number, AgentHealth | null>>(new Map());
+  let nodeErrorMap = $state<Map<number, string>>(new Map());
+  // Services come from the first node (index 0) or the single mesh node
   let agentServices = $state<AgentService[]>([]);
   let agentError = $state('');
   let showTerminal = $state(false);
+  let selectedNodeIndex = $state<number | undefined>(undefined);
   const selectedApps = $derived<Record<string, boolean>>(info?.applications ?? {});
   const bootstrapApps = $derived(appCatalog.filter(a => a.tier === 'bootstrap' && selectedApps[a.key]));
   const workloadApps = $derived(appCatalog.filter(a => a.tier === 'workload' && selectedApps[a.key]));
@@ -101,14 +105,47 @@
 
   async function loadAgentStatus() {
     if (!hasAgent || !isInfraDeployed) return;
-    try {
+
+    const nodes = info?.nodes;
+    if (nodes && nodes.length > 0) {
+      // Multi-node: fetch health for each deployed node in parallel
       agentError = '';
-      agentHealth = await getAgentHealth(name);
-      agentServices = await getAgentServices(name);
-    } catch (err) {
-      agentError = err instanceof Error ? err.message : String(err);
-      agentHealth = null;
-      agentServices = [];
+      const results = await Promise.allSettled(
+        nodes.map(n => getAgentHealth(name, n.nodeIndex))
+      );
+      const newHealth = new Map<number, AgentHealth | null>();
+      const newErrors = new Map<number, string>();
+      results.forEach((result, i) => {
+        const idx = nodes[i].nodeIndex;
+        if (result.status === 'fulfilled') {
+          newHealth.set(idx, result.value);
+          newErrors.set(idx, '');
+        } else {
+          newHealth.set(idx, null);
+          newErrors.set(idx, result.reason instanceof Error ? result.reason.message : String(result.reason));
+        }
+      });
+      nodeHealthMap = newHealth;
+      nodeErrorMap = newErrors;
+      // Services from node 0 (primary)
+      try {
+        agentServices = await getAgentServices(name, nodes[0].nodeIndex);
+      } catch {
+        agentServices = [];
+      }
+    } else {
+      // Single-node (legacy mesh path)
+      try {
+        agentError = '';
+        const health = await getAgentHealth(name);
+        nodeHealthMap = new Map([[0, health]]);
+        nodeErrorMap = new Map([[0, '']]);
+        agentServices = await getAgentServices(name);
+      } catch (err) {
+        agentError = err instanceof Error ? err.message : String(err);
+        nodeHealthMap = new Map([[0, null]]);
+        agentServices = [];
+      }
     }
   }
 
@@ -640,22 +677,6 @@
       <Tabs.Content value="nodes" class="flex-1 flex flex-col min-h-0">
         {#if isInfraDeployed}
         <div class="mt-2 space-y-4 flex-1 flex flex-col min-h-0">
-          <!-- Agent Health -->
-          <div class="flex items-center gap-4 flex-wrap">
-            <Button size="sm" variant="outline" onclick={loadAgentStatus}>
-              Refresh Status
-            </Button>
-            {#if agentHealth}
-              <Badge variant="default">
-                {agentHealth.hostname} &bull; {agentHealth.os}/{agentHealth.arch} &bull; up {agentHealth.uptime}
-              </Badge>
-            {:else if agentError}
-              <Badge variant="destructive">Agent unreachable</Badge>
-            {:else}
-              <span class="text-sm text-muted-foreground">Click Refresh to check agent status</span>
-            {/if}
-          </div>
-
           <!-- Nodes / Mesh Info -->
           {#if info?.nodes && info.nodes.length > 0}
             <Card.Root>
@@ -663,6 +684,9 @@
                 <Card.Title class="text-sm flex items-center gap-2">
                   Nodes
                   <Badge variant="secondary">{info.nodes.length}</Badge>
+                  <Button size="sm" variant="ghost" class="ml-auto h-6 px-2 text-xs" onclick={loadAgentStatus}>
+                    Refresh Status
+                  </Button>
                 </Card.Title>
               </Card.Header>
               <Card.Content class="py-2">
@@ -671,18 +695,44 @@
                     <p class="text-xs text-muted-foreground font-mono">Subnet: {info.mesh.nebulaSubnet}</p>
                   {/if}
                   {#each info.nodes as node}
-                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm border-t pt-2 first:border-t-0 first:pt-0">
+                    {@const health = nodeHealthMap.get(node.nodeIndex)}
+                    {@const nodeErr = nodeErrorMap.get(node.nodeIndex)}
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm border-t pt-2 first:border-t-0 first:pt-0 items-center">
                       <div>
                         <span class="text-muted-foreground">Node</span>
                         <div class="font-mono">#{node.nodeIndex}</div>
                       </div>
                       <div>
                         <span class="text-muted-foreground">Nebula IP</span>
-                        <div class="font-mono">{node.nebulaIp ?? '—'}</div>
+                        <div class="font-mono text-xs">{node.nebulaIp ?? '—'}</div>
                       </div>
                       <div>
                         <span class="text-muted-foreground">Real IP</span>
-                        <div class="font-mono">{node.agentRealIp ?? '—'}</div>
+                        <div class="font-mono text-xs">{node.agentRealIp ?? '—'}</div>
+                      </div>
+                      <div>
+                        <span class="text-muted-foreground">Health</span>
+                        <div class="mt-0.5">
+                          {#if health}
+                            <Badge variant="default" class="text-xs">{health.hostname} &bull; up {health.uptime}</Badge>
+                          {:else if nodeErr}
+                            <Badge variant="destructive" class="text-xs">Unreachable</Badge>
+                          {:else}
+                            <span class="text-xs text-muted-foreground">—</span>
+                          {/if}
+                        </div>
+                      </div>
+                      <div class="flex justify-end">
+                        <Button
+                          size="sm"
+                          variant={showTerminal && selectedNodeIndex === node.nodeIndex ? 'default' : 'outline'}
+                          onclick={() => {
+                            selectedNodeIndex = node.nodeIndex;
+                            showTerminal = true;
+                          }}
+                        >
+                          {showTerminal && selectedNodeIndex === node.nodeIndex ? 'Connected' : 'Connect'}
+                        </Button>
                       </div>
                     </div>
                   {/each}
@@ -699,34 +749,57 @@
                   {:else}
                     <Badge variant="secondary">Not connected</Badge>
                   {/if}
+                  <Button size="sm" variant="ghost" class="ml-auto h-6 px-2 text-xs" onclick={loadAgentStatus}>
+                    Refresh Status
+                  </Button>
                 </Card.Title>
               </Card.Header>
               <Card.Content class="py-2">
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                  <div>
-                    <span class="text-muted-foreground">Subnet</span>
-                    <div class="font-mono">{info.mesh.nebulaSubnet ?? '—'}</div>
-                  </div>
-                  <div>
-                    <span class="text-muted-foreground">Agent Mesh IP</span>
-                    <div class="font-mono">{info.mesh.agentNebulaIp ?? '—'}</div>
-                  </div>
-                  <div>
-                    <span class="text-muted-foreground">Agent Real IP</span>
-                    <div class="font-mono">{info.mesh.agentRealIp ?? '—'}</div>
-                  </div>
-                  {#if info.mesh.lastSeenAt}
+                <div class="space-y-3">
+                  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                     <div>
-                      <span class="text-muted-foreground">Last seen</span>
-                      <div class="text-xs">{new Date(info.mesh.lastSeenAt * 1000).toLocaleString()}</div>
+                      <span class="text-muted-foreground">Subnet</span>
+                      <div class="font-mono">{info.mesh.nebulaSubnet ?? '—'}</div>
                     </div>
-                  {/if}
+                    <div>
+                      <span class="text-muted-foreground">Agent Mesh IP</span>
+                      <div class="font-mono">{info.mesh.agentNebulaIp ?? '—'}</div>
+                    </div>
+                    <div>
+                      <span class="text-muted-foreground">Agent Real IP</span>
+                      <div class="font-mono">{info.mesh.agentRealIp ?? '—'}</div>
+                    </div>
+                    {#if info.mesh.lastSeenAt}
+                      <div>
+                        <span class="text-muted-foreground">Last seen</span>
+                        <div class="text-xs">{new Date(info.mesh.lastSeenAt * 1000).toLocaleString()}</div>
+                      </div>
+                    {/if}
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm text-muted-foreground">Health:</span>
+                    {#if nodeHealthMap.get(0)}
+                      <Badge variant="default">{nodeHealthMap.get(0)!.hostname} &bull; {nodeHealthMap.get(0)!.os}/{nodeHealthMap.get(0)!.arch} &bull; up {nodeHealthMap.get(0)!.uptime}</Badge>
+                    {:else if nodeErrorMap.get(0) ?? agentError}
+                      <Badge variant="destructive">Agent unreachable</Badge>
+                    {:else}
+                      <span class="text-sm text-muted-foreground">—</span>
+                    {/if}
+                    <Button
+                      size="sm"
+                      variant={showTerminal ? 'default' : 'outline'}
+                      class="ml-auto"
+                      onclick={() => { selectedNodeIndex = 0; showTerminal = true; }}
+                    >
+                      {showTerminal ? 'Connected' : 'Connect'}
+                    </Button>
+                  </div>
                 </div>
               </Card.Content>
             </Card.Root>
           {/if}
 
-          <!-- Services -->
+          <!-- Services (from primary node) -->
           {#if agentServices.length > 0}
             <Card.Root>
               <Card.Header class="py-3">
@@ -745,19 +818,12 @@
           {/if}
 
           <!-- Terminal -->
-          <div class="flex items-center gap-2">
-            <Button size="sm" variant={showTerminal ? 'default' : 'outline'} onclick={() => showTerminal = !showTerminal}>
-              {showTerminal ? 'Hide Terminal' : 'Open Terminal'}
-            </Button>
-            {#if showTerminal && agentError}
-              <span class="text-xs text-destructive">Agent must be reachable for terminal access</span>
-            {/if}
-          </div>
-
-          {#if showTerminal && !agentError}
-            <div class="flex-1 min-h-[300px]">
-              <WebTerminal url={agentShellUrl(name)} />
-            </div>
+          {#if showTerminal && selectedNodeIndex !== undefined}
+            {#key selectedNodeIndex}
+              <div class="flex-1 min-h-[300px]">
+                <WebTerminal url={agentShellUrl(name, selectedNodeIndex)} />
+              </div>
+            {/key}
           {/if}
         </div>
         {:else}

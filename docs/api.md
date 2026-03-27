@@ -228,7 +228,24 @@ All agent communication is proxied through the server's userspace Nebula tunnel.
 
 All endpoints return `502 Bad Gateway` if the Nebula tunnel cannot be established (no PKI, no agent real IP, or agent unreachable).
 
+**Per-node routing (`?node=N`):** The `health`, `services`, and `shell` endpoints accept an optional `?node=N` query parameter (0-indexed). When present, the request is routed through a per-node Nebula tunnel (cache key `stackName:N`) to the specific node's agent. Without `?node`, the request goes to the default single-node tunnel (backward compatible). Example: `GET /api/stacks/my-stack/agent/health?node=1` checks health on node 1.
+
 The `/agent/shell` endpoint upgrades the browser connection to a WebSocket, then dials the agent's `/shell` endpoint through the Nebula tunnel. The agent allocates a PTY (`/bin/bash`) and streams bidirectionally. Resize messages are supported.
+
+**`StackInfo` response — `nodes` field:**
+
+When a stack has agent access enabled and infrastructure is deployed, the `GET /api/stacks/{name}` response includes a `nodes` array with only the deployed nodes (those with a discovered real IP):
+
+```json
+{
+  "nodes": [
+    { "nodeIndex": 0, "nebulaIp": "10.42.13.2/24", "agentRealIp": "130.61.219.14" },
+    { "nodeIndex": 1, "nebulaIp": "10.42.13.3/24", "agentRealIp": "130.61.37.111" }
+  ]
+}
+```
+
+Nodes without a real IP (pre-generated certs for nodes not yet deployed) are filtered out.
 
 ### OCI Schema (no auth required)
 

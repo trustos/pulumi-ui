@@ -665,6 +665,8 @@ Programs without a catalog omit the `applications` field (or return an empty arr
 1. **Agent `/shell` endpoint** — WebSocket with PTY allocation (using `github.com/creack/pty` and `github.com/gorilla/websocket`). Supports resize messages.
 2. **WebSocket proxy** — `GET /api/stacks/{name}/agent/shell` proxies browser WebSocket through Nebula tunnel to agent
 3. **Dial timeout** — `AgentShell` uses a 10-second context deadline on the agent WebSocket dial. Without this, a failed/unreachable agent would leave the goroutine hanging indefinitely. On timeout the browser receives a text error frame before the connection closes.
+4. **Multi-node mesh support** — All agent proxy endpoints (`/agent/shell`, `/agent/health`, `/agent/services`) accept an optional `?node=N` query parameter. When present, the request is routed through `GetTunnelForNode(stackName, N)` which uses a per-node tunnel cache keyed as `"stackName:N"`. Each node gets its own Nebula tunnel (using the node's specific Nebula IP and real IP from `stack_node_certs`), while the server continues to authenticate with the shared UI cert. Without `?node=N` the request falls through to the single-node `GetTunnel` path (backward compatible).
+5. **Per-node UI** — The nodes tab shows each deployed node (filtered to only nodes with a real IP) in a grid with Nebula IP, real IP, and per-node health status. `loadAgentStatus()` fetches health for all nodes in parallel via `Promise.allSettled`. Each node row has a Connect button that sets `selectedNodeIndex` and opens a terminal to that specific node. The `{#key selectedNodeIndex}` block forces the `WebTerminal` component to remount on node change.
 
 ### Phase 4 (Future)
 

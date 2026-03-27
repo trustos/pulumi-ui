@@ -1,63 +1,11 @@
-import type { PropertyEntry, ConfigFieldDef, VariableDef, OutputDef, ResourceItem } from '$lib/types/program-graph';
+import type { PropertyEntry, ConfigFieldDef, VariableDef, OutputDef } from '$lib/types/program-graph';
 
 interface ResourceRecipe {
   properties: PropertyEntry[];
   configFields: ConfigFieldDef[];
   variables: VariableDef[];
   outputs: OutputDef[];
-  dependentResources: ResourceItem[];
 }
-
-const NETWORKING_RESOURCES: ResourceItem[] = [
-  {
-    kind: 'resource',
-    name: 'vcn',
-    resourceType: 'oci:Core/vcn:Vcn',
-    properties: [
-      { key: 'compartmentId', value: '{{ .Config.compartmentId }}' },
-      { key: 'cidrBlocks', value: '["10.250.0.0/16"]' },
-      { key: 'displayName', value: 'vcn' },
-    ],
-  },
-  {
-    kind: 'resource',
-    name: 'igw',
-    resourceType: 'oci:Core/internetGateway:InternetGateway',
-    properties: [
-      { key: 'compartmentId', value: '{{ .Config.compartmentId }}' },
-      { key: 'vcnId', value: '${vcn.id}' },
-      { key: 'displayName', value: 'igw' },
-      { key: 'enabled', value: 'true' },
-    ],
-    options: { dependsOn: ['vcn'] },
-  },
-  {
-    kind: 'resource',
-    name: 'route-table',
-    resourceType: 'oci:Core/routeTable:RouteTable',
-    properties: [
-      { key: 'compartmentId', value: '{{ .Config.compartmentId }}' },
-      { key: 'vcnId', value: '${vcn.id}' },
-      { key: 'displayName', value: 'route-table' },
-      { key: 'routeRules', value: '[{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]' },
-    ],
-    options: { dependsOn: ['igw'] },
-  },
-  {
-    kind: 'resource',
-    name: 'subnet',
-    resourceType: 'oci:Core/subnet:Subnet',
-    properties: [
-      { key: 'compartmentId', value: '{{ .Config.compartmentId }}' },
-      { key: 'vcnId', value: '${vcn.id}' },
-      { key: 'cidrBlock', value: '10.250.0.0/24' },
-      { key: 'displayName', value: 'subnet' },
-      { key: 'routeTableId', value: '${route-table.id}' },
-      { key: 'prohibitPublicIpOnVnic', value: 'false' },
-    ],
-    options: { dependsOn: ['route-table'] },
-  },
-];
 
 const INSTANCE_RECIPE: ResourceRecipe = {
   properties: [
@@ -88,7 +36,6 @@ const INSTANCE_RECIPE: ResourceRecipe = {
   outputs: [
     { key: 'instancePublicIp', value: '${instance.publicIp}' },
   ],
-  dependentResources: NETWORKING_RESOURCES,
 };
 
 const RECIPES: Record<string, ResourceRecipe> = {
@@ -167,71 +114,29 @@ export function getResourceDefaults(
 }
 
 /**
- * Returns graph-level extras (config fields, variables, outputs, dependent
- * resources) that should be auto-added when a resource of this type is
- * created. Returns null for types without a recipe.
+ * Returns graph-level extras (config fields, variables, outputs) that should
+ * be auto-added when a resource of this type is created.
+ * Returns null for types without a recipe.
+ *
+ * Networking resources are NOT included here — networking is handled
+ * exclusively by scaffold-networking.ts (the agent-access scaffold system).
  */
 export function getGraphExtras(
   resourceType: string,
   existingResourceNames: string[] = [],
-): { configFields: ConfigFieldDef[]; variables: VariableDef[]; outputs: OutputDef[]; resources: ResourceItem[] } | null {
+): { configFields: ConfigFieldDef[]; variables: VariableDef[]; outputs: OutputDef[] } | null {
   const recipe = RECIPES[resourceType];
   if (!recipe) return null;
 
   const compartmentExists = existingResourceNames.includes('compartment');
-  const compartmentId = resolveCompartmentId(existingResourceNames);
 
-  // If compartment already exists: skip its config field + skip creating a new one
   const configFields = compartmentExists
     ? recipe.configFields.filter(f => f.key !== 'compartmentId')
     : recipe.configFields;
-
-  const dependentResources = compartmentExists
-    ? recipe.dependentResources
-        .filter(r => r.name !== 'compartment')
-        .map(r => ({ ...r, properties: applyCompartmentRef(r.properties, compartmentId) }))
-    : recipe.dependentResources;
 
   return {
     configFields,
     variables: recipe.variables,
     outputs: recipe.outputs,
-    resources: dependentResources,
   };
-}
-
-/**
- * For each Instance resource whose `createVnicDetails` property contains a
- * blank subnetId (`subnetId: ""`), fill in `${<subnetName>.id}`.
- *
- * Called by ProgramEditor after "Add Networking" adds the recipe subnet
- * resource, so instances that had their subnetId blanked by resolveRefs
- * (because no subnet existed yet) are wired up automatically.
- *
- * Only updates instances with an explicitly blank subnetId — instances that
- * already reference a differently-named subnet are left untouched.
- */
-export function wireSubnetIntoInstances(
-  sections: import('$lib/types/program-graph').ProgramSection[],
-  subnetName: string,
-): import('$lib/types/program-graph').ProgramSection[] {
-  const ref = `\${${subnetName}.id}`;
-  return sections.map(s => ({
-    ...s,
-    items: s.items.map((item: import('$lib/types/program-graph').ProgramItem) => {
-      if (item.kind !== 'resource' || item.resourceType !== 'oci:Core/instance:Instance') return item;
-      const hasBlankSubnetId = item.properties?.some(
-        (p: import('$lib/types/program-graph').PropertyEntry) => p.key === 'createVnicDetails' && p.value.includes('subnetId: ""'),
-      );
-      if (!hasBlankSubnetId) return item;
-      return {
-        ...item,
-        properties: item.properties!.map((p: import('$lib/types/program-graph').PropertyEntry) =>
-          p.key === 'createVnicDetails'
-            ? { ...p, value: p.value.replace('subnetId: ""', `subnetId: "${ref}"`) }
-            : p,
-        ),
-      };
-    }),
-  }));
 }

@@ -525,21 +525,26 @@ export function downloadSSHPrivateKeyUrl(id: string): string {
 
 // Agent proxy
 
-export async function getAgentHealth(stackName: string): Promise<import('./types').AgentHealth> {
-  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/agent/health`);
+export async function getAgentHealth(stackName: string, nodeIndex?: number): Promise<import('./types').AgentHealth> {
+  const base = `/api/stacks/${encodeURIComponent(stackName)}/agent/health`;
+  const url = nodeIndex !== undefined ? `${base}?node=${nodeIndex}` : base;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
-export async function getAgentServices(stackName: string): Promise<import('./types').AgentService[]> {
-  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/agent/services`);
+export async function getAgentServices(stackName: string, nodeIndex?: number): Promise<import('./types').AgentService[]> {
+  const base = `/api/stacks/${encodeURIComponent(stackName)}/agent/services`;
+  const url = nodeIndex !== undefined ? `${base}?node=${nodeIndex}` : base;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
-export function agentShellUrl(stackName: string): string {
+export function agentShellUrl(stackName: string, nodeIndex?: number): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${location.host}/api/stacks/${encodeURIComponent(stackName)}/agent/shell`;
+  const base = `${proto}//${location.host}/api/stacks/${encodeURIComponent(stackName)}/agent/shell`;
+  return nodeIndex !== undefined ? `${base}?node=${nodeIndex}` : base;
 }
 
 // Application logs

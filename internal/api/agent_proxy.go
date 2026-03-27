@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,10 +22,22 @@ var wsUpgrader = websocket.Upgrader{
 }
 
 // AgentHealth proxies a health check to the agent through the Nebula mesh.
+// Accepts an optional ?node=N query parameter to target a specific node.
 func (h *Handler) AgentHealth(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
-	tunnel, err := h.MeshManager.GetTunnel(stackName)
+	var tunnel *mesh.Tunnel
+	var err error
+	if nodeStr := r.URL.Query().Get("node"); nodeStr != "" {
+		nodeIndex, parseErr := strconv.Atoi(nodeStr)
+		if parseErr != nil {
+			http.Error(w, "invalid node index", http.StatusBadRequest)
+			return
+		}
+		tunnel, err = h.MeshManager.GetTunnelForNode(stackName, nodeIndex)
+	} else {
+		tunnel, err = h.MeshManager.GetTunnel(stackName)
+	}
 	if err != nil {
 		http.Error(w, "mesh tunnel: "+err.Error(), http.StatusBadGateway)
 		return
@@ -56,10 +69,22 @@ func (h *Handler) AgentHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // AgentServices proxies a services check to the agent.
+// Accepts an optional ?node=N query parameter to target a specific node.
 func (h *Handler) AgentServices(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
-	tunnel, err := h.MeshManager.GetTunnel(stackName)
+	var tunnel *mesh.Tunnel
+	var err error
+	if nodeStr := r.URL.Query().Get("node"); nodeStr != "" {
+		nodeIndex, parseErr := strconv.Atoi(nodeStr)
+		if parseErr != nil {
+			http.Error(w, "invalid node index", http.StatusBadRequest)
+			return
+		}
+		tunnel, err = h.MeshManager.GetTunnelForNode(stackName, nodeIndex)
+	} else {
+		tunnel, err = h.MeshManager.GetTunnel(stackName)
+	}
 	if err != nil {
 		http.Error(w, "mesh tunnel: "+err.Error(), http.StatusBadGateway)
 		return
@@ -164,10 +189,23 @@ func (h *Handler) AgentUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 // AgentShell proxies a WebSocket terminal session to the agent through Nebula.
+// Accepts an optional ?node=N query parameter to connect to a specific node.
+// When omitted, connects via the default single-node tunnel.
 func (h *Handler) AgentShell(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
-	tunnel, err := h.MeshManager.GetTunnel(stackName)
+	var tunnel *mesh.Tunnel
+	var err error
+	if nodeStr := r.URL.Query().Get("node"); nodeStr != "" {
+		nodeIndex, parseErr := strconv.Atoi(nodeStr)
+		if parseErr != nil {
+			http.Error(w, "invalid node index", http.StatusBadRequest)
+			return
+		}
+		tunnel, err = h.MeshManager.GetTunnelForNode(stackName, nodeIndex)
+	} else {
+		tunnel, err = h.MeshManager.GetTunnel(stackName)
+	}
 	if err != nil {
 		http.Error(w, "mesh tunnel: "+err.Error(), http.StatusBadGateway)
 		return

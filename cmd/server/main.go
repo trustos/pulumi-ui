@@ -157,6 +157,7 @@ func main() {
 
 	// Nebula mesh tunnel manager — creates on-demand userspace tunnels to agents
 	meshMgr := mesh.NewManager(connStore)
+	meshMgr.WithNodeCertStore(nodeCertStore)
 	eng.WithMeshManager(meshMgr)
 
 	// HTTP handler

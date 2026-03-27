@@ -10,7 +10,7 @@
   import { scaffoldNetworkingGraph, scaffoldNetworkingYaml, hasNetworkingResources } from '$lib/program-graph/scaffold-networking';
   import { propagateRename, propagateRenameYaml } from '$lib/program-graph/rename-resource';
   import { collectAllResources, getMissingAgentOutputs, COMPUTE_RESOURCE_TYPES } from '$lib/program-graph/collect-resources';
-  import { getGraphExtras, wireSubnetIntoInstances } from '$lib/program-graph/resource-defaults';
+  import { getGraphExtras } from '$lib/program-graph/resource-defaults';
   import type { ProgramGraph, ProgramSection } from '$lib/types/program-graph';
   import type { ValidationError } from '$lib/types';
   import EditorModeBar from '$lib/components/EditorModeBar.svelte';
@@ -190,8 +190,8 @@
   }
 
   function handleResourceExtras(e: CustomEvent) {
-    // Dependent resources (e.g. networking for an Instance) are NOT auto-added.
-    // The user sees a "Add Networking" warning banner and opts in explicitly.
+    // Auto-add recipe extras (config, variables, outputs) when a resource is created.
+    // Networking is handled separately by scaffold-networking.ts.
     const { configFields: newCfg, variables: newVars, outputs: newOutputs } = e.detail as {
       configFields: { key: string; type: string; default?: string; description?: string }[];
       variables: { name: string; yaml: string }[];
@@ -223,17 +223,6 @@
     }
   }
 
-  // ── Networking warning ────────────────────────────────────────────────────
-  const NETWORKING_RESOURCE_NAMES = ['vcn', 'igw', 'route-table', 'subnet'];
-
-  const hasInstanceResource = $derived(
-    allProgramResources.some(r => COMPUTE_RESOURCE_TYPES.has(r.type))
-  );
-  const hasRecipeNetworking = $derived(
-    NETWORKING_RESOURCE_NAMES.some(n => allProgramResourceNames.includes(n))
-  );
-  const showNetworkingWarning = $derived(hasInstanceResource && !hasRecipeNetworking);
-
   // ── Agent outputs warning ─────────────────────────────────────────────────
   // When agentAccess is on, every compute resource needs a corresponding
   // instance-{i}-publicIp output so the engine can discover IPs after deploy.
@@ -250,34 +239,6 @@
   function addAgentOutputs() {
     if (missingAgentOutputs.length === 0) return;
     graph = { ...graph, outputs: [...(graph.outputs ?? []), ...missingAgentOutputs] };
-  }
-
-  function addNetworkingForInstance() {
-    const extras = getGraphExtras('oci:Core/instance:Instance', allProgramResourceNames);
-    if (!extras || extras.resources.length === 0) return;
-    const existingNames = new Set(allProgramResourceNames);
-    const resourcesToAdd = extras.resources.filter(r => !existingNames.has(r.name));
-    const addingSubnet = resourcesToAdd.some(r => r.name === 'subnet');
-
-    let updatedGraph = graph;
-    if (resourcesToAdd.length > 0) {
-      updatedGraph = {
-        ...updatedGraph,
-        sections: updatedGraph.sections.map((s, i) =>
-          i === 0 ? { ...s, items: [...resourcesToAdd.map(r => ({ ...r })), ...s.items] } : s
-        ),
-      };
-    }
-
-    // Wire the newly-added subnet into existing instances whose subnetId is blank.
-    if (addingSubnet) {
-      updatedGraph = {
-        ...updatedGraph,
-        sections: wireSubnetIntoInstances(updatedGraph.sections, 'subnet'),
-      };
-    }
-
-    graph = updatedGraph;
   }
 
   // Attach custom event listeners to the visual editor container
@@ -338,13 +299,20 @@
     }
   });
 
-  // ── Tab switch ────────────────────────────────────────────────────────────
-  function switchToYaml() {
+  // ── Graph ↔ YAML sync ────────────────────────────────────────────────────
+
+  /** Serialize the current in-memory graph to yamlText (keeps them in sync). */
+  function syncGraphToYaml() {
     yamlText = graphToYaml({
       ...graph,
       metadata: { name: programName || graph.metadata.name, displayName, description, agentAccess: agentAccess || undefined },
     });
     syncStatus = 'synced';
+  }
+
+  // ── Tab switch ────────────────────────────────────────────────────────────
+  function switchToYaml() {
+    syncGraphToYaml();
     mode = 'yaml';
   }
 
@@ -385,8 +353,13 @@
       }
       syncStatus = 'yaml-edited';
       scheduleValidation();
-    } else if (agentAccess && !hasNetworkingResources(graph)) {
-      graph = scaffoldNetworkingGraph(graph);
+    } else {
+      if (agentAccess && !hasNetworkingResources(graph)) {
+        graph = scaffoldNetworkingGraph(graph);
+      }
+      // Keep yamlText in sync so backend validation sees the scaffold.
+      syncGraphToYaml();
+      scheduleValidation();
     }
     if (turningOff && hasScaffoldedResources()) {
       showRemoveScaffoldPrompt = true;
@@ -399,9 +372,13 @@
 
   function scaffoldAgentNetworking() {
     if (mode === 'visual') {
+      // scaffoldNetworkingGraph is idempotent: skips existing resources, still wires instances.
       graph = scaffoldNetworkingGraph(graph);
       validationErrors = validationErrors.filter(e => e.level !== 7);
+      // Sync YAML so subsequent backend validation sees the scaffold.
+      syncGraphToYaml();
     } else {
+      // scaffoldNetworkingYaml is idempotent: skips if agent-vcn already exists.
       yamlText = scaffoldNetworkingYaml(yamlText);
       syncStatus = 'yaml-edited';
       scheduleValidation();
@@ -840,20 +817,6 @@
             <Button variant="outline" size="sm" class="h-7 text-[11px]" onclick={keepScaffoldedResources}>Keep resources</Button>
             <Button variant="destructive" size="sm" class="h-7 text-[11px]" onclick={removeScaffoldedResources}>Remove agent networking</Button>
           </div>
-        </div>
-      </AlertDescription>
-    </Alert>
-  {/if}
-
-  <!-- Networking missing warning -->
-  {#if showNetworkingWarning && mode === 'visual'}
-    <Alert variant="warning" class="rounded-none border-x-0 border-t-0">
-      <AlertDescription class="text-xs">
-        <div class="flex items-center gap-3">
-          <span>This instance needs a VCN, internet gateway, route table, and subnet to deploy successfully.</span>
-          <Button variant="outline" size="sm" class="h-7 text-[11px] shrink-0" onclick={addNetworkingForInstance}>
-            Add Networking
-          </Button>
         </div>
       </AlertDescription>
     </Alert>

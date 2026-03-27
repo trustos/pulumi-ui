@@ -342,18 +342,23 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Per-node cert data (always included when available, regardless of deploy state)
+	// Per-node cert data — only include nodes that have been deployed (have a real IP).
+	// Node certs are pre-generated in batches of 10; undeployed slots have no real IP.
 	if h.NodeCertStore != nil {
-		if nodeCerts, err := h.NodeCertStore.ListForStack(stackName); err == nil && len(nodeCerts) > 0 {
-			nodes := make([]NodeInfo, len(nodeCerts))
-			for i, nc := range nodeCerts {
-				nodes[i] = NodeInfo{
-					NodeIndex:   nc.NodeIndex,
-					NebulaIP:    nc.NebulaIP,
-					AgentRealIP: nc.AgentRealIP,
+		if nodeCerts, err := h.NodeCertStore.ListForStack(stackName); err == nil {
+			var nodes []NodeInfo
+			for _, nc := range nodeCerts {
+				if nc.AgentRealIP != nil && *nc.AgentRealIP != "" {
+					nodes = append(nodes, NodeInfo{
+						NodeIndex:   nc.NodeIndex,
+						NebulaIP:    nc.NebulaIP,
+						AgentRealIP: nc.AgentRealIP,
+					})
 				}
 			}
-			info.Nodes = nodes
+			if len(nodes) > 0 {
+				info.Nodes = nodes
+			}
 		}
 	}
 

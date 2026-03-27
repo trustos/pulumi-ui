@@ -82,14 +82,27 @@ export function hasNetworkingResources(graph: ProgramGraph): boolean {
   return false;
 }
 
+/** Resource names used by the scaffold — used for idempotency checks. */
+const SCAFFOLD_NAMES = new Set(SCAFFOLDED_RESOURCES.map(r => r.name));
+
 /**
  * Adds VCN + IGW + Route Table + Subnet resources to a ProgramGraph
  * and wires createVnicDetails.subnetId on all compute instances.
+ * Idempotent: skips adding resources that already exist (by name).
  * Returns a new graph (does not mutate the input).
  */
 export function scaffoldNetworkingGraph(graph: ProgramGraph): ProgramGraph {
   const mainSection = graph.sections[0];
   if (!mainSection) return graph;
+
+  // Collect existing resource names so we don't add duplicates.
+  const existingNames = new Set(
+    mainSection.items
+      .filter((item): item is ResourceItem => item.kind === 'resource')
+      .map(item => item.name)
+  );
+  const newResources = SCAFFOLDED_RESOURCES.filter(r => !existingNames.has(r.name))
+    .map(r => ({ ...r }));
 
   const hasCompartmentConfig = graph.configFields.some(f => f.key === 'compartmentId');
   const configFields = hasCompartmentConfig
@@ -128,7 +141,7 @@ export function scaffoldNetworkingGraph(graph: ProgramGraph): ProgramGraph {
     ...graph,
     configFields,
     sections: graph.sections.map((s, i) =>
-      i === 0 ? { ...s, items: [...SCAFFOLDED_RESOURCES.map(r => ({ ...r })), ...updatedItems] } : s
+      i === 0 ? { ...s, items: [...newResources, ...updatedItems] } : s
     ),
   };
 }
@@ -179,13 +192,18 @@ const NETWORKING_YAML_LINES = [
  * Inserts VCN + IGW + Route Table + Subnet resource YAML after the `resources:` line,
  * wires createVnicDetails.subnetId on instances that lack it,
  * and adds compartmentId config if missing.
+ * Idempotent: skips inserting networking resources if agent-vcn already exists in YAML.
  */
 export function scaffoldNetworkingYaml(yamlText: string): string {
   const lines = yamlText.split('\n');
   const resourcesIdx = lines.findIndex(l => /^resources:\s*$/.test(l));
   if (resourcesIdx < 0) return yamlText;
 
-  lines.splice(resourcesIdx + 1, 0, ...NETWORKING_YAML_LINES);
+  // Skip inserting networking block if it already exists.
+  const hasAgentVcn = lines.some(l => /^\s+agent-vcn:\s*$/.test(l));
+  if (!hasAgentVcn) {
+    lines.splice(resourcesIdx + 1, 0, ...NETWORKING_YAML_LINES);
+  }
 
   for (let i = 0; i < lines.length; i++) {
     if (!/^\s+type:\s*oci:Core\/instance:Instance/.test(lines[i])) continue;

@@ -319,13 +319,14 @@ In the visual editor, `@auto` properties render as a `var`-style chip labeled **
 
 `adCount` is automatically added as an `integer` config field (default `1`) whenever the Instance recipe defaults are applied.
 
-### Deferred Networking Warning
+### Networking Scaffold (unified system)
 
-When an `oci:Core/instance:Instance` resource is added to a program that has none of the standard networking resources (`vcn`, `igw`, `route-table`, `subnet`), the editor shows a warning banner:
+Networking resources (VCN, IGW, Route Table, Subnet) are managed exclusively by `scaffold-networking.ts`. There is a single scaffold path:
 
-> *"This instance will not deploy without networking resources (VCN, subnet, route table, IGW)."*
+1. **Agent Access toggle** — when enabled and no VCN/Subnet exists, `scaffoldNetworkingGraph()` (visual) or `scaffoldNetworkingYaml()` (YAML mode) auto-adds `agent-vcn`, `agent-igw`, `agent-route-table`, `agent-subnet` and wires `createVnicDetails.subnetId` on all compute instances.
+2. **Backend validation "Add VCN + Subnet" link** — if the backend Level 7 validation detects `agentAccess` is ON but no networking context exists, the error includes an inline "Add VCN + Subnet" button that calls `scaffoldAgentNetworking()`.
 
-The banner contains an **Add Networking** button that prepends the full set of four networking resources in a new `networking` section. The warning disappears once any of the standard networking resource names is present. Logic lives in `ProgramEditor.svelte` via the `showNetworkingWarning` derived state and `addNetworkingForInstance()` function.
+Both paths call the same idempotent functions — existing resources (matched by name) are never duplicated. The graph is synced to YAML after scaffolding so backend validation always sees the current state.
 
 ### Loop Resource Names
 Resources inside a `LoopItem` are stored in the graph with their **base name only** (e.g. `instance`). The serializer appends `-{{ $loopVar }}` when emitting YAML, producing `instance-{{ $i }}:`. The parser reverses this on re-parse, stripping the `-{{ ... }}` suffix so the graph always holds clean base names.

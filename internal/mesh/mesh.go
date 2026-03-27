@@ -37,7 +37,8 @@ type Tunnel struct {
 
 // Manager creates and caches on-demand Nebula tunnels per stack.
 type Manager struct {
-	connStore *db.StackConnectionStore
+	connStore     *db.StackConnectionStore
+	nodeCertStore *db.NodeCertStore
 
 	mu      sync.Mutex
 	tunnels map[string]*Tunnel
@@ -52,6 +53,11 @@ func NewManager(connStore *db.StackConnectionStore) *Manager {
 	}
 	go m.reaper()
 	return m
+}
+
+// WithNodeCertStore enables per-node tunnel support.
+func (m *Manager) WithNodeCertStore(s *db.NodeCertStore) {
+	m.nodeCertStore = s
 }
 
 // GetOrStartPassive returns a cached tunnel for the stack, or creates a new one
@@ -203,6 +209,65 @@ func (m *Manager) GetTunnel(stackName string) (*Tunnel, error) {
 	return t, nil
 }
 
+// GetTunnelForNode returns a cached or freshly created Nebula tunnel to a
+// specific node identified by its index. Each node gets its own tunnel cache
+// entry (key = "stackName:nodeIndex") and connects to that node's Nebula IP
+// and real IP. The server still authenticates with the shared UI cert.
+func (m *Manager) GetTunnelForNode(stackName string, nodeIndex int) (*Tunnel, error) {
+	if m.nodeCertStore == nil {
+		return nil, fmt.Errorf("node cert store not available")
+	}
+	key := fmt.Sprintf("%s:%d", stackName, nodeIndex)
+
+	m.mu.Lock()
+	if t, ok := m.tunnels[key]; ok {
+		t.mu.Lock()
+		t.lastUsed = time.Now()
+		t.mu.Unlock()
+		m.mu.Unlock()
+		return t, nil
+	}
+	m.mu.Unlock()
+
+	nodes, err := m.nodeCertStore.ListForStack(stackName)
+	if err != nil {
+		return nil, fmt.Errorf("load node certs for %q: %w", stackName, err)
+	}
+	var nc *db.NodeCert
+	for _, n := range nodes {
+		if n.NodeIndex == nodeIndex {
+			nc = n
+			break
+		}
+	}
+	if nc == nil {
+		return nil, fmt.Errorf("no node cert for stack %q node %d", stackName, nodeIndex)
+	}
+	if nc.AgentRealIP == nil || *nc.AgentRealIP == "" {
+		return nil, fmt.Errorf("no real IP for stack %q node %d — deploy infrastructure first", stackName, nodeIndex)
+	}
+
+	conn, err := m.connStore.Get(stackName)
+	if err != nil || conn == nil {
+		return nil, fmt.Errorf("load stack connection for %q: %w", stackName, err)
+	}
+
+	t, err := m.connectNode(conn, nc)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	if existing, ok := m.tunnels[key]; ok {
+		m.mu.Unlock()
+		t.Close()
+		return existing, nil
+	}
+	m.tunnels[key] = t
+	m.mu.Unlock()
+	return t, nil
+}
+
 func (m *Manager) connect(conn *db.StackConnection) (*Tunnel, error) {
 	agentNebulaIP, err := nebulaHelper.AgentAddress(conn.NebulaSubnet)
 	if err != nil {
@@ -288,6 +353,101 @@ firewall:
 		svc:       svc,
 		stackName: conn.StackName,
 		agentAddr: fmt.Sprintf("%s:%d", agentIP, agentTCPPort),
+		token:     conn.AgentToken,
+		lastUsed:  time.Now(),
+	}, nil
+}
+
+// connectNode creates a Nebula tunnel to a specific node. The server uses its
+// shared UI cert (conn.NebulaUICert/UIKey); only the static_host_map target
+// changes — it points to the node's individual Nebula IP and real IP.
+func (m *Manager) connectNode(conn *db.StackConnection, nc *db.NodeCert) (*Tunnel, error) {
+	// nc.NebulaIP is in CIDR form e.g. "10.42.1.3/24"; strip the prefix.
+	agentIP, _, err := net.ParseCIDR(nc.NebulaIP)
+	if err != nil {
+		// Fallback: try it as a plain IP.
+		agentIP = net.ParseIP(nc.NebulaIP)
+		if agentIP == nil {
+			return nil, fmt.Errorf("parse node nebula IP %q: %w", nc.NebulaIP, err)
+		}
+	}
+
+	realIPRaw := *nc.AgentRealIP
+	udpHost, portStr, splitErr := net.SplitHostPort(realIPRaw)
+	udpPort := nebulaUDPPort
+	if splitErr == nil {
+		if p, _ := strconv.Atoi(portStr); p > 0 {
+			udpPort = p
+		}
+	} else {
+		udpHost = realIPRaw
+	}
+	staticMap := fmt.Sprintf("'%s': ['%s:%d']", agentIP.String(), udpHost, udpPort)
+
+	cfgStr := fmt.Sprintf(`
+tun:
+  user: true
+pki:
+  ca: |
+%s
+  cert: |
+%s
+  key: |
+%s
+static_host_map:
+  %s
+listen:
+  host: 0.0.0.0
+  port: 0
+lighthouse:
+  am_lighthouse: false
+  hosts: []
+punchy:
+  punch: true
+  respond: true
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: 8080
+      proto: tcp
+      host: any
+    - port: any
+      proto: icmp
+      host: any
+`,
+		indentPEM(string(conn.NebulaCACert), 4),
+		indentPEM(string(conn.NebulaUICert), 4),
+		indentPEM(string(conn.NebulaUIKey), 4),
+		staticMap,
+	)
+
+	var cfg config.C
+	if err := cfg.LoadString(cfgStr); err != nil {
+		return nil, fmt.Errorf("load nebula config for node: %w", err)
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.WarnLevel)
+
+	label := fmt.Sprintf("pulumi-ui-%s-node%d", conn.StackName, nc.NodeIndex)
+	ctrl, err := nebula.Main(&cfg, false, label, logger, overlay.NewUserDeviceFromConfig)
+	if err != nil {
+		return nil, fmt.Errorf("start nebula for node: %w", err)
+	}
+
+	svc, err := service.New(ctrl)
+	if err != nil {
+		log.Printf("[mesh] service.New failed for %s node %d: %v (nebula goroutines may leak)", conn.StackName, nc.NodeIndex, err)
+		return nil, fmt.Errorf("create nebula service for node: %w", err)
+	}
+
+	return &Tunnel{
+		svc:       svc,
+		stackName: conn.StackName,
+		agentAddr: fmt.Sprintf("%s:%d", agentIP.String(), agentTCPPort),
 		token:     conn.AgentToken,
 		lastUsed:  time.Now(),
 	}, nil

@@ -76,8 +76,8 @@ internal/nebula/     Nebula PKI generation (per-stack CA + host certificates)
   pki.go             Certificate generation using slackhq/nebula library
   subnet.go          Subnet allocation helpers
 
-internal/mesh/       Nebula tunnel manager (userspace, on-demand per stack)
-  mesh.go            Manager + Tunnel types, gvisor-based service, 5-min idle reaper, HTTP client + WebSocket dial
+internal/mesh/       Nebula tunnel manager (userspace, on-demand per stack + per node)
+  mesh.go            Manager + Tunnel types, gvisor-based service, 5-min idle reaper, HTTP client + WebSocket dial, per-node tunnel support (GetTunnelForNode)
 
 internal/db/         SQLite stores (one file per domain)
   db.go              Open + Migrate (runs SQL migration files)
@@ -96,6 +96,8 @@ internal/db/         SQLite stores (one file per domain)
 internal/stacks/     Stack YAML envelope (StackConfig struct)
 internal/auth/       Session middleware
 internal/crypto/     AES-GCM encrypt / decrypt
+internal/services/   Service layer — business logic (refactoring in progress, see BE-1)
+internal/ports/      Repository interfaces for stores (see BE-3)
 internal/oci/        Minimal OCI REST client (credential verification + shapes/images + schema)
   schema.go          OCI provider schema parser with $ref resolution and fallback
   testdata/          JSON fixtures for schema tests

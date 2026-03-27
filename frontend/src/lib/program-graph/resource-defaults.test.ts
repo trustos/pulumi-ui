@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { getResourceDefaults, getGraphExtras, wireSubnetIntoInstances } from './resource-defaults';
+import { getResourceDefaults, getGraphExtras } from './resource-defaults';
 import { graphToYaml } from './serializer';
 import { yamlToGraph } from './parser';
-import type { ProgramGraph, PropertyEntry, ResourceItem } from '$lib/types/program-graph';
+import type { ProgramGraph } from '$lib/types/program-graph';
 
 // ── loop config ref rewriting ────────────────────────────────────────────────
 
@@ -152,7 +152,7 @@ describe('getResourceDefaults', () => {
 // ── getGraphExtras ──────────────────────────────────────────────────────────
 
 describe('getGraphExtras', () => {
-  it('returns config fields, variable, outputs and dependent resources for Instance', () => {
+  it('returns config fields, variables, and outputs for Instance (no networking resources)', () => {
     const extras = getGraphExtras('oci:Core/instance:Instance');
     expect(extras).not.toBeNull();
     expect(extras!.configFields.length).toBe(7);
@@ -176,9 +176,8 @@ describe('getGraphExtras', () => {
     expect(extras!.outputs[0].key).toBe('instancePublicIp');
     expect(extras!.outputs[0].value).toBe('${instance.publicIp}');
 
-    expect(extras!.resources.length).toBe(4);
-    const resNames = extras!.resources.map(r => r.name);
-    expect(resNames).toEqual(['vcn', 'igw', 'route-table', 'subnet']);
+    // Networking resources are NOT returned — handled by scaffold-networking.ts
+    expect(extras).not.toHaveProperty('resources');
   });
 
   it('returns null for unknown types', () => {
@@ -191,49 +190,6 @@ describe('getGraphExtras', () => {
     expect(extras).not.toBeNull();
     const keys = extras!.configFields.map(f => f.key);
     expect(keys).not.toContain('compartmentId');
-  });
-
-  it('omits compartment dependent resource when compartment already exists', () => {
-    const extras = getGraphExtras('oci:Core/instance:Instance', ['compartment']);
-    expect(extras).not.toBeNull();
-    const resNames = extras!.resources.map(r => r.name);
-    // compartment resource not re-added; networking resources still present
-    expect(resNames).not.toContain('compartment');
-    expect(resNames).toContain('vcn');
-    expect(resNames).toContain('subnet');
-  });
-});
-
-// ── Deferred networking add (addNetworkingForInstance pattern) ───────────────
-//
-// ProgramEditor does NOT auto-add networking when an Instance is dropped.
-// Instead it shows a warning and lets the user click "Add Networking".
-// addNetworkingForInstance calls getGraphExtras, then filters out resources
-// already present in the graph before prepending.
-
-describe('getGraphExtras — deferred networking add', () => {
-  it('returns all 4 networking resources regardless of whether some already exist (caller filters)', () => {
-    // getGraphExtras only filters out 'compartment'; networking dedup is the caller's job
-    const extras = getGraphExtras('oci:Core/instance:Instance', ['vcn'])!;
-    const resNames = extras.resources.map(r => r.name);
-    expect(resNames).toContain('vcn');
-    expect(resNames).toContain('igw');
-    expect(resNames).toContain('route-table');
-    expect(resNames).toContain('subnet');
-  });
-
-  it('caller filter skips resources already in the graph', () => {
-    const extras = getGraphExtras('oci:Core/instance:Instance')!;
-    const existingNames = new Set(['vcn', 'igw']);
-    const toAdd = extras.resources.filter(r => !existingNames.has(r.name));
-    expect(toAdd.map(r => r.name)).toEqual(['route-table', 'subnet']);
-  });
-
-  it('caller filter returns empty when all networking already present', () => {
-    const extras = getGraphExtras('oci:Core/instance:Instance')!;
-    const existingNames = new Set(['vcn', 'igw', 'route-table', 'subnet']);
-    const toAdd = extras.resources.filter(r => !existingNames.has(r.name));
-    expect(toAdd).toHaveLength(0);
   });
 });
 
@@ -375,115 +331,3 @@ describe('Instance defaults + graphToYaml', () => {
   });
 });
 
-// ── wireSubnetIntoInstances ──────────────────────────────────────────────────
-
-describe('wireSubnetIntoInstances', () => {
-  const INSTANCE_TYPE = 'oci:Core/instance:Instance';
-
-  it('fills blank subnetId with the given subnet reference', () => {
-    const sections = [{
-      id: 'main', label: 'Resources',
-      items: [{
-        kind: 'resource' as const, name: 'node-0', resourceType: INSTANCE_TYPE,
-        properties: [
-          { key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' },
-        ],
-      }],
-    }];
-    const result = wireSubnetIntoInstances(sections, 'subnet');
-    const vnic = (result[0].items[0] as ResourceItem).properties?.find((p: PropertyEntry) => p.key === 'createVnicDetails');
-    expect(vnic?.value).toContain('${subnet.id}');
-    expect(vnic?.value).not.toContain('subnetId: ""');
-  });
-
-  it('works with a custom subnet name', () => {
-    const sections = [{
-      id: 'main', label: 'Resources',
-      items: [{
-        kind: 'resource' as const, name: 'node-0', resourceType: INSTANCE_TYPE,
-        properties: [{ key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' }],
-      }],
-    }];
-    const result = wireSubnetIntoInstances(sections, 'my-subnet');
-    const vnic = (result[0].items[0] as ResourceItem).properties?.find((p: PropertyEntry) => p.key === 'createVnicDetails');
-    expect(vnic?.value).toContain('${my-subnet.id}');
-  });
-
-  it('does not touch instances that already have a subnet reference', () => {
-    const original = '{ subnetId: "${existing-subnet.id}", assignPublicIp: true }';
-    const sections = [{
-      id: 'main', label: 'Resources',
-      items: [{
-        kind: 'resource' as const, name: 'node-0', resourceType: INSTANCE_TYPE,
-        properties: [{ key: 'createVnicDetails', value: original }],
-      }],
-    }];
-    const result = wireSubnetIntoInstances(sections, 'subnet');
-    const vnic = (result[0].items[0] as ResourceItem).properties?.find((p: PropertyEntry) => p.key === 'createVnicDetails');
-    expect(vnic?.value).toBe(original);
-  });
-
-  it('does not touch instances with no createVnicDetails property', () => {
-    const sections = [{
-      id: 'main', label: 'Resources',
-      items: [{
-        kind: 'resource' as const, name: 'node-0', resourceType: INSTANCE_TYPE,
-        properties: [{ key: 'compartmentId', value: '{{ .Config.compartmentId }}' }],
-      }],
-    }];
-    const result = wireSubnetIntoInstances(sections, 'subnet');
-    const item = result[0].items[0] as ResourceItem;
-    expect(item.properties).not.toContainEqual(
-      expect.objectContaining({ key: 'createVnicDetails' }),
-    );
-  });
-
-  it('does not touch non-Instance resources', () => {
-    const sections = [{
-      id: 'main', label: 'Resources',
-      items: [{
-        kind: 'resource' as const, name: 'vcn', resourceType: 'oci:Core/vcn:Vcn',
-        properties: [{ key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' }],
-      }],
-    }];
-    const result = wireSubnetIntoInstances(sections, 'subnet');
-    const vnic = (result[0].items[0] as ResourceItem).properties?.find((p: PropertyEntry) => p.key === 'createVnicDetails');
-    expect(vnic?.value).toBe('{ subnetId: "", assignPublicIp: true }');
-  });
-
-  it('wires all instances across multiple sections', () => {
-    const sections = [
-      {
-        id: 's1', label: 'Section 1',
-        items: [{
-          kind: 'resource' as const, name: 'n0', resourceType: INSTANCE_TYPE,
-          properties: [{ key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' }],
-        }],
-      },
-      {
-        id: 's2', label: 'Section 2',
-        items: [{
-          kind: 'resource' as const, name: 'n1', resourceType: INSTANCE_TYPE,
-          properties: [{ key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' }],
-        }],
-      },
-    ];
-    const result = wireSubnetIntoInstances(sections, 'subnet');
-    for (const s of result) {
-      const vnic = (s.items[0] as ResourceItem).properties?.find((p: PropertyEntry) => p.key === 'createVnicDetails');
-      expect(vnic?.value).toContain('${subnet.id}');
-    }
-  });
-
-  it('does not mutate the original sections', () => {
-    const sections = [{
-      id: 'main', label: 'Resources',
-      items: [{
-        kind: 'resource' as const, name: 'node-0', resourceType: INSTANCE_TYPE,
-        properties: [{ key: 'createVnicDetails', value: '{ subnetId: "", assignPublicIp: true }' }],
-      }],
-    }];
-    wireSubnetIntoInstances(sections, 'subnet');
-    expect(sections[0].items[0].properties![0].value).toBe('{ subnetId: "", assignPublicIp: true }');
-  });
-});
