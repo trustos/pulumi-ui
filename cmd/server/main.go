@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"embed"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -134,14 +136,17 @@ func main() {
 	nodeCertStore := db.NewNodeCertStore(database, enc)
 
 	// Determine the server's externally reachable URL.
-	// Only used when PULUMI_UI_EXTERNAL_URL is explicitly set (i.e., the server has
-	// a public address reachable from OCI instances). Agent bootstrap falls back to
-	// Nebula overlay download when this is unset — no auto-detection is performed.
+	// PULUMI_UI_EXTERNAL_URL takes priority; falls back to ipify auto-detection.
+	// Used so the agent bootstrap can inject the server's real IP into the Nebula
+	// static_host_map, enabling the agent to initiate the handshake.
 	externalURL := os.Getenv("PULUMI_UI_EXTERNAL_URL")
+	if externalURL == "" {
+		externalURL = detectExternalURL(listenAddr)
+	}
 	if externalURL != "" {
-		log.Printf("[startup] external URL: %s (agent binary reachable at %s/api/agent/binary/linux)", externalURL, externalURL)
+		log.Printf("[startup] external URL: %s (agent binary will be reachable at %s/api/agent/binary/linux)", externalURL, externalURL)
 	} else {
-		log.Printf("[startup] PULUMI_UI_EXTERNAL_URL not set — agent bootstrap will use Nebula overlay download (GitHub releases as final fallback)")
+		log.Printf("[startup] external URL not detected — agent bootstrap will fall back to GitHub releases")
 	}
 
 	// Application deployer + engine
@@ -206,6 +211,32 @@ func main() {
 	log.Println("Shutdown complete")
 }
 
+
+// detectExternalURL attempts to discover the server's public IP via ipify and
+// returns a base URL like "http://1.2.3.4:8080". Returns "" on any failure.
+// This is best-effort: it adds ~1s to startup when successful, and fails fast
+// (5s timeout) when the server has no internet access.
+func detectExternalURL(listenAddr string) string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://api.ipify.org?format=text")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	ip := strings.TrimSpace(string(body))
+	if ip == "" {
+		return ""
+	}
+	port := listenAddr
+	if strings.HasPrefix(port, ":") {
+		port = port[1:]
+	}
+	return "http://" + ip + ":" + port
+}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

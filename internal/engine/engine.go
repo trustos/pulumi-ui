@@ -626,8 +626,11 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 				}
 			}
 		}
-		if foundAny && e.meshManager != nil {
-			e.meshManager.CloseTunnel(stackName)
+		if foundAny {
+			if e.meshManager != nil {
+				e.meshManager.CloseTunnel(stackName)
+			}
+			return // per-node results are authoritative; skip legacy/wildcard scans
 		}
 	}
 
