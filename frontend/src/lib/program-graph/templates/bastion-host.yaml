@@ -4,6 +4,7 @@ description: "Jump box in a public subnet with a private instance behind it — 
 
 meta:
   displayName: Bastion Host + Private Instance
+  agentAccess: true
 
 config:
   compartmentId:
@@ -80,34 +81,6 @@ resources:
     options:
       dependsOn:
         - ${nat-gw}
-  public-security-list:
-    type: oci:Core/securityList:SecurityList
-    properties:
-      compartmentId: {{ .Config.compartmentId }}
-      vcnId: ${vcn.id}
-      displayName: "public-security-list"
-      ingressSecurityRules:
-        - protocol: "all"
-          source: "0.0.0.0/0"
-          sourceType: CIDR_BLOCK
-      egressSecurityRules:
-        - protocol: "all"
-          destination: "0.0.0.0/0"
-          destinationType: CIDR_BLOCK
-  private-security-list:
-    type: oci:Core/securityList:SecurityList
-    properties:
-      compartmentId: {{ .Config.compartmentId }}
-      vcnId: ${vcn.id}
-      displayName: "private-security-list"
-      ingressSecurityRules:
-        - protocol: "all"
-          source: "10.0.0.0/16"
-          sourceType: CIDR_BLOCK
-      egressSecurityRules:
-        - protocol: "all"
-          destination: "0.0.0.0/0"
-          destinationType: CIDR_BLOCK
   public-subnet:
     type: oci:Core/subnet:Subnet
     properties:
@@ -118,8 +91,6 @@ resources:
       dnsLabel: "pub"
       routeTableId: ${public-rt.id}
       prohibitPublicIpOnVnic: "false"
-      securityListIds:
-        - ${public-security-list.id}
       dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:
@@ -134,8 +105,6 @@ resources:
       dnsLabel: "priv"
       routeTableId: ${private-rt.id}
       prohibitPublicIpOnVnic: "true"
-      securityListIds:
-        - ${private-security-list.id}
       dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:

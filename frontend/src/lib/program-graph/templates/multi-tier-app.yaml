@@ -4,6 +4,7 @@ description: "Public web tier + private app tier + private database tier in sepa
 
 meta:
   displayName: Multi-Tier Application
+  agentAccess: true
 
 config:
   compartmentId:
@@ -80,34 +81,6 @@ resources:
     options:
       dependsOn:
         - ${nat-gw}
-  public-security-list:
-    type: oci:Core/securityList:SecurityList
-    properties:
-      compartmentId: {{ .Config.compartmentId }}
-      vcnId: ${vcn.id}
-      displayName: "public-security-list"
-      ingressSecurityRules:
-        - protocol: "all"
-          source: "0.0.0.0/0"
-          sourceType: CIDR_BLOCK
-      egressSecurityRules:
-        - protocol: "all"
-          destination: "0.0.0.0/0"
-          destinationType: CIDR_BLOCK
-  private-security-list:
-    type: oci:Core/securityList:SecurityList
-    properties:
-      compartmentId: {{ .Config.compartmentId }}
-      vcnId: ${vcn.id}
-      displayName: "private-security-list"
-      ingressSecurityRules:
-        - protocol: "all"
-          source: "10.0.0.0/16"
-          sourceType: CIDR_BLOCK
-      egressSecurityRules:
-        - protocol: "all"
-          destination: "0.0.0.0/0"
-          destinationType: CIDR_BLOCK
   web-subnet:
     type: oci:Core/subnet:Subnet
     properties:
@@ -118,8 +91,6 @@ resources:
       dnsLabel: "web"
       routeTableId: ${public-rt.id}
       prohibitPublicIpOnVnic: "false"
-      securityListIds:
-        - ${public-security-list.id}
       dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:
@@ -134,8 +105,6 @@ resources:
       dnsLabel: "app"
       routeTableId: ${private-rt.id}
       prohibitPublicIpOnVnic: "true"
-      securityListIds:
-        - ${private-security-list.id}
       dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:
@@ -150,8 +119,6 @@ resources:
       dnsLabel: "db"
       routeTableId: ${private-rt.id}
       prohibitPublicIpOnVnic: "true"
-      securityListIds:
-        - ${private-security-list.id}
       dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:

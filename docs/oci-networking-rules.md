@@ -29,38 +29,36 @@ Rules and patterns learned from deployment testing. These apply to all YAML prog
 
 ---
 
-## Security Lists
+## Security Lists and NSGs
 
-### Critical Rule: Always Define Security Lists Explicitly
+### Default Security List Is Sufficient
 
-OCI's default VCN security list may be restrictive. **Every subnet must have an explicit security list** attached via `securityListIds`. Without it:
-- Outbound traffic may be blocked (cloud-init can't download packages)
-- Inbound traffic from NLB may be blocked (Nebula handshakes fail silently)
-- NLB health checks (TCP:22) may fail
+OCI creates a **default security list** for every VCN ([docs](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/securitylists.htm)):
+- **Ingress**: SSH (TCP 22) from 0.0.0.0/0, ICMP path MTU discovery
+- **Egress**: All traffic to 0.0.0.0/0
+- **Stateful** by default — response traffic is auto-allowed
+- **Auto-attaches** to subnets when no `securityListIds` is specified
 
-### Public Subnet Security List
-```yaml
-ingressSecurityRules:
-  - protocol: "all"
-    source: "0.0.0.0/0"
-    sourceType: CIDR_BLOCK
-egressSecurityRules:
-  - protocol: "all"
-    destination: "0.0.0.0/0"
-    destinationType: CIDR_BLOCK
-```
+This means:
+- **Explicit security lists are NOT required** for most templates
+- Cloud-init downloads work out of the box (default egress allows all)
+- SSH/NLB health checks (TCP 22) work out of the box (default ingress)
+- NLB forwarding within the VCN works (uses private IPs internally)
 
-### Private Subnet Security List
-```yaml
-ingressSecurityRules:
-  - protocol: "all"
-    source: "10.0.0.0/16"      # VCN CIDR — allows NLB forwarding
-    sourceType: CIDR_BLOCK
-egressSecurityRules:
-  - protocol: "all"
-    destination: "0.0.0.0/0"    # Allows outbound via NAT
-    destinationType: CIDR_BLOCK
-```
+### Use NSGs for Agent Traffic (Not Security Lists)
+
+OCI recommends NSGs over security lists for per-resource rules. Our agent-inject system already creates:
+- `__agent_nsg` — attached to all compute instances
+- `__agent_nsg_rule` — UDP 41820 ingress from 0.0.0.0/0
+
+No additional security list rules needed for Nebula agent connectivity.
+
+### When to Add Explicit Security Lists
+
+Only needed when the default rules are insufficient:
+- Custom per-tier security (e.g., nomad-cluster defines SSH NSG, Nomad NSG, Traefik NSG)
+- Restricting ingress beyond the default (e.g., limiting SSH to specific CIDR)
+- Templates should NOT add security lists just for "completeness"
 
 ### Always Include `dhcpOptionsId`
 ```yaml

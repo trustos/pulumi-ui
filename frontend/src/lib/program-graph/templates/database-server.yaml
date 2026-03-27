@@ -4,6 +4,7 @@ description: "Compute instance in a private subnet with block volume storage —
 
 meta:
   displayName: Private Database Server
+  agentAccess: true
 
 config:
   compartmentId:
@@ -64,20 +65,6 @@ resources:
     options:
       dependsOn:
         - ${nat-gw}
-  security-list:
-    type: oci:Core/securityList:SecurityList
-    properties:
-      compartmentId: {{ .Config.compartmentId }}
-      vcnId: ${vcn.id}
-      displayName: "db-security-list"
-      ingressSecurityRules:
-        - protocol: "all"
-          source: "10.0.0.0/16"
-          sourceType: CIDR_BLOCK
-      egressSecurityRules:
-        - protocol: "all"
-          destination: "0.0.0.0/0"
-          destinationType: CIDR_BLOCK
   nsg:
     type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
     properties:
@@ -109,8 +96,6 @@ resources:
       dnsLabel: "db"
       routeTableId: ${route-table.id}
       prohibitPublicIpOnVnic: "true"
-      securityListIds:
-        - ${security-list.id}
       dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:
