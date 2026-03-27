@@ -55,6 +55,7 @@ export interface ProgramMeta {
   description: string;
   configFields: ConfigField[];
   isCustom: boolean;
+  isBuiltin?: boolean;
   applications?: ApplicationDef[];
   agentAccess?: boolean;
 }

@@ -59,6 +59,27 @@ export function yamlValue(v: string): string {
   return v;
 }
 
+/** Remove dependsOn entries that reference resources not in the graph. */
+function cleanStaleDependsOn(item: ProgramItem, validNames: Set<string>): ProgramItem {
+  if (item.kind === 'resource' && item.options?.dependsOn) {
+    const filtered = item.options.dependsOn.filter(dep => validNames.has(dep));
+    if (filtered.length !== item.options.dependsOn.length) {
+      return { ...item, options: filtered.length > 0 ? { dependsOn: filtered } : undefined };
+    }
+  }
+  if (item.kind === 'loop') {
+    return { ...item, items: item.items.map(i => cleanStaleDependsOn(i, validNames)) };
+  }
+  if (item.kind === 'conditional') {
+    return {
+      ...item,
+      items: item.items.map(i => cleanStaleDependsOn(i, validNames)),
+      elseItems: item.elseItems?.map(i => cleanStaleDependsOn(i, validNames)),
+    };
+  }
+  return item;
+}
+
 export function graphToYaml(graph: ProgramGraph): string {
   const lines: string[] = [];
 
@@ -142,12 +163,28 @@ export function graphToYaml(graph: ProgramGraph): string {
   // Shared context: ordinal counter for standalone @auto availabilityDomain instances.
   const serCtx: SerializeCtx = { autoADIdx: 0 };
 
+  // Collect all resource names for dependsOn validation during serialization.
+  const allResourceNames = new Set<string>();
+  function collectNames(items: ProgramItem[]) {
+    for (const item of items) {
+      if (item.kind === 'resource') allResourceNames.add(item.name);
+      else if (item.kind === 'loop') collectNames(item.items);
+      else if (item.kind === 'conditional') {
+        collectNames(item.items);
+        if (item.elseItems) collectNames(item.elseItems);
+      }
+    }
+  }
+  for (const s of graph.sections) collectNames(s.items);
+
   // Resources
   lines.push('resources:');
   for (const section of graph.sections) {
     lines.push(`  # --- section: ${section.id} ---`);
     for (const item of section.items) {
-      serializeItem(lines, item, '  ', undefined, undefined, serCtx);
+      // Strip stale dependsOn before serializing.
+      const cleaned = cleanStaleDependsOn(item, allResourceNames);
+      serializeItem(lines, cleaned, '  ', undefined, undefined, serCtx);
     }
   }
   lines.push('');

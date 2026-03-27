@@ -42,6 +42,7 @@ func (h *Handler) GetProgram(w http.ResponseWriter, r *http.Request) {
 		DisplayName:  prog.DisplayName(),
 		Description:  prog.Description(),
 		ConfigFields: prog.ConfigFields(),
+		IsBuiltin:    true, // only reached for built-in programs (custom programs return from DB path above)
 	}
 	if ap, ok := prog.(programs.ApplicationProvider); ok {
 		meta.Applications = ap.Applications()

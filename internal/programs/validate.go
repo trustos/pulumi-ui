@@ -311,6 +311,9 @@ func validateVariableReferences(rendered string) []ValidationError {
 		Resources map[string]struct {
 			Type       string                 `yaml:"type"`
 			Properties map[string]interface{} `yaml:"properties"`
+			Options    struct {
+				DependsOn []string `yaml:"dependsOn"`
+			} `yaml:"options"`
 		} `yaml:"resources"`
 		Outputs map[string]interface{} `yaml:"outputs"`
 	}
@@ -329,6 +332,22 @@ func validateVariableReferences(rendered string) []ValidationError {
 	var errs []ValidationError
 	for resName, res := range doc.Resources {
 		checkRefValues(res.Properties, resName, defined, &errs)
+		// Check dependsOn references.
+		for _, dep := range res.Options.DependsOn {
+			for _, m := range pulumiVarRefRe.FindAllStringSubmatch(dep, -1) {
+				ref := m[1]
+				if strings.Contains(ref, ":") {
+					continue
+				}
+				if !defined[ref] {
+					errs = append(errs, ValidationError{
+						Level:   LevelVariableReference,
+						Field:   resName,
+						Message: "resource '" + resName + "' dependsOn references '${" + ref + "}' which is not defined in resources:",
+					})
+				}
+			}
+		}
 	}
 	// Check outputs for undefined resource/variable references.
 	for outputKey, outputVal := range doc.Outputs {

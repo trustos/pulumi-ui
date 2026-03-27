@@ -251,6 +251,54 @@ outputs:
 	}
 }
 
+func TestValidateProgram_Level6_UndefinedDependsOnRef_Error(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+    options:
+      dependsOn:
+        - ${compartment}
+`
+	errs := ValidateProgram(yaml)
+	var l6 []ValidationError
+	for _, e := range errs {
+		if e.Level == LevelVariableReference {
+			l6 = append(l6, e)
+		}
+	}
+	require.NotEmpty(t, l6, "should flag undefined dependsOn ref")
+	assert.Contains(t, l6[0].Message, "compartment")
+	assert.Contains(t, l6[0].Message, "dependsOn")
+}
+
+func TestValidateProgram_Level6_ValidDependsOnRef_NoError(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+resources:
+  compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      name: test
+  vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ocid1.compartment
+    options:
+      dependsOn:
+        - ${compartment}
+`
+	errs := ValidateProgram(yaml)
+	for _, e := range errs {
+		if e.Level == LevelVariableReference {
+			t.Errorf("unexpected Level 6 error for valid dependsOn ref: %s", e.Message)
+		}
+	}
+}
+
 func TestValidateProgram_Level7_AgentAccess_NoCompute(t *testing.T) {
 	yaml := `name: test
 runtime: yaml

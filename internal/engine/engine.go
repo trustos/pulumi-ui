@@ -44,9 +44,10 @@ type Engine struct {
 	meshManager    *mesh.Manager
 	externalURL    string // PULUMI_UI_EXTERNAL_URL or auto-detected public URL
 
-	mu      sync.Mutex
-	cancels map[string]context.CancelFunc
-	running map[string]bool
+	mu             sync.Mutex
+	cancels        map[string]context.CancelFunc
+	running        map[string]bool
+	computeCounts  map[string]int // stackName → injected compute count (from last Up)
 }
 
 func New(stateDir string, registry *programs.ProgramRegistry, deployer *applications.Deployer, connStore *db.StackConnectionStore) *Engine {
@@ -55,8 +56,9 @@ func New(stateDir string, registry *programs.ProgramRegistry, deployer *applicat
 		registry:  registry,
 		deployer:  deployer,
 		connStore: connStore,
-		cancels:   make(map[string]context.CancelFunc),
-		running:   make(map[string]bool),
+		cancels:       make(map[string]context.CancelFunc),
+		running:       make(map[string]bool),
+		computeCounts: make(map[string]int),
 	}
 }
 
@@ -206,6 +208,7 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 				log.Printf("[agent-inject] bootstrap injection error for stack %s: %v", stackName, injErr)
 			} else {
 				sanitized = injected
+				e.computeCounts[stackName] = injectedCount
 				log.Printf("[agent-inject] bootstrap injected for stack %s (%d instance(s))", stackName, injectedCount)
 			}
 		} else {
@@ -584,22 +587,35 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 			if !ok || nlbIP == "" {
 				continue
 			}
-			nodes, err := e.nodeCertStore.ListForStack(stackName)
-			if err != nil {
-				log.Printf("[agent-discover] nodeCertStore.ListForStack error for %s: %v", stackName, err)
-				break
+			// Only store NLB addresses for nodes that actually have NLB listeners.
+			// We pre-generate 10 certs, but only N compute instances are deployed.
+			// Use the count stored during agent-inject (from the last Up operation).
+			numDeployedNodes := e.computeCounts[stackName]
+			if numDeployedNodes <= 0 {
+				// Fallback: count per-node output keys
+				for i := 0; i < 32; i++ {
+					if _, ok := outputs[fmt.Sprintf("instance-%d-publicIp", i)]; ok {
+						numDeployedNodes = i + 1
+					} else {
+						break
+					}
+				}
 			}
-			for i, nc := range nodes {
-				addr := fmt.Sprintf("%s:%d", nlbIP, agentinject.AgentNLBPortBase+nc.NodeIndex)
-				if err := e.nodeCertStore.UpdateAgentRealIP(stackName, nc.NodeIndex, addr); err != nil {
-					log.Printf("[agent-discover] failed to store node %d NLB addr for %s: %v", nc.NodeIndex, stackName, err)
+			if numDeployedNodes <= 0 {
+				numDeployedNodes = 1 // at least 1 node if NLB exists
+			}
+
+			for i := 0; i < numDeployedNodes; i++ {
+				addr := fmt.Sprintf("%s:%d", nlbIP, agentinject.AgentNLBPortBase+i)
+				if err := e.nodeCertStore.UpdateAgentRealIP(stackName, i, addr); err != nil {
+					log.Printf("[agent-discover] failed to store node %d NLB addr for %s: %v", i, stackName, err)
 				}
 				if i == 0 {
 					_ = e.connStore.UpdateAgentRealIP(stackName, addr)
 				}
 			}
-			send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: NLB %s (%d node(s))", nlbIP, len(nodes))})
-			log.Printf("[agent-discover] stack %s: NLB %s, %d node(s)", stackName, nlbIP, len(nodes))
+			send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: NLB %s (%d node(s))", nlbIP, numDeployedNodes)})
+			log.Printf("[agent-discover] stack %s: NLB %s, %d node(s)", stackName, nlbIP, numDeployedNodes)
 			if e.meshManager != nil {
 				e.meshManager.CloseTunnel(stackName)
 			}

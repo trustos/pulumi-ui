@@ -345,7 +345,7 @@ outputs:
               {/if}
             </div>
           </Card.Content>
-          {#if prog.isCustom}
+          {#if !prog.isBuiltin}
             <Card.Footer class="pt-0 gap-2">
               <Button variant="outline" size="sm" onclick={() => navigate(`/programs/${prog.name}/edit`)}>Edit</Button>
               <Button variant="outline" size="sm" class="text-destructive hover:text-destructive" onclick={() => confirmDelete(prog.name)}>

@@ -27,6 +27,7 @@ type ProgramMeta struct {
 	Description  string           `json:"description"`
 	ConfigFields []ConfigField    `json:"configFields"`
 	IsCustom     bool             `json:"isCustom"`                // true for user-defined YAML programs
+	IsBuiltin    bool             `json:"isBuiltin,omitempty"`     // true for programs registered via RegisterBuiltins (not editable/deletable)
 	Applications []ApplicationDef `json:"applications,omitempty"`  // nil for programs without a catalog
 	AgentAccess  bool             `json:"agentAccess,omitempty"`   // true if agent networking is auto-injected
 }
@@ -47,11 +48,12 @@ type Program interface {
 type ProgramRegistry struct {
 	mu       sync.RWMutex
 	programs []Program
+	builtins map[string]bool // program names registered via RegisterBuiltins
 }
 
 // NewProgramRegistry creates an empty ProgramRegistry.
 func NewProgramRegistry() *ProgramRegistry {
-	return &ProgramRegistry{}
+	return &ProgramRegistry{builtins: make(map[string]bool)}
 }
 
 // RegisterBuiltins registers the built-in programs into r.
@@ -64,6 +66,7 @@ func RegisterBuiltins(r *ProgramRegistry) {
 	RegisterYAML(r, "nomad-cluster", "Nomad Cluster",
 		"Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible)",
 		builtins.ReadFile("nomad-cluster.yaml"))
+	r.builtins["nomad-cluster"] = true
 }
 
 // Register adds p to the registry.
@@ -112,6 +115,7 @@ func (r *ProgramRegistry) List() []ProgramMeta {
 			Description:  p.Description(),
 			ConfigFields: p.ConfigFields(),
 			IsCustom:     isCustom,
+			IsBuiltin:    r.builtins[p.Name()],
 		}
 		if ap, ok := p.(ApplicationProvider); ok {
 			meta.Applications = ap.Applications()
