@@ -1,21 +1,18 @@
 name: ha-pair
 runtime: yaml
-description: "Two instances across subnets behind a Network Load Balancer with TCP health checks — active/active or active/passive HA (inspired by keepalived / Pacemaker)"
+description: "Two private instances behind a public NLB with NAT gateway — active/active or active/passive HA"
 
 meta:
   displayName: High-Availability Pair with NLB
   agentAccess: true
 
 config:
-  compartmentName:
+  compartmentId:
     type: string
-    default: "my-compartment"
   imageId:
     type: string
-    default: ""
   sshPublicKey:
     type: string
-    default: ""
   shape:
     type: string
     default: "VM.Standard.A1.Flex"
@@ -40,66 +37,88 @@ variables:
 
 resources:
   # --- section: networking ---
-  compartment:
-    type: oci:Identity/compartment:Compartment
-    properties:
-      compartmentId: ${oci:tenancyOcid}
-      name: "{{ .Config.compartmentName }}"
-      description: "Created by Pulumi"
-      enableDelete: "true"
   vcn:
     type: oci:Core/vcn:Vcn
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       cidrBlocks: ["10.0.0.0/16"]
       displayName: "ha-vcn"
       dnsLabel: "ha"
-    options:
-      dependsOn:
-        - ${compartment}
   igw:
     type: oci:Core/internetGateway:InternetGateway
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
-      displayName: "igw"
+      displayName: "ha-igw"
       enabled: "true"
     options:
       dependsOn:
         - ${vcn}
-  route-table:
+  natgateway:
+    type: oci:Core/natGateway:NatGateway
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      displayName: "ha-natgw"
+    options:
+      dependsOn:
+        - ${vcn}
+  public-route-table:
     type: oci:Core/routeTable:RouteTable
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
-      displayName: "ha-rt"
+      displayName: "ha-public-rt"
       routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
     options:
       dependsOn:
         - ${igw}
-  subnet:
+  private-route-table:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      displayName: "ha-private-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${natgateway.id}" }]
+    options:
+      dependsOn:
+        - ${natgateway}
+  public-subnet:
     type: oci:Core/subnet:Subnet
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       cidrBlock: "10.0.1.0/24"
-      displayName: "ha-subnet"
-      dnsLabel: "hasub"
-      routeTableId: ${route-table.id}
+      displayName: "ha-public-subnet"
+      dnsLabel: "hapub"
+      routeTableId: ${public-route-table.id}
       prohibitPublicIpOnVnic: "false"
     options:
       dependsOn:
-        - ${route-table}
+        - ${public-route-table}
+  private-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: {{ .Config.compartmentId }}
+      vcnId: ${vcn.id}
+      cidrBlock: "10.0.2.0/24"
+      displayName: "ha-private-subnet"
+      dnsLabel: "hapriv"
+      routeTableId: ${private-route-table.id}
+      prohibitPublicIpOnVnic: "false"
+    options:
+      dependsOn:
+        - ${private-route-table}
   nlb:
     type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       displayName: "ha-nlb"
-      subnetId: ${subnet.id}
+      subnetId: ${public-subnet.id}
       isPrivate: "false"
     options:
       dependsOn:
-        - ${subnet}
+        - ${public-subnet}
   backend-set:
     type: oci:NetworkLoadBalancer/backendSet:BackendSet
     properties:
@@ -125,31 +144,31 @@ resources:
   node-a:
     type: oci:Core/instance:Instance
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       availabilityDomain: ${availabilityDomains[0].name}
       shape: "{{ .Config.shape }}"
       displayName: "node-a"
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
-      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: false }
+      createVnicDetails: { subnetId: "${private-subnet.id}", assignPublicIp: true }
       metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
       shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
     options:
       dependsOn:
-        - ${subnet}
+        - ${private-subnet}
   node-b:
     type: oci:Core/instance:Instance
     properties:
-      compartmentId: ${compartment.id}
-      availabilityDomain: ${availabilityDomains[0].name}
+      compartmentId: {{ .Config.compartmentId }}
+      availabilityDomain: ${availabilityDomains[1].name}
       shape: "{{ .Config.shape }}"
       displayName: "node-b"
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
-      createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: false }
+      createVnicDetails: { subnetId: "${private-subnet.id}", assignPublicIp: true }
       metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
       shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
     options:
       dependsOn:
-        - ${subnet}
+        - ${private-subnet}
   backend-a:
     type: oci:NetworkLoadBalancer/backend:Backend
     properties:

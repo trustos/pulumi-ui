@@ -7,9 +7,8 @@ meta:
   agentAccess: true
 
 config:
-  compartmentName:
+  compartmentId:
     type: string
-    default: "my-compartment"
   nodeCount:
     type: integer
     default: "3"
@@ -48,47 +47,36 @@ variables:
 
 resources:
   # --- section: networking ---
-  compartment:
-    type: oci:Identity/compartment:Compartment
-    properties:
-      compartmentId: ${oci:tenancyOcid}
-      name: "{{ .Config.compartmentName }}"
-      description: "Created by Pulumi"
-      enableDelete: "true"
   vcn:
     type: oci:Core/vcn:Vcn
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       cidrBlocks: ["10.0.0.0/16"]
       displayName: "app-vcn"
       dnsLabel: "appvcn"
-    options:
-      dependsOn:
-        - ${compartment}
-  igw:
-    type: oci:Core/internetGateway:InternetGateway
+  natgateway:
+    type: oci:Core/natGateway:NatGateway
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
-      displayName: "igw"
-      enabled: "true"
+      displayName: "app-natgw"
     options:
       dependsOn:
         - ${vcn}
   route-table:
     type: oci:Core/routeTable:RouteTable
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "app-rt"
-      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${natgateway.id}" }]
     options:
       dependsOn:
-        - ${igw}
+        - ${natgateway}
   subnet:
     type: oci:Core/subnet:Subnet
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       cidrBlock: "10.0.1.0/24"
       displayName: "app-subnet"
@@ -101,7 +89,7 @@ resources:
   nlb:
     type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       displayName: "app-nlb"
       subnetId: ${subnet.id}
       isPrivate: "false"
@@ -113,7 +101,7 @@ resources:
   node-{{ $i }}:
     type: oci:Core/instance:Instance
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ $.Config.compartmentId }}
       availabilityDomain: ${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}
       shape: "{{ $.Config.shape }}"
       displayName: "node-{{ $i }}"

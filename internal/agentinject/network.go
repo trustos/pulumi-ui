@@ -3,6 +3,7 @@ package agentinject
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -184,14 +185,43 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 		if nlb.isPrivate {
 			continue
 		}
+		// Find the last user resource that mutates this NLB so we can chain
+		// agent backend sets after it. OCI NLB rejects concurrent mutations (409).
+		prevNlbResource := nlb.name
+		for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
+			resName := resourcesNode.Content[i].Value
+			resBody := resourcesNode.Content[i+1]
+			if resBody.Kind != yaml.MappingNode {
+				continue
+			}
+			typeNode := findMapValue(resBody, "type")
+			if typeNode == nil {
+				continue
+			}
+			// Match any NLB child resource (BackendSet, Listener, Backend) that references this NLB
+			switch typeNode.Value {
+			case "oci:NetworkLoadBalancer/backendSet:BackendSet",
+				"oci:NetworkLoadBalancer/listener:Listener",
+				"oci:NetworkLoadBalancer/backend:Backend":
+				if props := findMapValue(resBody, "properties"); props != nil {
+					if nlbId := findMapValue(props, "networkLoadBalancerId"); nlbId != nil {
+						if strings.Contains(nlbId.Value, nlb.name) {
+							prevNlbResource = resName
+						}
+					}
+				}
+			}
+		}
+
 		for i, compute := range computes {
 			port := AgentNLBPortBase + i
 			bsName := fmt.Sprintf("__agent_bs_%s_%d", nlb.name, i)
 			lnName := fmt.Sprintf("__agent_ln_%s_%d", nlb.name, i)
-			addResource(resourcesNode, bsName, buildNLBBackendSetResourceN(nlb.name, i))
+			addResource(resourcesNode, bsName, buildNLBBackendSetResourceNWithDep(nlb.name, i, prevNlbResource))
 			addResource(resourcesNode, lnName, buildNLBListenerResourceN(nlb.name, bsName, port))
 			beName := fmt.Sprintf("__agent_be_%s_%d", nlb.name, i)
 			addResource(resourcesNode, beName, buildNLBBackendResource(nlb.name, bsName, compute.name, lnName))
+			prevNlbResource = beName // chain next iteration after this backend
 			modified = true
 		}
 
@@ -343,6 +373,31 @@ func buildNLBBackendSetResourceN(nlbName string, nodeIdx int) *yaml.Node {
 				"port":     22,
 			},
 			"isPreserveSource": false,
+		},
+	})
+}
+
+// buildNLBBackendSetResourceNWithDep creates a per-node backend set with an explicit dependsOn.
+// This ensures the backend set is serialized after the previous NLB operation to avoid 409 Conflict.
+func buildNLBBackendSetResourceNWithDep(nlbName string, nodeIdx int, prevDep string) *yaml.Node {
+	name := fmt.Sprintf("agent-backend-set-%d", nodeIdx)
+	if nodeIdx < 0 {
+		name = "agent-backend-set-pool"
+	}
+	return buildMappingNode(map[string]interface{}{
+		"type": "oci:NetworkLoadBalancer/backendSet:BackendSet",
+		"properties": map[string]interface{}{
+			"networkLoadBalancerId": fmt.Sprintf("${%s.id}", nlbName),
+			"name":                 name,
+			"policy":               "FIVE_TUPLE",
+			"healthChecker": map[string]interface{}{
+				"protocol": "TCP",
+				"port":     22,
+			},
+			"isPreserveSource": false,
+		},
+		"options": map[string]interface{}{
+			"dependsOn": []string{fmt.Sprintf("${%s}", prevDep)},
 		},
 	})
 }

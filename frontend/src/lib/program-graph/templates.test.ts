@@ -268,18 +268,18 @@ describe('built-in YAML templates — agentAccess flag', () => {
 // ── resource counts ───────────────────────────────────────────────────────────
 
 describe('built-in YAML templates — resource counts', () => {
-  it('vcn-only has exactly 2 resources in 1 section', () => {
+  it('vcn-only has exactly 1 resource in 1 section', () => {
     const { graph } = yamlToGraph(vcnOnlyYaml);
     expect(graph.sections).toHaveLength(1);
     const total = countResources(graph.sections[0].items);
-    expect(total).toBe(2);
+    expect(total).toBe(1);
   });
 
-  it('single-instance has 6 resources across 2 sections (5 networking + 1 instance)', () => {
+  it('single-instance has 5 resources across 2 sections (4 networking + 1 instance)', () => {
     const { graph } = yamlToGraph(singleInstanceYaml);
     expect(graph.sections).toHaveLength(2);
     const total = graph.sections.reduce((sum, s) => sum + countResources(s.items), 0);
-    expect(total).toBe(6);
+    expect(total).toBe(5);
   });
 
   it('ha-pair has more than 5 resources', () => {

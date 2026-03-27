@@ -7,9 +7,8 @@ meta:
   agentAccess: true
 
 config:
-  compartmentName:
+  compartmentId:
     type: string
-    default: "my-compartment"
   nodeCount:
     type: integer
     default: "3"
@@ -44,27 +43,17 @@ variables:
 
 resources:
   # --- section: networking ---
-  compartment:
-    type: oci:Identity/compartment:Compartment
-    properties:
-      compartmentId: ${oci:tenancyOcid}
-      name: "{{ .Config.compartmentName }}"
-      description: "Created by Pulumi"
-      enableDelete: "true"
   vcn:
     type: oci:Core/vcn:Vcn
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       cidrBlocks: ["10.0.0.0/16"]
       displayName: "cluster-vcn"
       dnsLabel: "cluster"
-    options:
-      dependsOn:
-        - ${compartment}
   igw:
     type: oci:Core/internetGateway:InternetGateway
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "igw"
       enabled: "true"
@@ -74,7 +63,7 @@ resources:
   nat-gw:
     type: oci:Core/natGateway:NatGateway
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "nat-gw"
     options:
@@ -83,7 +72,7 @@ resources:
   public-rt:
     type: oci:Core/routeTable:RouteTable
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "public-rt"
       routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
@@ -93,7 +82,7 @@ resources:
   private-rt:
     type: oci:Core/routeTable:RouteTable
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "private-rt"
       routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${nat-gw.id}" }]
@@ -103,7 +92,7 @@ resources:
   nsg:
     type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "cluster-nsg"
     options:
@@ -123,7 +112,7 @@ resources:
   public-subnet:
     type: oci:Core/subnet:Subnet
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       cidrBlock: "10.0.0.0/24"
       displayName: "public-subnet"
@@ -136,7 +125,7 @@ resources:
   private-subnet:
     type: oci:Core/subnet:Subnet
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       cidrBlock: "10.0.1.0/24"
       displayName: "private-subnet"
@@ -149,7 +138,7 @@ resources:
   nlb:
     type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       displayName: "cluster-nlb"
       subnetId: ${public-subnet.id}
       isPrivate: "false"
@@ -161,7 +150,7 @@ resources:
   node-{{ $i }}:
     type: oci:Core/instance:Instance
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ $.Config.compartmentId }}
       availabilityDomain: ${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}
       shape: "{{ $.Config.shape }}"
       displayName: "node-{{ $i }}"

@@ -6,36 +6,25 @@ meta:
   displayName: Private Network with NAT Gateway
 
 config:
-  compartmentName:
+  compartmentId:
     type: string
-    default: "my-compartment"
   vcnCidr:
     type: string
     default: "10.0.0.0/16"
 
 resources:
   # --- section: networking ---
-  compartment:
-    type: oci:Identity/compartment:Compartment
-    properties:
-      compartmentId: ${oci:tenancyOcid}
-      name: "{{ .Config.compartmentName }}"
-      description: "Created by Pulumi"
-      enableDelete: "true"
   vcn:
     type: oci:Core/vcn:Vcn
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       cidrBlocks: ["{{ .Config.vcnCidr }}"]
       displayName: "vcn"
       dnsLabel: "vcn"
-    options:
-      dependsOn:
-        - ${compartment}
   nat-gw:
     type: oci:Core/natGateway:NatGateway
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "nat-gw"
     options:
@@ -44,7 +33,7 @@ resources:
   route-table:
     type: oci:Core/routeTable:RouteTable
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "private-rt"
       routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${nat-gw.id}" }]
@@ -54,7 +43,7 @@ resources:
   private-subnet:
     type: oci:Core/subnet:Subnet
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       cidrBlock: "10.0.1.0/24"
       displayName: "private-subnet"

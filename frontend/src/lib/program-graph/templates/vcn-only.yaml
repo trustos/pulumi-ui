@@ -1,14 +1,13 @@
 name: my-vcn
 runtime: yaml
-description: "Compartment + VCN — the minimal networking foundation for any OCI deployment"
+description: "VCN in an existing compartment — the minimal networking foundation for any OCI deployment"
 
 meta:
   displayName: Virtual Cloud Network
 
 config:
-  compartmentName:
+  compartmentId:
     type: string
-    default: "my-compartment"
   vcnCidr:
     type: string
     default: "10.0.0.0/16"
@@ -16,24 +15,14 @@ config:
 
 resources:
   # --- section: networking ---
-  my-compartment:
-    type: oci:Identity/compartment:Compartment
-    properties:
-      compartmentId: ${oci:tenancyOcid}
-      name: "{{ .Config.compartmentName }}"
-      description: "Created by Pulumi"
-      enableDelete: "true"
   my-vcn:
     type: oci:Core/vcn:Vcn
     properties:
-      compartmentId: ${my-compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       cidrBlocks: ["{{ .Config.vcnCidr }}"]
       displayName: "my-vcn"
       dnsLabel: "myvcn"
-    options:
-      dependsOn:
-        - ${my-compartment}
 
 outputs:
-  compartmentId: ${my-compartment.id}
+  compartmentId: {{ .Config.compartmentId }}
   vcnId: ${my-vcn.id}

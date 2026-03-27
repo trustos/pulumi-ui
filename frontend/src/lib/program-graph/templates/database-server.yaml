@@ -7,9 +7,8 @@ meta:
   agentAccess: true
 
 config:
-  compartmentName:
+  compartmentId:
     type: string
-    default: "my-compartment"
   imageId:
     type: string
     default: ""
@@ -40,27 +39,17 @@ variables:
 
 resources:
   # --- section: networking ---
-  compartment:
-    type: oci:Identity/compartment:Compartment
-    properties:
-      compartmentId: ${oci:tenancyOcid}
-      name: "{{ .Config.compartmentName }}"
-      description: "Created by Pulumi"
-      enableDelete: "true"
   vcn:
     type: oci:Core/vcn:Vcn
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       cidrBlocks: ["10.0.0.0/16"]
       displayName: "db-vcn"
       dnsLabel: "dbvcn"
-    options:
-      dependsOn:
-        - ${compartment}
   nat-gw:
     type: oci:Core/natGateway:NatGateway
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "nat-gw"
     options:
@@ -69,7 +58,7 @@ resources:
   route-table:
     type: oci:Core/routeTable:RouteTable
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "db-rt"
       routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${nat-gw.id}" }]
@@ -79,7 +68,7 @@ resources:
   nsg:
     type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "db-nsg"
     options:
@@ -100,7 +89,7 @@ resources:
   subnet:
     type: oci:Core/subnet:Subnet
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       cidrBlock: "10.0.1.0/24"
       displayName: "db-subnet"
@@ -114,7 +103,7 @@ resources:
   db-server:
     type: oci:Core/instance:Instance
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       availabilityDomain: ${availabilityDomains[0].name}
       shape: "{{ .Config.shape }}"
       displayName: "db-server"
@@ -129,13 +118,10 @@ resources:
   data-volume:
     type: oci:Core/volume:Volume
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       availabilityDomain: ${availabilityDomains[0].name}
       displayName: "data-volume"
       sizeInGbs: {{ .Config.volumeSizeGbs }}
-    options:
-      dependsOn:
-        - ${compartment}
   volume-attach:
     type: oci:Core/volumeAttachment:VolumeAttachment
     properties:

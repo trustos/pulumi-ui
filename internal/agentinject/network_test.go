@@ -966,3 +966,140 @@ resources:
 	assert.Contains(t, result, "__agent_ln_my-nlb_0")
 	assert.Contains(t, result, "__agent_be_my-nlb_0")
 }
+
+// --- NLB serialization tests (409-Conflict prevention) ---
+
+func TestInjectNetworking_NLBSerializationAgainstUserResources(t *testing.T) {
+	// HA-pair pattern: user has NLB + backend-set + listener + backends.
+	// Agent backend sets must chain AFTER the last user NLB resource to
+	// prevent OCI 409 "Invalid State Transition from Updating to Updating".
+	input := `name: test
+runtime: yaml
+resources:
+  nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ocid1.compartment
+      subnetId: ${subnet.id}
+      isPrivate: "false"
+  backend-set:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${nlb.id}
+      name: app-backends
+      policy: FIVE_TUPLE
+      healthChecker:
+        protocol: TCP
+        port: 443
+  listener:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${nlb.id}
+      name: app-listener
+      defaultBackendSetName: ${backend-set.name}
+      protocol: TCP
+      port: 443
+  node-a:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      createVnicDetails:
+        subnetId: ${subnet.id}
+        assignPublicIp: true
+  node-b:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+      createVnicDetails:
+        subnetId: ${subnet.id}
+        assignPublicIp: true
+  backend-a:
+    type: oci:NetworkLoadBalancer/backend:Backend
+    properties:
+      networkLoadBalancerId: ${nlb.id}
+      backendSetName: ${backend-set.name}
+      targetId: ${node-a.id}
+      port: 443
+  backend-b:
+    type: oci:NetworkLoadBalancer/backend:Backend
+    properties:
+      networkLoadBalancerId: ${nlb.id}
+      backendSetName: ${backend-set.name}
+      targetId: ${node-b.id}
+      port: 443
+`
+	result, err := InjectNetworkingIntoYAML(input)
+	require.NoError(t, err)
+
+	// Agent backend sets should exist
+	assert.Contains(t, result, "__agent_bs_nlb_0")
+	assert.Contains(t, result, "__agent_bs_nlb_1")
+
+	// First agent backend set must depend on the last user NLB resource (backend-b)
+	// to prevent concurrent NLB mutations.
+	assert.Contains(t, result, "${backend-b}", "first agent BS must chain after last user NLB resource")
+
+	// Agent resources should be serialized: bs_0 → ln_0 → be_0 → bs_1 → ln_1 → be_1
+	bs0Pos := strings.Index(result, "__agent_bs_nlb_0:")
+	ln0Pos := strings.Index(result, "__agent_ln_nlb_0:")
+	be0Pos := strings.Index(result, "__agent_be_nlb_0:")
+	bs1Pos := strings.Index(result, "__agent_bs_nlb_1:")
+	ln1Pos := strings.Index(result, "__agent_ln_nlb_1:")
+	be1Pos := strings.Index(result, "__agent_be_nlb_1:")
+
+	assert.Greater(t, ln0Pos, bs0Pos, "ln_0 after bs_0")
+	assert.Greater(t, be0Pos, ln0Pos, "be_0 after ln_0")
+	assert.Greater(t, bs1Pos, be0Pos, "bs_1 after be_0")
+	assert.Greater(t, ln1Pos, bs1Pos, "ln_1 after bs_1")
+	assert.Greater(t, be1Pos, ln1Pos, "be_1 after ln_1")
+}
+
+func TestInjectNetworking_NLBSerializationMinimal(t *testing.T) {
+	// NLB with no user backend sets — agent BS should depend on NLB itself.
+	input := `name: test
+runtime: yaml
+resources:
+  my-nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ocid1.compartment
+      subnetId: ${subnet.id}
+  node-a:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+`
+	result, err := InjectNetworkingIntoYAML(input)
+	require.NoError(t, err)
+
+	// First agent BS should depend on the NLB itself (no user children to chain after)
+	assert.Contains(t, result, "${my-nlb}", "agent BS must depend on NLB when no user children exist")
+}
+
+func TestInjectNetworking_NLBSerializationCrossNodeChaining(t *testing.T) {
+	// With 2 nodes, the second agent backend set should chain after the
+	// first node's backend (be_0), not after the user's last resource.
+	input := `name: test
+runtime: yaml
+resources:
+  nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ocid1.compartment
+      subnetId: ${subnet.id}
+  node-a:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+  node-b:
+    type: oci:Core/instance:Instance
+    properties:
+      compartmentId: ocid1.compartment
+`
+	result, err := InjectNetworkingIntoYAML(input)
+	require.NoError(t, err)
+
+	// bs_1 should depend on be_0 (cross-node chaining)
+	assert.Contains(t, result, "__agent_bs_nlb_1")
+	assert.Contains(t, result, "${__agent_be_nlb_0}", "second node BS should chain after first node backend")
+}

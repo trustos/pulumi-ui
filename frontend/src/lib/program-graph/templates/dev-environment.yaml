@@ -7,9 +7,8 @@ meta:
   agentAccess: true
 
 config:
-  compartmentName:
+  compartmentId:
     type: string
-    default: "my-dev"
   imageId:
     type: string
     default: ""
@@ -36,27 +35,17 @@ variables:
 
 resources:
   # --- section: networking ---
-  compartment:
-    type: oci:Identity/compartment:Compartment
-    properties:
-      compartmentId: ${oci:tenancyOcid}
-      name: "{{ .Config.compartmentName }}"
-      description: "Created by Pulumi"
-      enableDelete: "true"
   vcn:
     type: oci:Core/vcn:Vcn
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       cidrBlocks: ["10.0.0.0/16"]
       displayName: "dev-vcn"
       dnsLabel: "dev"
-    options:
-      dependsOn:
-        - ${compartment}
   igw:
     type: oci:Core/internetGateway:InternetGateway
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "igw"
       enabled: "true"
@@ -66,7 +55,7 @@ resources:
   route-table:
     type: oci:Core/routeTable:RouteTable
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "dev-rt"
       routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
@@ -76,7 +65,7 @@ resources:
   nsg:
     type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       displayName: "dev-nsg"
     options:
@@ -97,7 +86,7 @@ resources:
   subnet:
     type: oci:Core/subnet:Subnet
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
       cidrBlock: "10.0.1.0/24"
       displayName: "dev-subnet"
@@ -111,7 +100,7 @@ resources:
   dev-box:
     type: oci:Core/instance:Instance
     properties:
-      compartmentId: ${compartment.id}
+      compartmentId: {{ .Config.compartmentId }}
       availabilityDomain: ${availabilityDomains[0].name}
       shape: "{{ .Config.shape }}"
       displayName: "dev-box"
