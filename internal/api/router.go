@@ -144,6 +144,9 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Post("/stacks/{name}/agent/upload", h.AgentUpload)
 			r.Get("/stacks/{name}/agent/shell", h.AgentShell)
 
+			// Mesh config download (for local machine Nebula access)
+			r.Get("/stacks/{name}/mesh/config", h.DownloadMeshConfig)
+
 			// Passphrases
 			r.Get("/passphrases", h.ListPassphrases)
 			r.Post("/passphrases", h.CreatePassphrase)

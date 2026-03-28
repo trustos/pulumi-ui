@@ -684,9 +684,24 @@
                 <Card.Title class="text-sm flex items-center gap-2">
                   Nodes
                   <Badge variant="secondary">{info.nodes.length}</Badge>
-                  <Button size="sm" variant="ghost" class="ml-auto h-6 px-2 text-xs" onclick={loadAgentStatus}>
-                    Refresh Status
-                  </Button>
+                  <div class="ml-auto flex gap-1">
+                    <Button size="sm" variant="ghost" class="h-6 px-2 text-xs" onclick={loadAgentStatus}>
+                      Refresh Status
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      class="h-6 px-2 text-xs"
+                      onclick={() => {
+                        const a = document.createElement('a');
+                        a.href = `/api/stacks/${name}/mesh/config`;
+                        a.download = `nebula-${name}.yml`;
+                        a.click();
+                      }}
+                    >
+                      Join Mesh
+                    </Button>
+                  </div>
                 </Card.Title>
               </Card.Header>
               <Card.Content class="py-2">
