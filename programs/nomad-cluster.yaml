@@ -106,9 +106,7 @@ resources:
       compartmentId: ${oci:tenancyOcid}
       name: nomad-iam-prereq
       description: "Grants admin group permission to manage dynamic groups and policies"
-      statements:
-        - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}
-        - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage policies in tenancy" | quote }}
+      statements: [{{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}, {{ groupRef .Config.adminGroupName .Config.identityDomain "manage policies in tenancy" | quote }}]
 {{- end }}
   nomad-cluster-dg:
     type: oci:Identity/dynamicGroup:DynamicGroup
@@ -123,17 +121,7 @@ resources:
       compartmentId: ${nomad-compartment.id}
       name: nomad-cluster-policy
       description: "Allow Nomad cluster nodes to manage cluster resources"
-      statements:
-        - "Allow dynamic-group nomad-cluster-dg to inspect instances in compartment id ${nomad-compartment.id}"
-        - "Allow dynamic-group nomad-cluster-dg to inspect vnics in compartment id ${nomad-compartment.id}"
-        - "Allow dynamic-group nomad-cluster-dg to inspect compartments in tenancy"
-        - "Allow dynamic-group nomad-cluster-dg to inspect tenancies in tenancy"
-        - "Allow dynamic-group nomad-cluster-dg to read instance-family in compartment id ${nomad-compartment.id}"
-        - "Allow dynamic-group nomad-cluster-dg to read compute-management-family in compartment id ${nomad-compartment.id}"
-        - "Allow dynamic-group nomad-cluster-dg to read load-balancers in compartment id ${nomad-compartment.id}"
-        - "Allow dynamic-group nomad-cluster-dg to inspect private-ips in compartment id ${nomad-compartment.id}"
-        - "Allow dynamic-group nomad-cluster-dg to manage buckets in compartment id ${nomad-compartment.id}"
-        - "Allow dynamic-group nomad-cluster-dg to manage objects in compartment id ${nomad-compartment.id}"
+      statements: ["Allow dynamic-group nomad-cluster-dg to inspect instances in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to inspect vnics in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to inspect compartments in tenancy", "Allow dynamic-group nomad-cluster-dg to inspect tenancies in tenancy", "Allow dynamic-group nomad-cluster-dg to read instance-family in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to read compute-management-family in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to read load-balancers in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to inspect private-ips in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to manage buckets in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to manage objects in compartment id ${nomad-compartment.id}"]
     options:
       dependsOn:
         - ${nomad-cluster-dg}
