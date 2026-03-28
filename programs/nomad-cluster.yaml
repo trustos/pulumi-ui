@@ -1,6 +1,6 @@
 name: nomad-cluster
 runtime: yaml
-description: "Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible) — instance pool behind a public NLB with Traefik ingress"
+description: "Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible) — individual instances behind a public NLB with Traefik ingress"
 
 meta:
   agentAccess: true
@@ -117,11 +117,6 @@ resources:
       name: nomad-cluster-dg
       description: "Dynamic group for Nomad cluster instances"
       matchingRule: "ALL {instance.compartment.id = '${nomad-compartment.id}'}"
-{{- if .Config.adminGroupName }}
-    options:
-      dependsOn:
-        - ${nomad-iam-prereq-policy}
-{{- end }}
   nomad-cluster-policy:
     type: oci:Identity/policy:Policy
     properties:
@@ -179,21 +174,15 @@ resources:
         - protocol: "6"
           source: "0.0.0.0/0"
           sourceType: CIDR_BLOCK
-          tcpOptions:
-            max: 80
-            min: 80
+          tcpOptions: { destinationPortRange: { min: 80, max: 80 } }
         - protocol: "6"
           source: "0.0.0.0/0"
           sourceType: CIDR_BLOCK
-          tcpOptions:
-            max: 443
-            min: 443
+          tcpOptions: { destinationPortRange: { min: 443, max: 443 } }
         - protocol: "6"
           source: {{ .Config.sshSourceCidr | quote }}
           sourceType: CIDR_BLOCK
-          tcpOptions:
-            max: 22
-            min: 22
+          tcpOptions: { destinationPortRange: { min: 22, max: 22 } }
         - protocol: "all"
           source: {{ .Config.vcnCidr | quote }}
           sourceType: CIDR_BLOCK
@@ -249,8 +238,7 @@ resources:
       dnsLabel: "nomadvcnpub"
       prohibitPublicIpOnVnic: false
       routeTableId: ${nomad-public-rt.id}
-      securityListIds:
-        - ${public-security-list.id}
+      securityListIds: ["${public-security-list.id}"]
       dhcpOptionsId: ${nomad-vcn.defaultDhcpOptionsId}
 
   private-subnet:
@@ -263,8 +251,7 @@ resources:
       dnsLabel: "nomadvcnpriv"
       prohibitPublicIpOnVnic: true
       routeTableId: ${nomad-private-rt.id}
-      securityListIds:
-        - ${private-security-list.id}
+      securityListIds: ["${private-security-list.id}"]
       dhcpOptionsId: ${nomad-vcn.defaultDhcpOptionsId}
 
   ssh-nsg:
@@ -391,10 +378,7 @@ resources:
       createVnicDetails:
         subnetId: ${private-subnet.id}
         assignPublicIp: false
-        nsgIds:
-          - ${ssh-nsg.id}
-          - ${nomad-nsg.id}
-          - ${traefik-nsg.id}
+        nsgIds: ["${ssh-nsg.id}", "${nomad-nsg.id}", "${traefik-nsg.id}"]
       metadata:
         ssh_authorized_keys: {{ $.Config.sshPublicKey }}
         user_data: {{ cloudInit $i $.Config }}
@@ -408,57 +392,126 @@ resources:
       subnetId: ${public-subnet.id}
       displayName: "traefik-nlb"
       isPrivate: false
-      networkSecurityGroupIds:
-        - ${traefik-nsg.id}
+      networkSecurityGroupIds: ["${traefik-nsg.id}"]
 
-{{- $prevNlbResource := "traefik-nlb" }}
-{{- range $port := list 80 443 4646 }}
-  traefik-nlb-bs-{{ $port }}:
+  traefik-nlb-bs-80:
     type: oci:NetworkLoadBalancer/backendSet:BackendSet
     properties:
       networkLoadBalancerId: ${traefik-nlb.id}
-      name: {{ printf "bs-%d" $port | quote }}
+      name: "bs-80"
       policy: FIVE_TUPLE
       isPreserveSource: false
       healthChecker:
         protocol: TCP
-        port: {{ $port }}
+        port: 80
     options:
       dependsOn:
-        - {{ printf "${%s}" $prevNlbResource }}
+        - ${traefik-nlb}
 
-  traefik-nlb-listener-{{ $port }}:
+  traefik-nlb-listener-80:
     type: oci:NetworkLoadBalancer/listener:Listener
     properties:
       networkLoadBalancerId: ${traefik-nlb.id}
-      name: {{ printf "listener-%d" $port | quote }}
-      defaultBackendSetName: {{ printf "bs-%d" $port | quote }}
+      name: "listener-80"
+      defaultBackendSetName: "bs-80"
       protocol: TCP
-      port: {{ $port }}
+      port: 80
     options:
       dependsOn:
-        - {{ printf "${%s}" $prevNlbResource }}
-        - ${traefik-nlb-bs-{{ $port }}}
-  {{- $prevNlbResource = printf "traefik-nlb-listener-%d" $port }}
+        - ${traefik-nlb-bs-80}
 
-  {{- range $i := until (atoi $.Config.nodeCount) }}
-  traefik-nlb-backend-{{ $port }}-{{ $i }}:
+{{- range $i := until (atoi $.Config.nodeCount) }}
+  traefik-nlb-backend-80-{{ $i }}:
     type: oci:NetworkLoadBalancer/backend:Backend
     properties:
       networkLoadBalancerId: ${traefik-nlb.id}
-      backendSetName: {{ printf "bs-%d" $port | quote }}
+      backendSetName: "bs-80"
       targetId: ${nomad-instance-{{ $i }}.id}
-      port: {{ $port }}
+      port: 80
     options:
       dependsOn:
-        - ${traefik-nlb-bs-{{ $port }}}
-  {{- end }}
+        - ${traefik-nlb-bs-80}
+{{- end }}
+
+  traefik-nlb-bs-443:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: "bs-443"
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: 443
+    options:
+      dependsOn:
+        - ${traefik-nlb-listener-80}
+
+  traefik-nlb-listener-443:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: "listener-443"
+      defaultBackendSetName: "bs-443"
+      protocol: TCP
+      port: 443
+    options:
+      dependsOn:
+        - ${traefik-nlb-bs-443}
+
+{{- range $i := until (atoi $.Config.nodeCount) }}
+  traefik-nlb-backend-443-{{ $i }}:
+    type: oci:NetworkLoadBalancer/backend:Backend
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      backendSetName: "bs-443"
+      targetId: ${nomad-instance-{{ $i }}.id}
+      port: 443
+    options:
+      dependsOn:
+        - ${traefik-nlb-bs-443}
+{{- end }}
+
+  traefik-nlb-bs-4646:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: "bs-4646"
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: 4646
+    options:
+      dependsOn:
+        - ${traefik-nlb-listener-443}
+
+  traefik-nlb-listener-4646:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      name: "listener-4646"
+      defaultBackendSetName: "bs-4646"
+      protocol: TCP
+      port: 4646
+    options:
+      dependsOn:
+        - ${traefik-nlb-bs-4646}
+
+{{- range $i := until (atoi $.Config.nodeCount) }}
+  traefik-nlb-backend-4646-{{ $i }}:
+    type: oci:NetworkLoadBalancer/backend:Backend
+    properties:
+      networkLoadBalancerId: ${traefik-nlb.id}
+      backendSetName: "bs-4646"
+      targetId: ${nomad-instance-{{ $i }}.id}
+      port: 4646
+    options:
+      dependsOn:
+        - ${traefik-nlb-bs-4646}
 {{- end }}
 
 outputs:
   traefikNlbIps: ${traefik-nlb.ipAddresses}
   privateSubnetId: ${private-subnet.id}
   nlbPublicIp: ${traefik-nlb.ipAddresses[0].ipAddress}
-{{- range $i := until (atoi $.Config.nodeCount) }}
-  instance-{{ $i }}-privateIp: ${nomad-instance-{{ $i }}.privateIp}
-{{- end }}

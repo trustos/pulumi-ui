@@ -57,9 +57,6 @@
 
   let yamlText = $state('');
   let activeSectionId = $state('main');
-  // Guards against syncGraphToYaml() running before the roundtrip safety check completes.
-  // Set true during onMount; cleared after isRoundtripSafe resolves.
-  let roundtripCheckPending = $state(false);
 
   let validationErrors = $state<ValidationError[]>([]);
   let saving = $state(false);
@@ -273,7 +270,6 @@
     loading = true;
     try {
       if (fork) {
-        roundtripCheckPending = true;
         const result = await forkProgram(name);
         const yaml = result.programYaml;
         programName = name + '-custom';
@@ -283,11 +279,10 @@
         description = graph.metadata.description;
         agentAccess = graph.metadata.agentAccess ?? false;
         yamlText = yaml;
-        if (parsed.degraded || !(await isRoundtripSafe(yaml, parsed.graph))) {
+        if (parsed.degraded) {
           syncStatus = 'partial';
           mode = 'yaml';
         }
-        roundtripCheckPending = false;
       } else {
         const p = await getProgram(name);
         const yaml = (p as any).programYaml ?? '';
@@ -295,16 +290,14 @@
         displayName = p.displayName;
         description = p.description ?? '';
         if (yaml) {
-          roundtripCheckPending = true;
           yamlText = yaml;
           const parsed = yamlToGraph(yaml);
           graph = parsed.graph;
           agentAccess = graph.metadata.agentAccess ?? false;
-          if (parsed.degraded || !(await isRoundtripSafe(yaml, parsed.graph))) {
+          if (parsed.degraded) {
             syncStatus = 'partial';
             mode = 'yaml';
           }
-          roundtripCheckPending = false;
           activeSectionId = graph.sections[0]?.id ?? 'main';
         }
       }
@@ -316,33 +309,6 @@
   });
 
   // ── Graph ↔ YAML sync ────────────────────────────────────────────────────
-
-  /** Check whether a parse→serialize roundtrip preserves the YAML's integrity.
-   *  Compares backend validation results: if the re-serialized YAML produces
-   *  MORE blocking errors (levels 1-6) than the original, it's not safe.
-   *  Falls back to local heuristics if the backend call fails. */
-  async function isRoundtripSafe(originalYaml: string, parsedGraph: ProgramGraph): Promise<boolean> {
-    try {
-      const reserialized = graphToYaml(parsedGraph);
-      // Quick local check: balanced template blocks
-      const opens = (reserialized.match(/\{\{-?\s*(if|range)\b/g) || []).length;
-      const ends = (reserialized.match(/\{\{-?\s*end\b/g) || []).length;
-      if (opens !== ends) return false;
-
-      // Backend check: validate both and compare blocking error count
-      const [origResult, reserResult] = await Promise.all([
-        validateProgram(originalYaml).catch(() => null),
-        validateProgram(reserialized).catch(() => null),
-      ]);
-      if (!origResult || !reserResult) return true; // can't check, assume safe
-
-      const origBlocking = (origResult.errors ?? []).filter((e: ValidationError) => e.level <= 6).length;
-      const reserBlocking = (reserResult.errors ?? []).filter((e: ValidationError) => e.level <= 6).length;
-      return reserBlocking <= origBlocking;
-    } catch {
-      return false;
-    }
-  }
 
   /** Serialize the current in-memory graph to yamlText (keeps them in sync).
    *  Returns false if the serialized YAML is corrupt (unbalanced template blocks). */
@@ -379,7 +345,7 @@
       scheduleValidation();
       return;
     }
-    if (syncStatus !== 'partial' && !roundtripCheckPending) {
+    if (syncStatus !== 'partial') {
       syncGraphToYaml(); // may set syncStatus to 'partial' if corrupt
     }
     scheduleValidation();
