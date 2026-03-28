@@ -439,11 +439,12 @@ function tryParseLoop(content: string): LoopItem | null {
     source = { type: 'raw', expr: rangeExpr };
   }
 
-  // Extract body between range and end
+  // Extract body between range and the matching end (depth-aware for nested loops/ifs)
   const startIdx = content.indexOf('}}', content.indexOf('{{')) + 2;
-  const endMatch = /\{\{-?\s*end\s*\}\}/.exec(content.slice(startIdx));
-  if (!endMatch) return null;
-  const bodyContent = content.slice(startIdx, startIdx + endMatch.index);
+  const afterRange = content.slice(startIdx);
+  const endIdx = findOuterEndIndex(afterRange);
+  if (endIdx === -1) return null;
+  const bodyContent = afterRange.slice(0, endIdx);
 
   let bodyItems = parseItems(bodyContent);
   // Strip the loop-variable template suffix from resource names.
