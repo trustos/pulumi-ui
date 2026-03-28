@@ -279,7 +279,7 @@
         description = graph.metadata.description;
         agentAccess = graph.metadata.agentAccess ?? false;
         yamlText = yaml;
-        if (parsed.degraded || !isRoundtripSafe(yaml, parsed.graph)) {
+        if (parsed.degraded || !(await isRoundtripSafe(yaml, parsed.graph))) {
           syncStatus = 'partial';
           mode = 'yaml';
         }
@@ -294,7 +294,7 @@
           const parsed = yamlToGraph(yaml);
           graph = parsed.graph;
           agentAccess = graph.metadata.agentAccess ?? false;
-          if (parsed.degraded || !isRoundtripSafe(yaml, parsed.graph)) {
+          if (parsed.degraded || !(await isRoundtripSafe(yaml, parsed.graph))) {
             syncStatus = 'partial';
             mode = 'yaml';
           }
@@ -311,25 +311,27 @@
   // ── Graph ↔ YAML sync ────────────────────────────────────────────────────
 
   /** Check whether a parse→serialize roundtrip preserves the YAML's integrity.
-   *  Returns false if re-serialization would corrupt the template (unbalanced
-   *  blocks, duplicate keys, etc.). Used at load time to decide whether to
-   *  allow visual-mode editing or preserve the original YAML. */
-  function isRoundtripSafe(_originalYaml: string, parsedGraph: ProgramGraph): boolean {
+   *  Compares backend validation results: if the re-serialized YAML produces
+   *  MORE blocking errors (levels 1-6) than the original, it's not safe.
+   *  Falls back to local heuristics if the backend call fails. */
+  async function isRoundtripSafe(originalYaml: string, parsedGraph: ProgramGraph): Promise<boolean> {
     try {
       const reserialized = graphToYaml(parsedGraph);
-      // Check 1: balanced template blocks
+      // Quick local check: balanced template blocks
       const opens = (reserialized.match(/\{\{-?\s*(if|range)\b/g) || []).length;
       const ends = (reserialized.match(/\{\{-?\s*end\b/g) || []).length;
       if (opens !== ends) return false;
-      // Check 2: no duplicate YAML mapping keys (resources with same name)
-      const keyRe = /^  ([\w][\w-]*):\s*$/gm;
-      const keys = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = keyRe.exec(reserialized)) !== null) {
-        if (keys.has(m[1])) return false;
-        keys.add(m[1]);
-      }
-      return true;
+
+      // Backend check: validate both and compare blocking error count
+      const [origResult, reserResult] = await Promise.all([
+        validateProgram(originalYaml).catch(() => null),
+        validateProgram(reserialized).catch(() => null),
+      ]);
+      if (!origResult || !reserResult) return true; // can't check, assume safe
+
+      const origBlocking = (origResult.errors ?? []).filter((e: ValidationError) => e.level <= 6).length;
+      const reserBlocking = (reserResult.errors ?? []).filter((e: ValidationError) => e.level <= 6).length;
+      return reserBlocking <= origBlocking;
     } catch {
       return false;
     }
