@@ -332,9 +332,11 @@
   }
 
   // Auto-sync graph → YAML and re-validate when the graph changes in visual mode.
-  // Skip the first change (initial parse on load) to avoid overwriting pristine YAML.
-  // When the program is degraded (parser couldn't fully represent it), NEVER
-  // re-serialize — the graph is incomplete and would produce broken YAML.
+  // pristineYaml is true until the user makes an actual edit in visual mode.
+  // While pristine, syncGraphToYaml() is never called — the original YAML is
+  // preserved. This prevents the serializer from converting expanded YAML formats
+  // (sourceDetails, shapeConfig, etc.) to inline { } which Pulumi YAML rejects.
+  let pristineYaml = $state(true);
   let graphSignal = $derived(mode === 'visual' ? JSON.stringify(graph) : '');
   let graphChangeCount = 0;
   $effect(() => {
@@ -345,6 +347,8 @@
       scheduleValidation();
       return;
     }
+    // User made a visual edit — no longer pristine
+    pristineYaml = false;
     if (syncStatus !== 'partial') {
       syncGraphToYaml(); // may set syncStatus to 'partial' if corrupt
     }
@@ -353,7 +357,8 @@
 
   // ── Tab switch ────────────────────────────────────────────────────────────
   function switchToYaml() {
-    if (syncStatus !== 'partial') {
+    // Don't re-serialize pristine YAML — preserve original expanded formats
+    if (!pristineYaml && syncStatus !== 'partial') {
       syncGraphToYaml(); // may set syncStatus to 'partial' if corrupt
     }
     mode = 'yaml';
@@ -667,12 +672,11 @@
       return;
     }
 
-    // Get current YAML — in visual mode, sync the graph to YAML first (if not
-    // already synced), then use yamlText. This avoids re-serializing from scratch
-    // which would lose expanded YAML formats that the parser simplified to inline.
-    if (mode === 'visual' && syncStatus === 'synced') {
-      // yamlText was already updated by syncGraphToYaml() or is the original pristine YAML
-    } else if (mode === 'visual') {
+    // Get current YAML. When the YAML is pristine (no visual edits made), use
+    // the original yamlText directly — this preserves expanded formats that the
+    // serializer would convert to inline { } (which Pulumi YAML rejects for
+    // nested objects like sourceDetails, shapeConfig, metadata).
+    if (mode === 'visual' && !pristineYaml && syncStatus !== 'partial') {
       syncGraphToYaml();
     }
     let yaml = yamlText;
