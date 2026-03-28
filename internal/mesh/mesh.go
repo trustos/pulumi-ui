@@ -461,6 +461,15 @@ func (t *Tunnel) Dial(ctx context.Context) (net.Conn, error) {
 	return t.svc.DialContext(ctx, "tcp", t.agentAddr)
 }
 
+// DialPort opens a TCP connection to an arbitrary port on the agent's Nebula IP.
+func (t *Tunnel) DialPort(ctx context.Context, port int) (net.Conn, error) {
+	t.mu.Lock()
+	t.lastUsed = time.Now()
+	t.mu.Unlock()
+	addr := fmt.Sprintf("%s:%d", t.AgentNebulaIP(), port)
+	return t.svc.DialContext(ctx, "tcp", addr)
+}
+
 // HTTPClient returns an http.Client that routes through the Nebula tunnel.
 func (t *Tunnel) HTTPClient() *http.Client {
 	return &http.Client{

@@ -197,3 +197,14 @@ export interface OciImportResult {
   accountId?: string;
   error?: string;
 }
+
+export interface PortForward {
+  id: string;
+  stackName: string;
+  nodeIndex: number;
+  remotePort: number;
+  localPort: number;
+  localAddr: string;
+  activeConns: number;
+  createdAt: number;
+}

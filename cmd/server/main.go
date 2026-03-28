@@ -163,6 +163,7 @@ func main() {
 	// HTTP handler
 	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customPrograms, eng, registry, connStore)
 	h.MeshManager = meshMgr
+	h.ForwardManager = mesh.NewForwardManager(meshMgr)
 	h.NodeCertStore = nodeCertStore
 	h.LogBuffer = logBuf
 	h.AgentBinaries = agentBinaries

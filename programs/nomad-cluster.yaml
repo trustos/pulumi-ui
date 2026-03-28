@@ -253,20 +253,6 @@ resources:
       vcnId: ${nomad-vcn.id}
       displayName: "nomad-nsg"
 
-  nomad-nsg-rule-4646:
-    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
-    properties:
-      networkSecurityGroupId: ${nomad-nsg.id}
-      direction: INGRESS
-      protocol: "6"
-      source: {{ .Config.publicSubnetCidr | quote }}
-      sourceType: CIDR_BLOCK
-      tcpOptions:
-        destinationPortRange:
-          min: 4646
-          max: 4646
-      description: "Allow Nomad port 4646 from public subnet"
-
   nomad-nsg-rule-4647:
     type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
     properties:
@@ -448,49 +434,6 @@ resources:
         - ${traefik-nlb-listener-443}
 {{- else }}
         - ${traefik-nlb-backend-443-{{ sub $i 1 }}}
-{{- end }}
-{{- end }}
-
-  traefik-nlb-bs-4646:
-    type: oci:NetworkLoadBalancer/backendSet:BackendSet
-    properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
-      name: "bs-4646"
-      policy: FIVE_TUPLE
-      isPreserveSource: false
-      healthChecker:
-        protocol: TCP
-        port: 4646
-    options:
-      dependsOn:
-        - ${traefik-nlb-backend-443-{{ sub (atoi $.Config.nodeCount) 1 }}}
-
-  traefik-nlb-listener-4646:
-    type: oci:NetworkLoadBalancer/listener:Listener
-    properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
-      name: "listener-4646"
-      defaultBackendSetName: "bs-4646"
-      protocol: TCP
-      port: 4646
-    options:
-      dependsOn:
-        - ${traefik-nlb-bs-4646}
-
-{{- range $i := until (atoi $.Config.nodeCount) }}
-  traefik-nlb-backend-4646-{{ $i }}:
-    type: oci:NetworkLoadBalancer/backend:Backend
-    properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
-      backendSetName: "bs-4646"
-      targetId: ${nomad-instance-{{ $i }}.id}
-      port: 4646
-    options:
-      dependsOn:
-{{- if eq $i 0 }}
-        - ${traefik-nlb-listener-4646}
-{{- else }}
-        - ${traefik-nlb-backend-4646-{{ sub $i 1 }}}
 {{- end }}
 {{- end }}
 

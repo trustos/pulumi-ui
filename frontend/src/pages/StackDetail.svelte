@@ -10,8 +10,8 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, agentShellUrl } from '$lib/api';
-  import type { StackInfo, OciAccount, ProgramMeta, ApplicationDef, AgentHealth, AgentService } from '$lib/types';
+  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, agentShellUrl, listPortForwards, startPortForward, stopPortForward } from '$lib/api';
+  import type { StackInfo, OciAccount, ProgramMeta, ApplicationDef, AgentHealth, AgentService, PortForward } from '$lib/types';
   import EditStackDialog from '$lib/components/EditStackDialog.svelte';
   import WebTerminal from '$lib/components/WebTerminal.svelte';
 
@@ -59,6 +59,13 @@
   let agentError = $state('');
   let showTerminal = $state(false);
   let selectedNodeIndex = $state<number | undefined>(undefined);
+
+  // Port forwarding
+  let portForwards = $state<PortForward[]>([]);
+  let fwdRemotePort = $state('');
+  let fwdNodeIndex = $state(0);
+  let fwdError = $state('');
+  let fwdStarting = $state(false);
   const selectedApps = $derived<Record<string, boolean>>(info?.applications ?? {});
   const bootstrapApps = $derived(appCatalog.filter(a => a.tier === 'bootstrap' && selectedApps[a.key]));
   const workloadApps = $derived(appCatalog.filter(a => a.tier === 'workload' && selectedApps[a.key]));
@@ -149,6 +156,42 @@
     }
   }
 
+  async function loadForwards() {
+    try {
+      portForwards = await listPortForwards(name);
+    } catch {
+      portForwards = [];
+    }
+  }
+
+  async function doStartForward() {
+    const port = parseInt(fwdRemotePort);
+    if (!port || port < 1 || port > 65535) {
+      fwdError = 'Enter a valid port (1-65535)';
+      return;
+    }
+    fwdError = '';
+    fwdStarting = true;
+    try {
+      await startPortForward(name, port, fwdNodeIndex);
+      fwdRemotePort = '';
+      await loadForwards();
+    } catch (err) {
+      fwdError = err instanceof Error ? err.message : String(err);
+    } finally {
+      fwdStarting = false;
+    }
+  }
+
+  async function doStopForward(id: string) {
+    try {
+      await stopPortForward(name, id);
+      await loadForwards();
+    } catch (err) {
+      fwdError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
   function pollUntilDone() {
     const interval = setInterval(async () => {
       try {
@@ -188,6 +231,7 @@
   $effect(() => {
     loadInfo();
     loadPersistedLogs();
+    loadForwards();
     listAccounts().then((a) => { accounts = a; }).catch(() => {});
     listPrograms().then((p) => { programs = p; }).catch(() => {});
   });
@@ -688,19 +732,6 @@
                     <Button size="sm" variant="ghost" class="h-6 px-2 text-xs" onclick={loadAgentStatus}>
                       Refresh Status
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      class="h-6 px-2 text-xs"
-                      onclick={() => {
-                        const a = document.createElement('a');
-                        a.href = `/api/stacks/${name}/mesh/config`;
-                        a.download = `nebula-${name}.yml`;
-                        a.click();
-                      }}
-                    >
-                      Join Mesh
-                    </Button>
                   </div>
                 </Card.Title>
               </Card.Header>
@@ -831,6 +862,62 @@
               </Card.Content>
             </Card.Root>
           {/if}
+
+          <!-- Port Forwarding -->
+          <Card.Root>
+            <Card.Header class="py-3">
+              <Card.Title class="text-sm flex items-center gap-2">
+                Port Forwarding
+                {#if portForwards.length > 0}
+                  <Badge variant="secondary">{portForwards.length}</Badge>
+                {/if}
+              </Card.Title>
+            </Card.Header>
+            <Card.Content class="py-2 space-y-3">
+              <!-- Active forwards -->
+              {#if portForwards.length > 0}
+                <div class="space-y-2">
+                  {#each portForwards as fwd}
+                    <div class="flex items-center gap-3 text-sm border rounded px-3 py-2">
+                      <span class="font-mono text-xs">localhost:{fwd.localPort}</span>
+                      <span class="text-muted-foreground">→</span>
+                      <span class="font-mono text-xs">node {fwd.nodeIndex}:{fwd.remotePort}</span>
+                      {#if fwd.activeConns > 0}
+                        <Badge variant="secondary" class="text-xs">{fwd.activeConns} conn</Badge>
+                      {/if}
+                      <Button size="sm" variant="ghost" class="ml-auto h-6 px-2 text-xs text-destructive" onclick={() => doStopForward(fwd.id)}>
+                        Stop
+                      </Button>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+
+              <!-- New forward form -->
+              <div class="flex items-center gap-2">
+                {#if info?.nodes && info.nodes.length > 1}
+                  <select bind:value={fwdNodeIndex} class="h-7 rounded border bg-background px-2 text-xs">
+                    {#each info.nodes as node}
+                      <option value={node.nodeIndex}>Node {node.nodeIndex}</option>
+                    {/each}
+                  </select>
+                {/if}
+                <input
+                  type="number"
+                  bind:value={fwdRemotePort}
+                  placeholder="Remote port (e.g. 4646)"
+                  class="h-7 w-48 rounded border bg-background px-2 text-xs font-mono"
+                  onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') doStartForward(); }}
+                />
+                <Button size="sm" variant="outline" class="h-7 px-3 text-xs" onclick={doStartForward} disabled={fwdStarting}>
+                  {fwdStarting ? 'Starting…' : 'Forward'}
+                </Button>
+              </div>
+              {#if fwdError}
+                <p class="text-xs text-destructive">{fwdError}</p>
+              {/if}
+            </Card.Content>
+          </Card.Root>
 
           <!-- Terminal -->
           {#if showTerminal && selectedNodeIndex !== undefined}

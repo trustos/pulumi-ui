@@ -1,4 +1,4 @@
-import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult } from './types';
+import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward } from './types';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -558,6 +558,33 @@ export async function getLogs(): Promise<LogEntry[]> {
   const res = await fetch('/api/logs');
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+// Port forwarding
+export async function listPortForwards(stackName: string): Promise<PortForward[]> {
+  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/forward`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function startPortForward(stackName: string, remotePort: number, nodeIndex: number, localPort = 0): Promise<PortForward> {
+  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/forward`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ remotePort, nodeIndex, localPort }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function stopPortForward(stackName: string, id: string): Promise<void> {
+  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/forward/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
 export function streamLogs(onEntry: (entry: LogEntry) => void, onError?: (err: Error) => void): () => void {

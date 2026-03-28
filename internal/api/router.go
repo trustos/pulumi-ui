@@ -33,6 +33,7 @@ type Handler struct {
 	ConnStore      *db.StackConnectionStore
 	NodeCertStore  *db.NodeCertStore
 	MeshManager    *mesh.Manager
+	ForwardManager *mesh.ForwardManager
 	LogBuffer      *logbuffer.Buffer
 	AgentBinaries  embed.FS // embedded agent_linux_{arm64,amd64} binaries
 }
@@ -146,6 +147,11 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 
 			// Mesh config download (for local machine Nebula access)
 			r.Get("/stacks/{name}/mesh/config", h.DownloadMeshConfig)
+
+			// Port forwarding (TCP proxy through Nebula mesh)
+			r.Get("/stacks/{name}/forward", h.ListPortForwards)
+			r.Post("/stacks/{name}/forward", h.StartPortForward)
+			r.Delete("/stacks/{name}/forward/{id}", h.StopPortForward)
 
 			// Passphrases
 			r.Get("/passphrases", h.ListPassphrases)
