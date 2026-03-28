@@ -57,6 +57,9 @@
 
   let yamlText = $state('');
   let activeSectionId = $state('main');
+  // Guards against syncGraphToYaml() running before the roundtrip safety check completes.
+  // Set true during onMount; cleared after isRoundtripSafe resolves.
+  let roundtripCheckPending = $state(false);
 
   let validationErrors = $state<ValidationError[]>([]);
   let saving = $state(false);
@@ -270,6 +273,7 @@
     loading = true;
     try {
       if (fork) {
+        roundtripCheckPending = true;
         const result = await forkProgram(name);
         const yaml = result.programYaml;
         programName = name + '-custom';
@@ -283,6 +287,7 @@
           syncStatus = 'partial';
           mode = 'yaml';
         }
+        roundtripCheckPending = false;
       } else {
         const p = await getProgram(name);
         const yaml = (p as any).programYaml ?? '';
@@ -290,6 +295,7 @@
         displayName = p.displayName;
         description = p.description ?? '';
         if (yaml) {
+          roundtripCheckPending = true;
           yamlText = yaml;
           const parsed = yamlToGraph(yaml);
           graph = parsed.graph;
@@ -298,6 +304,7 @@
             syncStatus = 'partial';
             mode = 'yaml';
           }
+          roundtripCheckPending = false;
           activeSectionId = graph.sections[0]?.id ?? 'main';
         }
       }
@@ -372,7 +379,7 @@
       scheduleValidation();
       return;
     }
-    if (syncStatus !== 'partial') {
+    if (syncStatus !== 'partial' && !roundtripCheckPending) {
       syncGraphToYaml(); // may set syncStatus to 'partial' if corrupt
     }
     scheduleValidation();
