@@ -567,6 +567,9 @@ This forces every code path to parse strings into structured data and serialize 
 - Parser reads expanded arrays/objects back to inline strings
 - Parser regex fixed: `\s*` → `[ \t]*` to prevent newline consumption
 - `isArrayOfObjects()` detection helper added
+- **`shouldExpandObject()`**: Serializer detects inline objects that must be emitted in expanded YAML format. Triggers when: (1) the inline object contains Go template expressions `{{ }}` whose rendered output could break flow mapping syntax, or (2) the value is a nested object `{ key: { ... } }`. Simple inline objects and Pulumi interpolations `${...}` stay inline. This prevents Pulumi YAML parse errors from rendered template output (e.g. base64 from `cloudInit`).
+- **`pristineYaml` flag**: When a program is loaded (fork or edit), the YAML is marked pristine. `syncGraphToYaml()` is skipped until the user makes a visual edit, preserving the original YAML exactly. The save function uses `yamlText` directly instead of re-serializing from the graph. This prevents roundtrip drift on programs that haven't been visually edited.
+- **Parser depth-aware block matching**: `findOuterEndIndex()` scans for the depth-0 `{{ end }}` that closes a given `{{ if }}` or `{{ range }}`, correctly handling nested template blocks. Previously, the first `{{ end }}` was matched regardless of nesting depth.
 
 ### Phase 1: Extract Concerns from ObjectPropertyEditor (Low Risk)
 

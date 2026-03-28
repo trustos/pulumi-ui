@@ -5,9 +5,6 @@ description: "Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Fre
 meta:
   agentAccess: true
   groups:
-    - key: iam
-      label: "IAM & Permissions"
-      fields: [skipDynamicGroup, adminGroupName, identityDomain]
     - key: infrastructure
       label: "Infrastructure"
       fields: [nodeCount, compartmentName, compartmentDescription, vcnCidr, publicSubnetCidr, privateSubnetCidr, sshSourceCidr, shape, imageId]
@@ -26,15 +23,6 @@ meta:
       ui_type: ssh-public-key
 
 config:
-  skipDynamicGroup:
-    type: string
-    default: "false"
-  adminGroupName:
-    type: string
-    default: ""
-  identityDomain:
-    type: string
-    default: ""
   nodeCount:
     type: integer
     default: 3
@@ -98,16 +86,6 @@ resources:
       enableDelete: false
 
 # --- section: iam ---
-{{- if ne .Config.skipDynamicGroup "true" }}
-{{- if .Config.adminGroupName }}
-  nomad-iam-prereq-policy:
-    type: oci:Identity/policy:Policy
-    properties:
-      compartmentId: ${oci:tenancyOcid}
-      name: nomad-iam-prereq
-      description: "Grants admin group permission to manage dynamic groups and policies"
-      statements: [{{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}, {{ groupRef .Config.adminGroupName .Config.identityDomain "manage policies in tenancy" | quote }}]
-{{- end }}
   nomad-cluster-dg:
     type: oci:Identity/dynamicGroup:DynamicGroup
     properties:
@@ -121,11 +99,10 @@ resources:
       compartmentId: ${nomad-compartment.id}
       name: nomad-cluster-policy
       description: "Allow Nomad cluster nodes to manage cluster resources"
-      statements: ["Allow dynamic-group nomad-cluster-dg to inspect instances in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to inspect vnics in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to inspect compartments in tenancy", "Allow dynamic-group nomad-cluster-dg to inspect tenancies in tenancy", "Allow dynamic-group nomad-cluster-dg to read instance-family in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to read compute-management-family in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to read load-balancers in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to inspect private-ips in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to manage buckets in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to manage objects in compartment id ${nomad-compartment.id}"]
+      statements: ["Allow dynamic-group nomad-cluster-dg to read virtual-network-family in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to read instance-family in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to read compute-management-family in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to read load-balancers in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to manage buckets in compartment id ${nomad-compartment.id}", "Allow dynamic-group nomad-cluster-dg to manage objects in compartment id ${nomad-compartment.id}"]
     options:
       dependsOn:
         - ${nomad-cluster-dg}
-{{- end }}
 
 # --- section: networking ---
   nomad-vcn:

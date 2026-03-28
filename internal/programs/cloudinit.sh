@@ -121,17 +121,38 @@ NOMAD_CLIENT_MEMORY="{{ .Vars.NOMAD_CLIENT_MEMORY }}"
 NOMAD_BOOTSTRAP_EXPECT={{ .Vars.NOMAD_BOOTSTRAP_EXPECT }}
 
 # --- IMDS discovery (called after setup_os + wait_for_network to ensure jq and network) ---
+# OCI IMDS v2 /vnics/ does NOT return subnetId — only vnicId, privateIp, subnetCidrBlock.
+# We get compartmentId from /instance/ and vnicId from /vnics/, then use the OCI CLI
+# with instance_principal auth to resolve the VNIC's subnet OCID.
 discover_imds() {
-  COMPARTMENT_OCID=$(curl -sf -H "Authorization: Bearer Oracle" \
-    http://169.254.169.254/opc/v2/instance/ | jq -r '.compartmentId // empty')
-  SUBNET_OCID=$(curl -sf -H "Authorization: Bearer Oracle" \
-    http://169.254.169.254/opc/v2/vnics/ | jq -r '.[0].subnetId // empty')
+  local max_retries=20
+  local delay=5
+  for i in $(seq 1 $max_retries); do
+    COMPARTMENT_OCID=$(curl -sf --max-time 10 -H "Authorization: Bearer Oracle" \
+      http://169.254.169.254/opc/v2/instance/ | jq -r '.compartmentId // empty')
+    local vnic_id
+    vnic_id=$(curl -sf --max-time 10 -H "Authorization: Bearer Oracle" \
+      http://169.254.169.254/opc/v2/vnics/ | jq -r '.[0].vnicId // empty')
 
-  if [ -z "$COMPARTMENT_OCID" ] || [ -z "$SUBNET_OCID" ]; then
-    echo "ERROR: Could not fetch COMPARTMENT_OCID or SUBNET_OCID from IMDS."
-    exit 1
-  fi
-  echo "IMDS: compartment=$COMPARTMENT_OCID subnet=$SUBNET_OCID"
+    if [ -n "$COMPARTMENT_OCID" ] && [ -n "$vnic_id" ]; then
+      echo "IMDS: compartment=$COMPARTMENT_OCID vnic=$vnic_id"
+      # Resolve subnet OCID from VNIC via OCI CLI (requires instance_principal)
+      export OCI_CLI_AUTH=instance_principal
+      SUBNET_OCID=$(oci network vnic get --vnic-id "$vnic_id" 2>/dev/null \
+        | jq -r '.data["subnet-id"] // empty')
+      if [ -n "$SUBNET_OCID" ]; then
+        echo "IMDS: subnet=$SUBNET_OCID"
+        return 0
+      fi
+      echo "OCI CLI could not resolve subnet for VNIC $vnic_id (attempt $i/$max_retries)"
+    else
+      echo "IMDS not ready (attempt $i/$max_retries): compartment=${COMPARTMENT_OCID:-empty} vnic=${vnic_id:-empty}"
+    fi
+    sleep $delay
+  done
+
+  echo "ERROR: Could not fetch COMPARTMENT_OCID or SUBNET_OCID after $max_retries attempts."
+  exit 1
 }
 
 # --- Peer IP discovery ---
@@ -162,32 +183,35 @@ discover_node_ips() {
   done
 }
 
-discover_node_ips
+# --- Peer discovery + self-identification (called after discover_imds) ---
+discover_peers() {
+  discover_node_ips
 
-if [ -z "$ALL_NODE_IPS" ]; then
-  NOMAD_IPS='["127.0.0.1"]'
-else
-  NOMAD_IPS=$(echo "$ALL_NODE_IPS" | tr ' ' '\n' | jq -R . | jq -s .)
-fi
-echo "Nomad peer IPs: $NOMAD_IPS"
+  if [ -z "$ALL_NODE_IPS" ]; then
+    NOMAD_IPS='["127.0.0.1"]'
+  else
+    NOMAD_IPS=$(echo "$ALL_NODE_IPS" | tr ' ' '\n' | jq -R . | jq -s .)
+  fi
+  echo "Nomad peer IPs: $NOMAD_IPS"
 
-SELF_PRIVATE_IP=$(hostname -I | awk '{print $1}')
-if [ -z "$SELF_PRIVATE_IP" ]; then
-  echo "ERROR: Could not determine self private IP."; exit 1
-fi
-echo "Self private IP: $SELF_PRIVATE_IP"
+  SELF_PRIVATE_IP=$(hostname -I | awk '{print $1}')
+  if [ -z "$SELF_PRIVATE_IP" ]; then
+    echo "ERROR: Could not determine self private IP."; exit 1
+  fi
+  echo "Self private IP: $SELF_PRIVATE_IP"
 
-FIRST_NODE_IP=""
-if [ -n "$ALL_NODE_IPS" ]; then
-  FIRST_NODE_IP=$(echo "$ALL_NODE_IPS" | tr ' ' '\n' | sort | head -n1)
-fi
-IS_FIRST_NODE=false
-if [ "$SELF_PRIVATE_IP" = "$FIRST_NODE_IP" ]; then
-  IS_FIRST_NODE=true
-  echo "This is the first/bootstrapping node."
-fi
+  FIRST_NODE_IP=""
+  if [ -n "$ALL_NODE_IPS" ]; then
+    FIRST_NODE_IP=$(echo "$ALL_NODE_IPS" | tr ' ' '\n' | sort | head -n1)
+  fi
+  IS_FIRST_NODE=false
+  if [ "$SELF_PRIVATE_IP" = "$FIRST_NODE_IP" ]; then
+    IS_FIRST_NODE=true
+    echo "This is the first/bootstrapping node."
+  fi
 
-export NOMAD_IPS IS_FIRST_NODE SELF_PRIVATE_IP
+  export NOMAD_IPS IS_FIRST_NODE SELF_PRIVATE_IP
+}
 
 # =============================================================================
 # Application installers (conditionally included by Go template)
@@ -450,6 +474,7 @@ setup_nomad_acl() {
 setup_os
 wait_for_network
 discover_imds
+discover_peers
 
 {{ if .Apps.docker }}
 install_docker

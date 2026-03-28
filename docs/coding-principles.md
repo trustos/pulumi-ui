@@ -102,7 +102,7 @@ Every `ConfigField` must carry a `ConfigLayer` value:
 When adding a new config field to any program, assign the correct layer.
 
 For the nomad-cluster program:
-- `nodeCount`, `compartmentName`, `vcnCidr`, `publicSubnetCidr`, `privateSubnetCidr`, `sshSourceCidr`, `skipDynamicGroup`, `adminGroupName`, `identityDomain` → `infrastructure`
+- `nodeCount`, `compartmentName`, `vcnCidr`, `publicSubnetCidr`, `privateSubnetCidr`, `sshSourceCidr` → `infrastructure`
 - `shape`, `imageId`, `bootVolSizeGb` → `compute`
 - `nomadVersion`, `consulVersion` → `bootstrap`
 - NOMAD_CLIENT_CPU, NOMAD_CLIENT_MEMORY (derived from nodeCount × OCPU formula) → `derived`

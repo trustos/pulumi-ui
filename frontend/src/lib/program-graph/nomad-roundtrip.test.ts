@@ -57,11 +57,14 @@ describe('structural integrity', () => {
     );
   });
 
-  it('preserves all 18 config fields', () => {
+  it('preserves all 15 config fields', () => {
     const { graph } = yamlToGraph(yaml);
-    expect(graph.configFields).toHaveLength(18);
+    expect(graph.configFields).toHaveLength(15);
     expect(graph.configFields.map(f => f.key)).toContain('nodeCount');
     expect(graph.configFields.map(f => f.key)).toContain('sshPublicKey');
+    expect(graph.configFields.map(f => f.key)).not.toContain('skipDynamicGroup');
+    expect(graph.configFields.map(f => f.key)).not.toContain('adminGroupName');
+    expect(graph.configFields.map(f => f.key)).not.toContain('identityDomain');
   });
 
   it('preserves 3 static outputs', () => {
@@ -137,68 +140,37 @@ describe('serializer roundtrip', () => {
   });
 });
 
-// ── IAM section: nested conditionals ────────────────────────────────────
+// ── IAM section: unconditional resources only ────────────────────────────
 
-describe('IAM section — nested conditionals', () => {
-  it('outer conditional wraps entire IAM section', () => {
+describe('IAM section — structure', () => {
+  it('IAM section has 2 unconditional resources', () => {
     const { graph } = yamlToGraph(yaml);
     const iamSection = graph.sections.find(s => s.id === 'iam')!;
-    expect(iamSection.items).toHaveLength(1);
-    expect(iamSection.items[0].kind).toBe('conditional');
+    expect(iamSection.items).toHaveLength(2);
+    expect(iamSection.items.every(i => i.kind === 'resource')).toBe(true);
   });
 
-  it('outer conditional condition is: ne .Config.skipDynamicGroup "true"', () => {
+  it('no conditionals in IAM section', () => {
     const { graph } = yamlToGraph(yaml);
-    const cond = graph.sections.find(s => s.id === 'iam')!.items[0] as ConditionalItem;
-    expect(cond.condition).toContain('skipDynamicGroup');
-    expect(cond.condition).toContain('ne');
+    const iamSection = graph.sections.find(s => s.id === 'iam')!;
+    expect(iamSection.items.filter(i => i.kind === 'conditional')).toHaveLength(0);
   });
 
-  it('inner conditional wraps prereq-policy only', () => {
+  it('nomad-cluster-dg exists', () => {
     const { graph } = yamlToGraph(yaml);
-    const outer = graph.sections.find(s => s.id === 'iam')!.items[0] as ConditionalItem;
-    // First item inside outer should be the inner conditional
-    const inner = outer.items.find(i => i.kind === 'conditional') as ConditionalItem | undefined;
-    expect(inner).toBeDefined();
-    expect(inner!.condition).toContain('adminGroupName');
-  });
-
-  it('prereq-policy resource is inside inner conditional', () => {
-    const { graph } = yamlToGraph(yaml);
-    const outer = graph.sections.find(s => s.id === 'iam')!.items[0] as ConditionalItem;
-    const inner = outer.items.find(i => i.kind === 'conditional') as ConditionalItem;
-    const prereq = inner.items.find(i => i.kind === 'resource' && i.name === 'nomad-iam-prereq-policy');
-    expect(prereq).toBeDefined();
-  });
-
-  it('nomad-cluster-dg is outside inner conditional but inside outer', () => {
-    const { graph } = yamlToGraph(yaml);
-    const outer = graph.sections.find(s => s.id === 'iam')!.items[0] as ConditionalItem;
-    const dg = outer.items.find(i => i.kind === 'resource' && (i as ResourceItem).name === 'nomad-cluster-dg');
+    const iamSection = graph.sections.find(s => s.id === 'iam')!;
+    const dg = iamSection.items.find(i => i.kind === 'resource' && (i as ResourceItem).name === 'nomad-cluster-dg');
     expect(dg).toBeDefined();
   });
 
   it('nomad-cluster-policy has dependsOn nomad-cluster-dg', () => {
     const { graph } = yamlToGraph(yaml);
-    const outer = graph.sections.find(s => s.id === 'iam')!.items[0] as ConditionalItem;
-    const policy = outer.items.find(
+    const iamSection = graph.sections.find(s => s.id === 'iam')!;
+    const policy = iamSection.items.find(
       i => i.kind === 'resource' && (i as ResourceItem).name === 'nomad-cluster-policy'
     ) as ResourceItem;
     expect(policy).toBeDefined();
     expect(policy.options?.dependsOn).toContain('nomad-cluster-dg');
-  });
-
-  it('prereq-policy has statements property (array items with template calls are parsed as expanded array)', () => {
-    const { graph } = yamlToGraph(yaml);
-    const outer = graph.sections.find(s => s.id === 'iam')!.items[0] as ConditionalItem;
-    const inner = outer.items.find(i => i.kind === 'conditional') as ConditionalItem;
-    const prereq = inner.items.find(i => i.kind === 'resource') as ResourceItem;
-    const statements = prop(prereq, 'statements');
-    // The statements property exists — the expanded array with {{ groupRef ... }}
-    // items may not parse into inline format (tryCollectExpandedArray expects
-    // "- key: value" format, not "- {{ func }}" format). This is a known
-    // limitation — users can edit statements in the property panel.
-    expect(statements).toBeDefined();
   });
 });
 
@@ -430,10 +402,10 @@ describe('config field details', () => {
     expect(field?.default).toBe('3');
   });
 
-  it('skipDynamicGroup has default "false"', () => {
+  it('skipDynamicGroup config field does not exist', () => {
     const { graph } = yamlToGraph(yaml);
     const field = graph.configFields.find(f => f.key === 'skipDynamicGroup');
-    expect(field?.default).toBe('false');
+    expect(field).toBeUndefined();
   });
 
   it('config fields preserve group assignments from meta', () => {

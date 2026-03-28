@@ -1,6 +1,7 @@
 package agentinject
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -63,6 +64,33 @@ func TestRenderAgentBootstrap_NebulaFirewall(t *testing.T) {
 	assert.Contains(t, result, "group: server")
 	assert.Contains(t, result, "port: 41820")
 	assert.Contains(t, result, "proto: tcp")
+}
+
+func TestRenderAgentBootstrap_NebulaFirewallAllowsSSHFromUserGroup(t *testing.T) {
+	result := string(RenderAgentBootstrap(AgentVars{}))
+	assert.Contains(t, result, "port: 22")
+	assert.Contains(t, result, "group: user")
+	// Verify the SSH rule is a complete inbound entry with tcp proto
+	assert.Regexp(t, `(?s)inbound:.*port: 22\s+proto: tcp\s+group: user`, result)
+}
+
+func TestRenderAgentBootstrap_NebulaFirewallAllowsICMP(t *testing.T) {
+	result := string(RenderAgentBootstrap(AgentVars{}))
+	assert.Regexp(t, `(?s)inbound:.*port: any\s+proto: icmp\s+host: any`, result)
+}
+
+func TestRenderAgentBootstrap_NebulaFirewallHasThreeInboundRules(t *testing.T) {
+	result := string(RenderAgentBootstrap(AgentVars{}))
+	// Extract the inbound section (between "inbound:" and "EOF")
+	inboundIdx := strings.Index(result, "inbound:")
+	assert.Greater(t, inboundIdx, 0, "inbound: section must exist")
+	eofIdx := strings.Index(result[inboundIdx:], "EOF")
+	assert.Greater(t, eofIdx, 0, "EOF after inbound: must exist")
+	inboundSection := result[inboundIdx : inboundIdx+eofIdx]
+
+	// Count the "- port:" entries which mark individual rules
+	count := strings.Count(inboundSection, "- port:")
+	assert.Equal(t, 3, count, "expected exactly 3 inbound firewall rules (server:41820, user:22, icmp:any)")
 }
 
 func TestRenderAgentBootstrap_AgentDependsOnNebula(t *testing.T) {

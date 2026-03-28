@@ -754,11 +754,19 @@ func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[
 		return "failed"
 	}
 
-	_, err = stack.Up(opCtx, optup.ProgressStreams(&sseWriter{send: send}))
-	if err != nil {
+	const maxRetries = 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		_, err = stack.Up(opCtx, optup.ProgressStreams(&sseWriter{send: send}))
+		if err == nil {
+			break
+		}
 		if opCtx.Err() != nil {
 			send(SSEEvent{Type: "output", Data: "Operation cancelled. Resources that were mid-creation may exist in the cloud but are not fully tracked. Run Refresh to reconcile state, then check the cloud console for any orphaned resources."})
 			return "cancelled"
+		}
+		if attempt < maxRetries && isTransientConflict(err) {
+			send(SSEEvent{Type: "output", Data: fmt.Sprintf("⚠ Transient NLB conflict detected — auto-retrying (%d/%d)...", attempt, maxRetries)})
+			continue
 		}
 		send(SSEEvent{Type: "error", Data: err.Error()})
 		return "failed"
@@ -767,6 +775,17 @@ func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[
 	e.discoverAgentAddress(opCtx, stackName, prog, stack, send)
 
 	return "succeeded"
+}
+
+// isTransientConflict detects OCI NLB 409 Conflict errors that resolve on retry.
+// OCI Network Load Balancer rejects concurrent mutations with 409, and Pulumi
+// sometimes races backend/backend-set creation despite dependsOn chains
+// (especially in forked programs where template-based dependsOn is lost).
+func isTransientConflict(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "409") ||
+		strings.Contains(msg, "Unknown resource BackendSet") ||
+		strings.Contains(msg, "NotAuthorizedOrNotFound, Unknown resource")
 }
 
 // Destroy runs pulumi destroy for the given stack.

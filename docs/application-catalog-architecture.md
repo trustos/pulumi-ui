@@ -364,12 +364,37 @@ The `/shell` endpoint upgrades to a WebSocket connection and allocates a PTY (`/
 ### Nebula IP Addressing
 
 Each stack gets a /24 Nebula subnet (allocated by the DB counter):
-- `10.42.x.1` — pulumi-ui
-- `10.42.x.2` — first agent instance (lighthouse)
+- `10.42.x.1` — pulumi-ui (server)
+- `10.42.x.2` — first agent instance
 - `10.42.x.3` — second agent instance
-- etc.
+- ...
+- `10.42.x.200` — user's local machine (mesh config download)
 
 These are virtual IPs on the Nebula overlay. They do not conflict with OCI VCN addressing.
+
+### User Mesh Access
+
+Users can join the stack's Nebula mesh from their local machine to get direct network access to all nodes (SSH, ping, etc.).
+
+**Endpoint**: `GET /api/stacks/{name}/mesh/config` (`internal/api/mesh_config.go`)
+
+**What it does:**
+1. Issues a fresh user certificate (IP `.200`, group `"user"`, 1-year validity) signed by the stack's CA
+2. Builds a `static_host_map` from all deployed nodes (via `NodeCertStore.ListForStack`)
+3. Renders a complete Nebula YAML config with inline PEM certs
+4. Returns as `application/x-yaml` attachment (`nebula-{stackName}.yml`)
+
+**User workflow:**
+1. Click "Join Mesh" on the Nodes tab → downloads `nebula-{stack}.yml`
+2. Run: `sudo nebula -config nebula-{stack}.yml`
+3. SSH: `ssh ubuntu@10.42.x.2` (nodes are reachable via Nebula IPs)
+
+**Nebula firewall groups**: The agent's Nebula overlay firewall (`agent_bootstrap.sh`) has three inbound rules:
+- Port 41820 TCP from group `server` — management API access for pulumi-ui
+- Port 22 TCP from group `user` — SSH access for users joining the mesh
+- ICMP from any — ping for connectivity testing
+
+**Coexistence with server tunnels**: The server's userspace Nebula tunnels (mesh manager) and the user's local Nebula client coexist on the same machine. They use different certs, different Nebula IPs, and different UDP ports (server: ephemeral, user: 4242). The 5-minute idle reaper may close the server tunnel while the user tests locally — it self-heals on next UI health check.
 
 ---
 
@@ -412,64 +437,47 @@ tmpl.Execute(&buf, data)
 
 where `data` is a struct with `.Vars` (string map for runtime substitutions) and `.Apps` (map of app key → bool).
 
-### Structure of the Rewritten Script (~400-500 lines)
+### Structure of the Rewritten Script (~480 lines)
 
 ```bash
 #!/bin/bash
 set -euo pipefail
 
-# --- Phase 0: OS setup (always) ---
-setup_os() { ... }
+# --- Functions (defined first, called from main block) ---
+check_os() { ... }         # Detect Ubuntu vs Oracle Linux
+setup_os() { ... }         # Install jq, oci-cli, Docker keys, etc.
+wait_for_network() { ... } # Poll google.com until HTTP 200
+discover_imds() { ... }    # Get compartmentId + vnicId from IMDS, resolve subnetId via OCI CLI
+discover_node_ips() { ... }# Query subnet IPs via oci CLI (needs jq + SUBNET_OCID)
+discover_peers() { ... }   # Wraps discover_node_ips + IP processing + leader election
 
-# --- Phase 1: Docker (always for Nomad cluster) ---
+{{ if .Apps.docker }}
 install_docker() { ... }
-
-# --- Phase 2: Consul (if selected) ---
+{{ end }}
 {{ if .Apps.consul }}
 install_consul() { ... }
 {{ end }}
-
-# --- Phase 3: Nomad (if selected) ---
 {{ if .Apps.nomad }}
 install_nomad() { ... }
 {{ end }}
 
-# --- Phase 4: Nebula mesh (always for ApplicationProvider programs) ---
-install_nebula() {
-    mkdir -p /etc/nebula
-    cat > /etc/nebula/ca.crt << 'NEBULA_CA'
-{{ .Vars.NEBULA_CA_CERT }}
-NEBULA_CA
-    # write node cert, key, lighthouse config...
-}
-
-# --- Phase 5: pulumi-ui agent (always for ApplicationProvider programs) ---
-install_agent() {
-    ARCH=$(uname -m)
-    case "$ARCH" in
-      aarch64) AGENT_ARCH="arm64" ;;
-      x86_64)  AGENT_ARCH="amd64" ;;
-      *) echo "Unsupported arch: $ARCH"; exit 1 ;;
-    esac
-    curl -fsSL \
-      "https://github.com/trustos/pulumi-ui/releases/download/{{ .Vars.AGENT_VERSION }}/agent_linux_${AGENT_ARCH}" \
-      -o /usr/local/bin/pulumi-ui-agent
-    chmod +x /usr/local/bin/pulumi-ui-agent
-    # install systemd service, write config with NEBULA_CERT, MANAGEMENT_TOKEN
-}
-
-# --- Phase 6: Peer discovery (existing IMDS logic) ---
-discover_peers() { ... }
-
-# --- Main ---
-setup_os
-install_docker
+# --- Main execution (order matters!) ---
+setup_os               # 1. Install OS packages (jq, oci-cli, etc.)
+wait_for_network       # 2. Ensure internet connectivity
+discover_imds          # 3. Fetch compartment/subnet from IMDS (needs jq from step 1)
+discover_peers         # 4. Query subnet for peer IPs (needs oci-cli + SUBNET_OCID)
+{{ if .Apps.docker }}install_docker{{ end }}
 {{ if .Apps.consul }}install_consul{{ end }}
 {{ if .Apps.nomad }}install_nomad{{ end }}
-install_nebula
-install_agent
-discover_peers
 ```
+
+**Critical ordering invariant**: `discover_imds` must run AFTER `setup_os` (which installs `jq` and OCI CLI) and AFTER `wait_for_network`. `discover_peers` must run AFTER `discover_imds` (which sets `$SUBNET_OCID`). All discovery functions are defined as functions and called only from the main execution block — never at the top level.
+
+**IMDS discovery chain**: OCI IMDS v2 `/vnics/` does NOT return `subnetId` — it returns `vnicId`, `privateIp`, `subnetCidrBlock`. To get the subnet OCID, `discover_imds` fetches `vnicId` from IMDS, then resolves it via `oci network vnic get --vnic-id` using instance_principal auth. This requires the `read virtual-network-family` IAM policy statement (part of the dynamic group policy created by the program).
+
+**Dynamic group is required**: The nomad-cluster program always creates a dynamic group + IAM policy. The `skipDynamicGroup` config option was removed — instance_principal auth is essential for peer discovery (`oci network private-ip list`) and subnet resolution (`oci network vnic get`).
+
+**Note**: Nebula mesh and the pulumi-ui agent are NOT in this script. They are injected as a separate multipart MIME part via `agent_bootstrap.sh` (see section 5 above). The two scripts run independently — if the cloud-init script fails, the agent bootstrap still executes.
 
 **Cloud-init does NOT** (moved to Phase 3 via agent):
 - Bootstrap Nomad ACLs

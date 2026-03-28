@@ -154,10 +154,10 @@
       try {
         const latest = await getStackInfo(name);
         info = latest;
+        await loadPersistedLogs();
         if (!latest.running) {
           isRunning = false;
           clearInterval(interval);
-          await loadPersistedLogs();
         }
       } catch {
         clearInterval(interval);

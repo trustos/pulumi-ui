@@ -41,6 +41,7 @@ internal/api/        HTTP handlers (one file per domain)
   export.go          Bulk OCI account export
   agent_proxy.go     Agent proxy endpoints (health, services, exec, upload, shell WebSocket) — routes through Nebula mesh
   agent_binary.go    Agent binary serving (GET /api/agent/binary/{os}/{arch})
+  mesh_config.go     Nebula mesh config download for user local machine access (GET /api/stacks/{name}/mesh/config)
 
 cmd/agent/           Standalone agent binary (Nebula mesh + management HTTP API + /shell WebSocket PTY)
 
@@ -191,6 +192,18 @@ BackendSet / Listener / Backend resources for different ports must be chained vi
 so they execute sequentially. See `nomad_cluster.go` (`prevNlbResource` pattern) and
 the equivalent in YAML templates.
 
+### OCI IMDS v2 — `/vnics/` does not return `subnetId`
+```
+# IMDS /vnics/ returns: vnicId, privateIp, subnetCidrBlock, macAddr, vlanTag
+# It does NOT return: subnetId (OCID)
+# To get subnet OCID from inside an instance:
+VNIC_ID=$(curl -sf -H "Authorization: Bearer Oracle" \
+  http://169.254.169.254/opc/v2/vnics/ | jq -r '.[0].vnicId')
+oci network vnic get --vnic-id "$VNIC_ID" --auth instance_principal \
+  | jq -r '.data["subnet-id"]'
+# Requires: read virtual-network-family in dynamic group IAM policy
+```
+
 ### Go template inside Pulumi interpolation
 ```yaml
 # CORRECT — printf builds the ${...} reference cleanly
@@ -247,7 +260,7 @@ Full detail: `docs/roadmap.md`
 | Agent Phase 1 | Agent bootstrap pipeline (PKI, certs, token, binary endpoint) | **done** |
 | Agent Phase 2 | Nebula mesh (userspace tunnels, post-deploy discovery, agent proxy) | **done** |
 | Agent Phase 3 | Interactive web terminal (WebSocket PTY via Nebula) | **done** |
-| Agent Phase 4 | Health monitoring, auto-update, user mesh access | pending |
+| Agent Phase 4 | Health monitoring, auto-update, user mesh access | user mesh access **done** (mesh config download + SSH via Nebula); health monitoring + auto-update pending |
 | FE-4 | Client-side config field validation (needs Part 0) | pending |
 
 ---

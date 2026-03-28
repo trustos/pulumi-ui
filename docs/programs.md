@@ -88,7 +88,7 @@ Example groups for `nomad-cluster`:
 
 | Group key | Group label | Fields |
 |---|---|---|
-| `iam` | IAM & Permissions | `skipDynamicGroup`, `adminGroupName`, `identityDomain` |
+| `iam` | IAM & Permissions | _(dynamic group + policy, always created)_ |
 | `infrastructure` | Infrastructure | `nodeCount`, `compartmentName`, `vcnCidr`, `publicSubnetCidr`, `privateSubnetCidr`, `sshSourceCidr`, `shape`, `imageId` |
 | `compute` | Compute & Storage | `bootVolSizeGb`, `sshPublicKey` |
 | `software` | Software Versions | `nomadVersion`, `consulVersion` |
@@ -116,13 +116,10 @@ Creates a compartment and VCN — a safe smoke test for OCI credentials that cre
 
 Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible). Seven sub-functions, one `Run` entry point.
 
-**Config fields (18 total):**
+**Config fields (15 total):**
 
 | Key | Type | Default | Description | Group |
 |---|---|---|---|---|
-| `skipDynamicGroup` | `select` | `false` | Skip Dynamic Group creation if OCI user lacks tenancy-level IAM permissions | IAM & Permissions |
-| `adminGroupName` | `text` | _(empty)_ | IAM group name of the deploying user — needed to grant permission to create Dynamic Groups | IAM & Permissions |
-| `identityDomain` | `text` | _(empty)_ | Leave empty for old-style IDCS tenancies; set to e.g. `Default` for new Identity Domain tenancies | IAM & Permissions |
 | `nodeCount` | `select` | `3` | Number of nodes (1–4; Always Free limit: 4 OCPUs / 24 GB total) | Infrastructure |
 | `compartmentName` | `text` | `nomad-compartment` | OCI compartment name | Infrastructure |
 | `compartmentDescription` | `text` | `Compartment for Nomad cluster` | | Infrastructure |
@@ -161,7 +158,6 @@ This value is passed as `metadata.ssh_authorized_keys` in the instance's cloud-i
 Run()
  ├─ 1. createCompartment()   — identity.NewCompartment
  ├─ 2. createIAM()           — dynamic groups, policies for instance principals
- │      (skipped if skipDynamicGroup = true)
  ├─ 3. createNetwork()       — VCN, IGW, NAT GW, route tables, subnets
  ├─ 4. createNSGs()          — SSH, Nomad, Traefik NSGs
  ├─ 5. createInstancePools() — instances with cloud-init (per node-count spec)
@@ -170,10 +166,11 @@ Run()
 
 ### IAM sub-function: `createIAM`
 
-When `skipDynamicGroup = false` (the default):
-1. If `adminGroupName` is set, a prerequisite policy is created granting that group permission to manage dynamic groups and policies at the tenancy level.
-2. A DynamicGroup is created matching all instances in the new compartment.
-3. A Policy is created granting the DynamicGroup instance-principals permissions.
+The dynamic group and IAM policy are always created (required for peer discovery):
+1. A DynamicGroup is created matching all instances in the new compartment.
+2. A Policy is created granting the DynamicGroup `read virtual-network-family` (for subnet resolution via IMDS + OCI CLI), `read instance-family`, and other required permissions.
+
+The deploying user must have tenancy-level permission to create dynamic groups and policies. If they don't, a tenancy admin must grant this manually before the first deploy.
 
 `identityDomain` controls the group reference format in policy statements:
 - Empty string → bare group name (old-style IDCS tenancies)

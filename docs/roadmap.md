@@ -551,7 +551,7 @@ PKI generation extended to `AgentAccessProvider` programs. Dedicated agent cert 
 | 12 | Agent bootstrap pipeline (Phase 1) | Medium | — | **done** (PKI, agent cert, token, binary endpoint, migration 012) |
 | 13 | Nebula mesh (Phase 2) | Large | Phase 1 | **done** (userspace tunnels, post-deploy discovery, agent proxy) |
 | 14 | Interactive web terminal (Phase 3) | Small | Phase 2 | **done** (WebSocket PTY via Nebula, per-node health/terminal) |
-| 15 | Agent health monitoring (Phase 4) | Medium | Phase 3 | pending |
+| 15 | Agent Phase 4 (health, auto-update, user mesh) | Medium | Phase 3 | **partial** (user mesh access done: config download + SSH via Nebula; health monitoring + auto-update pending) |
 | 16 | Multi-stack mesh (Phase 5) | Large | Phase 4 | pending |
 | 17 | Visual editor property system (3 phases) | Medium | — | pending (see `visual-editor.md` simplification roadmap) |
 | 18 | Private-instance NLB templates | Small | — | pending (bastion-host, database-server, multi-tier-app need NLBs) |

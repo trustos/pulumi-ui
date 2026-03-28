@@ -184,3 +184,39 @@ Does the program have agentAccess: true?
              Security lists on both subnets.
              NLB forwards UDP 41821→node0:41820, 41822→node1:41820
 ```
+
+---
+
+## OCI Instance Metadata Service (IMDS) v2
+
+Instances query IMDS at `http://169.254.169.254/opc/v2/` with header `Authorization: Bearer Oracle`.
+
+### Available Fields
+
+| Endpoint | Key Fields | Notes |
+|---|---|---|
+| `/opc/v2/instance/` | `compartmentId`, `id`, `displayName`, `shape`, `availabilityDomain` | Always available at boot |
+| `/opc/v2/vnics/` | `vnicId`, `privateIp`, `subnetCidrBlock`, `macAddr`, `vlanTag` | **No `subnetId`** |
+| `/opc/v2/instance/metadata/{key}` | Custom key-value pairs from instance `metadata` block | User-defined, set at creation |
+
+**Important**: IMDS `/vnics/` does **not** return `subnetId` (the subnet OCID). To resolve it:
+```bash
+VNIC_ID=$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/vnics/ | jq -r '.[0].vnicId')
+oci network vnic get --vnic-id "$VNIC_ID" --auth instance_principal | jq -r '.data["subnet-id"]'
+```
+This requires `read virtual-network-family` in the dynamic group IAM policy.
+
+### OCI Reserved IPs in a /24 Subnet
+
+| Address | Reserved For |
+|---|---|
+| `.0` | Network address |
+| `.1` | Default gateway |
+| `.2` | DNS resolver |
+| `.255` | Broadcast |
+
+Safe to assign static IPs from `.3` onwards; the nomad-cluster program uses `.10+` for compute nodes.
+
+### Custom Metadata
+
+Arbitrary key-value pairs in the instance `metadata` block are accessible at boot via IMDS. Useful for passing deploy-time information (subnet OCID, node count, etc.) without OCI CLI calls.
