@@ -28,6 +28,9 @@ config:
     type: string
     default: "100"
     description: "Block volume size in GB for data storage"
+  adCount:
+    type: integer
+    default: "1"
 
 variables:
   availabilityDomains:

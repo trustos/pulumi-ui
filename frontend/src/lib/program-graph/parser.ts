@@ -20,6 +20,11 @@ export interface ParseResult {
   rawSections: string[];
 }
 
+// Module-level flag set per yamlToGraph() call. When the config section
+// includes an `adCount` field, ${availabilityDomains[N].name} values are
+// normalised to @auto. Without adCount, they are preserved verbatim.
+let _hasAdCount = false;
+
 export function yamlToGraph(yaml: string): ParseResult {
   const rawSections: string[] = [];
   let degraded = false;
@@ -48,6 +53,9 @@ export function yamlToGraph(yaml: string): ParseResult {
     sections: [],
     outputs: parseOutputs(yaml),
   };
+
+  // Set module-level flag for @auto normalization: only normalize when adCount is declared
+  _hasAdCount = graph.configFields.some(f => f.key === 'adCount');
 
   // Extract the resources block
   const resourcesBlock = extractBlock(yaml, 'resources');
@@ -378,10 +386,12 @@ function tryParseResource(name: string, block: string): ResourceItem | null {
            ?? '';
       }
 
-      // Normalise @auto: both the plain [0] form and the mod round-robin form
-      // are treated as equivalent — stored as @auto so the serializer can
-      // re-emit the correct expression based on loop context.
-      const value = key === 'availabilityDomain' && /^\$\{availabilityDomains\[(?:\d+|\{\{[^}]+\}\})\]\.name\}$/.test(raw)
+      // Normalise @auto: any ${availabilityDomains[N].name} or {{ mod ... }}
+      // form is normalised to @auto ONLY when the program declares an adCount
+      // config field (programs created via the visual editor's Instance recipe).
+      // Programs with plain [0] and no adCount (like nomad-cluster) keep the
+      // literal value to avoid injecting adCount dependencies.
+      const value = key === 'availabilityDomain' && _hasAdCount && /^\$\{availabilityDomains\[(?:\d+|\{\{[^}]+\}\})\]\.name\}$/.test(raw)
         ? '@auto'
         : raw;
       properties.push({ key, value });

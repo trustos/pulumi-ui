@@ -167,26 +167,36 @@ describe('@auto serialization — loop resolution', () => {
 // ── parser — @auto recognition (any integer index) ────────────────────────
 
 describe('@auto parsing — any integer index recognized', () => {
-  it('parses ${availabilityDomains[0].name} as @auto', () => {
+  // adCount must be in config for the parser to normalise [N] → @auto
+  const withAdCount = (resources: string) =>
+    `name: test\nruntime: yaml\nconfig:\n  adCount:\n    type: integer\n    default: "1"\n${resources}`;
+
+  it('parses ${availabilityDomains[0].name} as @auto when adCount exists', () => {
+    const { graph } = yamlToGraph(withAdCount(`resources:\n  # --- section: main ---\n  instance:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${availabilityDomains[0].name}\n`));
+    const res = graph.sections[0].items[0] as ResourceItem;
+    expect(res.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('@auto');
+  });
+
+  it('parses ${availabilityDomains[1].name} as @auto when adCount exists', () => {
+    const { graph } = yamlToGraph(withAdCount(`resources:\n  # --- section: main ---\n  instance:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${availabilityDomains[1].name}\n`));
+    const res = graph.sections[0].items[0] as ResourceItem;
+    expect(res.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('@auto');
+  });
+
+  it('parses ${availabilityDomains[2].name} as @auto when adCount exists', () => {
+    const { graph } = yamlToGraph(withAdCount(`resources:\n  # --- section: main ---\n  instance:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${availabilityDomains[2].name}\n`));
+    const res = graph.sections[0].items[0] as ResourceItem;
+    expect(res.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('@auto');
+  });
+
+  it('preserves ${availabilityDomains[0].name} when adCount is NOT in config', () => {
     const { graph } = yamlToGraph(`name: test\nruntime: yaml\nresources:\n  # --- section: main ---\n  instance:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${availabilityDomains[0].name}\n`);
     const res = graph.sections[0].items[0] as ResourceItem;
-    expect(res.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('@auto');
-  });
-
-  it('parses ${availabilityDomains[1].name} as @auto', () => {
-    const { graph } = yamlToGraph(`name: test\nruntime: yaml\nresources:\n  # --- section: main ---\n  instance:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${availabilityDomains[1].name}\n`);
-    const res = graph.sections[0].items[0] as ResourceItem;
-    expect(res.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('@auto');
-  });
-
-  it('parses ${availabilityDomains[2].name} as @auto', () => {
-    const { graph } = yamlToGraph(`name: test\nruntime: yaml\nresources:\n  # --- section: main ---\n  instance:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${availabilityDomains[2].name}\n`);
-    const res = graph.sections[0].items[0] as ResourceItem;
-    expect(res.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('@auto');
+    expect(res.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('${availabilityDomains[0].name}');
   });
 
   it('parses the until-config mod form as @auto', () => {
-    const yaml = `name: test\nruntime: yaml\nresources:\n  # --- section: main ---\n  {{- range $i := until (atoi $.Config.nodeCount) }}\n  instance-{{ $i }}:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}\n  {{- end }}\n`;
+    const yaml = withAdCount(`resources:\n  # --- section: main ---\n  {{- range $i := until (atoi $.Config.nodeCount) }}\n  instance-{{ $i }}:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}\n  {{- end }}\n`);
     const { graph } = yamlToGraph(yaml);
     const loop = graph.sections[0].items[0] as LoopItem;
     const res = loop.items[0] as ResourceItem;
@@ -194,7 +204,7 @@ describe('@auto parsing — any integer index recognized', () => {
   });
 
   it('parses the list-loop two-variable form as @auto and sets loop variable to value var', () => {
-    const yaml = `name: test\nruntime: yaml\nresources:\n  # --- section: main ---\n  {{- range $__idx, $i := list "a" "b" "c" }}\n  instance-{{ $i }}:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${availabilityDomains[{{ mod $__idx (atoi $.Config.adCount) }}].name}\n  {{- end }}\n`;
+    const yaml = withAdCount(`resources:\n  # --- section: main ---\n  {{- range $__idx, $i := list "a" "b" "c" }}\n  instance-{{ $i }}:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${availabilityDomains[{{ mod $__idx (atoi $.Config.adCount) }}].name}\n  {{- end }}\n`);
     const { graph } = yamlToGraph(yaml);
     const loop = graph.sections[0].items[0] as LoopItem;
     expect(loop.variable).toBe('$i');
@@ -204,8 +214,7 @@ describe('@auto parsing — any integer index recognized', () => {
   });
 
   it('does NOT parse an explicit non-auto reference as @auto', () => {
-    // A value that doesn't match the availabilityDomains[N].name pattern stays as-is
-    const { graph } = yamlToGraph(`name: test\nruntime: yaml\nresources:\n  # --- section: main ---\n  instance:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${someOtherVar}\n`);
+    const { graph } = yamlToGraph(withAdCount(`resources:\n  # --- section: main ---\n  instance:\n    type: oci:Core/instance:Instance\n    properties:\n      availabilityDomain: \${someOtherVar}\n`));
     const res = graph.sections[0].items[0] as ResourceItem;
     expect(res.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('${someOtherVar}');
   });
@@ -214,30 +223,35 @@ describe('@auto parsing — any integer index recognized', () => {
 // ── roundtrip ─────────────────────────────────────────────────────────────
 
 describe('@auto roundtrip', () => {
+  // Roundtrip needs adCount in config so the parser normalises [N] back to @auto
+  function makeGraphWithAdCount(items: ProgramGraph['sections'][0]['items']): ProgramGraph {
+    return {
+      ...makeGraph(items),
+      configFields: [{ key: 'adCount', type: 'integer', default: '1' }],
+    };
+  }
+
   it('single instance: @auto → [0] in YAML → @auto after parse', () => {
-    const { graph: parsed } = yamlToGraph(graphToYaml(makeGraph([instanceRes('instance', '@auto')])));
+    const { graph: parsed } = yamlToGraph(graphToYaml(makeGraphWithAdCount([instanceRes('instance', '@auto')])));
     const res = parsed.sections[0].items[0] as ResourceItem;
     expect(res.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('@auto');
   });
 
   it('two instances: ordinal assignment survives serialize → parse → re-serialize', () => {
-    const original = makeGraph([
+    const original = makeGraphWithAdCount([
       instanceRes('instance-1', '@auto'),
       instanceRes('instance-2', '@auto'),
     ]);
     const yaml1 = graphToYaml(original);
-    // After first serialization: instance-1=[0], instance-2=[1]
     expect(yaml1).toContain('${availabilityDomains[0].name}');
     expect(yaml1).toContain('${availabilityDomains[1].name}');
 
-    // Parse back: both should be @auto
     const { graph: parsed } = yamlToGraph(yaml1);
     const res1 = parsed.sections[0].items[0] as ResourceItem;
     const res2 = parsed.sections[0].items[1] as ResourceItem;
     expect(res1.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('@auto');
     expect(res2.properties.find(p => p.key === 'availabilityDomain')?.value).toBe('@auto');
 
-    // Re-serialize: should assign [0] and [1] again in same order
     const yaml2 = graphToYaml(parsed);
     const idx0 = yaml2.indexOf('${availabilityDomains[0].name}');
     const idx1 = yaml2.indexOf('${availabilityDomains[1].name}');
@@ -247,7 +261,7 @@ describe('@auto roundtrip', () => {
   });
 
   it('until-config loop: @auto survives serialize → parse', () => {
-    const graph = makeGraph([untilLoop('nodeCount', '$i', [instanceRes('instance', '@auto')])]);
+    const graph = makeGraphWithAdCount([untilLoop('nodeCount', '$i', [instanceRes('instance', '@auto')])]);
     const { graph: parsed } = yamlToGraph(graphToYaml(graph));
     const loop = parsed.sections[0].items[0] as LoopItem;
     const res = loop.items[0] as ResourceItem;
@@ -257,7 +271,7 @@ describe('@auto roundtrip', () => {
   });
 
   it('list loop: @auto survives serialize → parse, loop variable preserved', () => {
-    const graph = makeGraph([listLoop('$i', ['a', 'b', 'c'], [instanceRes('instance', '@auto')])]);
+    const graph = makeGraphWithAdCount([listLoop('$i', ['a', 'b', 'c'], [instanceRes('instance', '@auto')])]);
     const { graph: parsed } = yamlToGraph(graphToYaml(graph));
     const loop = parsed.sections[0].items[0] as LoopItem;
     expect(loop.variable).toBe('$i');

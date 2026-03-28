@@ -26,6 +26,9 @@ config:
     type: string
     default: "443"
     description: "TCP port for the NLB listener"
+  adCount:
+    type: integer
+    default: "1"
 
 variables:
   availabilityDomains:

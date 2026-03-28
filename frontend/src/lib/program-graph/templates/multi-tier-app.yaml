@@ -24,6 +24,9 @@ config:
   memoryInGbs:
     type: string
     default: "12"
+  adCount:
+    type: integer
+    default: "1"
 
 variables:
   availabilityDomains:
