@@ -140,6 +140,9 @@ firewall:
     - port: 41820
       proto: tcp
       group: server
+    - port: 22
+      proto: tcp
+      group: user
     - port: any
       proto: icmp
       host: any
