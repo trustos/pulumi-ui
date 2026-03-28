@@ -41,7 +41,7 @@ lighthouse:
 
 listen:
   host: 0.0.0.0
-  port: 0
+  port: 4242
 
 punchy:
   punch: true
@@ -49,7 +49,6 @@ punchy:
 
 tun:
   disabled: false
-  dev: nebula-{{ .StackName }}
 
 firewall:
   outbound:
