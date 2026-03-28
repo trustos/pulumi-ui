@@ -424,7 +424,11 @@ resources:
       port: 80
     options:
       dependsOn:
-        - ${traefik-nlb-bs-80}
+{{- if eq $i 0 }}
+        - ${traefik-nlb-listener-80}
+{{- else }}
+        - ${traefik-nlb-backend-80-{{ sub $i 1 }}}
+{{- end }}
 {{- end }}
 
   traefik-nlb-bs-443:
@@ -439,7 +443,7 @@ resources:
         port: 443
     options:
       dependsOn:
-        - ${traefik-nlb-listener-80}
+        - ${traefik-nlb-backend-80-{{ sub (atoi $.Config.nodeCount) 1 }}}
 
   traefik-nlb-listener-443:
     type: oci:NetworkLoadBalancer/listener:Listener
@@ -463,7 +467,11 @@ resources:
       port: 443
     options:
       dependsOn:
-        - ${traefik-nlb-bs-443}
+{{- if eq $i 0 }}
+        - ${traefik-nlb-listener-443}
+{{- else }}
+        - ${traefik-nlb-backend-443-{{ sub $i 1 }}}
+{{- end }}
 {{- end }}
 
   traefik-nlb-bs-4646:
@@ -478,7 +486,7 @@ resources:
         port: 4646
     options:
       dependsOn:
-        - ${traefik-nlb-listener-443}
+        - ${traefik-nlb-backend-443-{{ sub (atoi $.Config.nodeCount) 1 }}}
 
   traefik-nlb-listener-4646:
     type: oci:NetworkLoadBalancer/listener:Listener
@@ -502,7 +510,11 @@ resources:
       port: 4646
     options:
       dependsOn:
-        - ${traefik-nlb-bs-4646}
+{{- if eq $i 0 }}
+        - ${traefik-nlb-listener-4646}
+{{- else }}
+        - ${traefik-nlb-backend-4646-{{ sub $i 1 }}}
+{{- end }}
 {{- end }}
 
 outputs:
