@@ -120,17 +120,19 @@ NOMAD_CLIENT_CPU="{{ .Vars.NOMAD_CLIENT_CPU }}"
 NOMAD_CLIENT_MEMORY="{{ .Vars.NOMAD_CLIENT_MEMORY }}"
 NOMAD_BOOTSTRAP_EXPECT={{ .Vars.NOMAD_BOOTSTRAP_EXPECT }}
 
-# --- IMDS discovery ---
-COMPARTMENT_OCID=$(curl -sf -H "Authorization: Bearer Oracle" \
-  http://169.254.169.254/opc/v2/instance/ | jq -r '.compartmentId // empty')
-SUBNET_OCID=$(curl -sf -H "Authorization: Bearer Oracle" \
-  http://169.254.169.254/opc/v2/vnics/ | jq -r '.[0].subnetId // empty')
+# --- IMDS discovery (called after setup_os + wait_for_network to ensure jq and network) ---
+discover_imds() {
+  COMPARTMENT_OCID=$(curl -sf -H "Authorization: Bearer Oracle" \
+    http://169.254.169.254/opc/v2/instance/ | jq -r '.compartmentId // empty')
+  SUBNET_OCID=$(curl -sf -H "Authorization: Bearer Oracle" \
+    http://169.254.169.254/opc/v2/vnics/ | jq -r '.[0].subnetId // empty')
 
-if [ -z "$COMPARTMENT_OCID" ] || [ -z "$SUBNET_OCID" ]; then
-  echo "ERROR: Could not fetch COMPARTMENT_OCID or SUBNET_OCID from IMDS."
-  exit 1
-fi
-echo "IMDS: compartment=$COMPARTMENT_OCID subnet=$SUBNET_OCID"
+  if [ -z "$COMPARTMENT_OCID" ] || [ -z "$SUBNET_OCID" ]; then
+    echo "ERROR: Could not fetch COMPARTMENT_OCID or SUBNET_OCID from IMDS."
+    exit 1
+  fi
+  echo "IMDS: compartment=$COMPARTMENT_OCID subnet=$SUBNET_OCID"
+}
 
 # --- Peer IP discovery ---
 discover_node_ips() {
@@ -447,6 +449,7 @@ setup_nomad_acl() {
 
 setup_os
 wait_for_network
+discover_imds
 
 {{ if .Apps.docker }}
 install_docker
