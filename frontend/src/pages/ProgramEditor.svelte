@@ -279,7 +279,10 @@
         description = graph.metadata.description;
         agentAccess = graph.metadata.agentAccess ?? false;
         yamlText = yaml;
-        if (parsed.degraded) syncStatus = 'partial';
+        if (parsed.degraded || !isRoundtripSafe(yaml, parsed.graph)) {
+          syncStatus = 'partial';
+          mode = 'yaml';
+        }
       } else {
         const p = await getProgram(name);
         const yaml = (p as any).programYaml ?? '';
@@ -291,7 +294,10 @@
           const parsed = yamlToGraph(yaml);
           graph = parsed.graph;
           agentAccess = graph.metadata.agentAccess ?? false;
-          if (parsed.degraded) syncStatus = 'partial';
+          if (parsed.degraded || !isRoundtripSafe(yaml, parsed.graph)) {
+            syncStatus = 'partial';
+            mode = 'yaml';
+          }
           activeSectionId = graph.sections[0]?.id ?? 'main';
         }
       }
@@ -304,17 +310,56 @@
 
   // ── Graph ↔ YAML sync ────────────────────────────────────────────────────
 
-  /** Serialize the current in-memory graph to yamlText (keeps them in sync). */
-  function syncGraphToYaml() {
-    yamlText = graphToYaml({
+  /** Check whether a parse→serialize roundtrip preserves the YAML's integrity.
+   *  Returns false if re-serialization would corrupt the template (unbalanced
+   *  blocks, duplicate keys, etc.). Used at load time to decide whether to
+   *  allow visual-mode editing or preserve the original YAML. */
+  function isRoundtripSafe(_originalYaml: string, parsedGraph: ProgramGraph): boolean {
+    try {
+      const reserialized = graphToYaml(parsedGraph);
+      // Check 1: balanced template blocks
+      const opens = (reserialized.match(/\{\{-?\s*(if|range)\b/g) || []).length;
+      const ends = (reserialized.match(/\{\{-?\s*end\b/g) || []).length;
+      if (opens !== ends) return false;
+      // Check 2: no duplicate YAML mapping keys (resources with same name)
+      const keyRe = /^  ([\w][\w-]*):\s*$/gm;
+      const keys = new Set<string>();
+      let m: RegExpExecArray | null;
+      while ((m = keyRe.exec(reserialized)) !== null) {
+        if (keys.has(m[1])) return false;
+        keys.add(m[1]);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Serialize the current in-memory graph to yamlText (keeps them in sync).
+   *  Returns false if the serialized YAML is corrupt (unbalanced template blocks). */
+  function syncGraphToYaml(): boolean {
+    const candidate = graphToYaml({
       ...graph,
       metadata: { name: programName || graph.metadata.name, displayName, description, agentAccess: agentAccess || undefined },
     });
+    // Safety check: verify template blocks are balanced before overwriting.
+    // If the serializer lost a {{- end }} (nested loops/ifs beyond the model),
+    // preserve the existing yamlText to prevent corruption.
+    const opens = (candidate.match(/\{\{-?\s*(if|range)\b/g) || []).length;
+    const ends = (candidate.match(/\{\{-?\s*end\b/g) || []).length;
+    if (opens !== ends) {
+      syncStatus = 'partial';
+      return false;
+    }
+    yamlText = candidate;
     syncStatus = 'synced';
+    return true;
   }
 
   // Auto-sync graph → YAML and re-validate when the graph changes in visual mode.
   // Skip the first change (initial parse on load) to avoid overwriting pristine YAML.
+  // When the program is degraded (parser couldn't fully represent it), NEVER
+  // re-serialize — the graph is incomplete and would produce broken YAML.
   let graphSignal = $derived(mode === 'visual' ? JSON.stringify(graph) : '');
   let graphChangeCount = 0;
   $effect(() => {
@@ -325,13 +370,17 @@
       scheduleValidation();
       return;
     }
-    syncGraphToYaml();
+    if (syncStatus !== 'partial') {
+      syncGraphToYaml(); // may set syncStatus to 'partial' if corrupt
+    }
     scheduleValidation();
   });
 
   // ── Tab switch ────────────────────────────────────────────────────────────
   function switchToYaml() {
-    syncGraphToYaml();
+    if (syncStatus !== 'partial') {
+      syncGraphToYaml(); // may set syncStatus to 'partial' if corrupt
+    }
     mode = 'yaml';
   }
 
