@@ -592,7 +592,9 @@
             const m = pulumiRefRe.exec(prop.value);
             if (m) {
               const refName = m[1];
-              if (!varNames.has(refName) && !allNames.has(refName) && !refName.includes(':')) {
+              // Skip refs that contain Go template expressions ({{ $i }}) — they
+              // resolve at render time and are not Pulumi variable names.
+              if (!refName.includes('{{') && !varNames.has(refName) && !allNames.has(refName) && !refName.includes(':')) {
                 errors.push({ message: `"${item.name}": property '${prop.key}' references undefined variable '\${${refName}}' — add it in the Variables panel or YAML mode` });
               }
             }
