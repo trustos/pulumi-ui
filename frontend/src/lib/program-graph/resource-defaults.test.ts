@@ -241,7 +241,8 @@ describe('Instance defaults + graphToYaml', () => {
     expect(yaml).toContain('availabilityDomain: ${availabilityDomains[0].name}');
     expect(yaml).toContain('shape: "{{ .Config.shape }}"');
     expect(yaml).toContain('sourceDetails:');
-    expect(yaml).toContain('sourceType: "image"');
+    // sourceDetails is expanded (contains {{ .Config.imageId }} template expression)
+    expect(yaml).toContain('sourceType: image');
     expect(yaml).toContain('shapeConfig:');
     expect(yaml).toContain('metadata:');
 

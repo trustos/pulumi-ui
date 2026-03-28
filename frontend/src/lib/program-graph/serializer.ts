@@ -1,5 +1,5 @@
 import type { ProgramGraph, ProgramSection, ProgramItem, LoopSource, ConfigFieldDef, OutputDef, VariableDef } from '$lib/types/program-graph';
-import { parseArrayValue, isArrayOfObjects } from '$lib/program-graph/object-value';
+import { parseArrayValue, parseObjectValue, isArrayOfObjects } from '$lib/program-graph/object-value';
 
 // Loop context threaded through serializeItem to resolve @auto for availabilityDomain.
 type LoopContext = {
@@ -40,6 +40,30 @@ function resolveAutoAD(loopCtx: LoopContext | undefined, serCtx: SerializeCtx): 
  * - Plain booleans/null are quoted so they remain strings when the user intends strings.
  * - Values containing ": " or " #" or starting with YAML flow characters are quoted.
  */
+/**
+ * Returns true if a value is an inline object { ... } that should be emitted
+ * in expanded YAML format. This is needed when:
+ * - The value contains Go template expressions ({{ ... }}) whose rendered output
+ *   could contain YAML flow-mapping special characters (}, :, ,)
+ * - The value is a nested object { key: { ... } } (2+ levels deep)
+ *
+ * Simple inline objects without template expressions (e.g. { protocol: "TCP", port: 80 })
+ * are safe to emit inline.
+ */
+function shouldExpandObject(v: string): boolean {
+  // Must be an inline YAML object { key: val, ... } — NOT a Go template {{ expr }}
+  if (!v.startsWith('{') || !v.endsWith('}')) return false;
+  if (v.startsWith('{{')) return false; // Go template expression, not inline object
+  // Contains Go template expressions — rendered output could break flow mapping
+  if (/\{\{.*\}\}/.test(v)) return true;
+  // Contains nested inline objects (not ${...} Pulumi interpolations)
+  // e.g. { destinationPortRange: { min: 80, max: 80 } }
+  const inner = v.slice(1, -1);
+  // Match { ... } that isn't preceded by $ (which would be ${...} interpolation)
+  if (/(?<!\$)\{[^}]*\}/.test(inner)) return true;
+  return false;
+}
+
 export function yamlValue(v: string): string {
   // Empty values are filtered out before calling this function (in serializeItem).
   // This guard handles any edge cases that reach here from outputs or other callers.
@@ -259,6 +283,28 @@ function emitProperties(lines: string[], props: {key: string; value: string}[], 
         const items = parseArrayValue(p.value);
         lines.push(`${indent}${p.key}:`);
         emitExpandedArray(lines, items, indent);
+      } else if (shouldExpandObject(p.value)) {
+        // Inline objects containing Go template expressions ({{ ... }}) must be
+        // emitted in expanded YAML format. The rendered template output (e.g.
+        // cloudInit base64) can contain characters that break YAML flow mapping
+        // syntax. Expanded format puts each value on its own line, avoiding this.
+        const fields = parseObjectValue(p.value);
+        lines.push(`${indent}${p.key}:`);
+        for (const [k, v] of Object.entries(fields)) {
+          if (shouldExpandObject(v)) {
+            // Nested inline object (e.g. destinationPortRange: { min: 80, max: 80 })
+            const nested = parseObjectValue(v);
+            lines.push(`${indent}  ${k}:`);
+            for (const [nk, nv] of Object.entries(nested)) {
+              lines.push(`${indent}    ${nk}: ${yamlValue(nv)}`);
+            }
+          } else if (v.startsWith('[') && v.endsWith(']')) {
+            // Inline array inside the object — keep as-is on its own line
+            lines.push(`${indent}  ${k}: ${v}`);
+          } else {
+            lines.push(`${indent}  ${k}: ${yamlValue(v)}`);
+          }
+        }
       } else if (p.value.includes('\n')) {
         lines.push(`${indent}${p.key}:`);
         for (const rawLine of p.value.split('\n')) {
