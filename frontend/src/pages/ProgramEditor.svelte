@@ -667,11 +667,15 @@
       return;
     }
 
-    // Get current YAML — serialize from graph if in visual mode
-    let yaml = mode === 'yaml' ? yamlText : graphToYaml({
-      ...graph,
-      metadata: { name: programName, displayName, description, agentAccess: agentAccess || undefined },
-    });
+    // Get current YAML — in visual mode, sync the graph to YAML first (if not
+    // already synced), then use yamlText. This avoids re-serializing from scratch
+    // which would lose expanded YAML formats that the parser simplified to inline.
+    if (mode === 'visual' && syncStatus === 'synced') {
+      // yamlText was already updated by syncGraphToYaml() or is the original pristine YAML
+    } else if (mode === 'visual') {
+      syncGraphToYaml();
+    }
+    let yaml = yamlText;
 
     if (!yaml.trim()) {
       saveError = 'Program YAML is empty.';
