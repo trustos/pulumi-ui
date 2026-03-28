@@ -367,7 +367,7 @@ resources:
         memoryInGbs: {{ $.Config.memoryGbPerNode }}
       sourceDetails:
         sourceType: image
-        imageId: {{ $.Config.imageId }}
+        sourceId: {{ $.Config.imageId }}
         bootVolumeSizeInGbs: {{ $.Config.bootVolSizeGb | quote }}
       createVnicDetails:
         subnetId: ${private-subnet.id}
