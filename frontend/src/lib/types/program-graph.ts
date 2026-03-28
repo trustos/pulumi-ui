@@ -43,6 +43,7 @@ export interface ResourceItem {
   resourceType: string;
   properties: PropertyEntry[];
   options?: ResourceOptions;
+  rawOptions?: string; // Preserved verbatim when options contain {{ }} template expressions
 }
 
 export interface PropertyEntry {

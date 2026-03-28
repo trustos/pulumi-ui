@@ -255,6 +255,22 @@ function parseItems(content: string): ProgramItem[] {
   let tm: RegExpExecArray | null;
 
   while ((tm = templateStartRe.exec(content)) !== null) {
+    // Check if this {{ if }} is inside a resource's options/dependsOn block.
+    // Only skip {{ if }} (not {{ range }}), and only when the immediately
+    // preceding non-blank line is "dependsOn:" — indicating this conditional
+    // controls which dependency is used (e.g. first backend → listener, rest → prev backend).
+    if (tm[1] === 'if') {
+      const preceding = content.slice(pos, tm.index);
+      const lastLine = preceding.trimEnd().split('\n').pop()?.trim() ?? '';
+      if (lastLine === 'dependsOn:') {
+        const endResult = findMatchingEnd(content, tm.index);
+        if (endResult) {
+          templateStartRe.lastIndex = endResult.endPos;
+          continue; // Include this {{ if }} in the plain resource chunk
+        }
+      }
+    }
+
     // Everything before this template construct is plain YAML resources
     const plainChunk = content.slice(pos, tm.index);
     if (plainChunk.trim()) {
@@ -398,20 +414,37 @@ function tryParseResource(name: string, block: string): ResourceItem | null {
     }
   }
 
-  // Parse dependsOn.
-  // "      dependsOn:" is at 6-space indent; list items are at 8-space indent.
+  // Parse options block (dependsOn).
+  // When the options block contains {{ }} template expressions (e.g. conditional
+  // dependsOn or cross-loop references), preserve it as rawOptions verbatim.
+  // Otherwise, parse dependsOn entries into string[] as before.
   const dependsOn: string[] = [];
-  const depsHeaderRe = /^      dependsOn:\s*$/m;
-  const depsHeader = depsHeaderRe.exec(block);
-  if (depsHeader) {
-    const afterHeader = block.indexOf('\n', depsHeader.index) + 1;
+  let rawOptions: string | undefined;
+  const optionsHeaderRe = /^    options:\s*$/m;
+  const optionsHeader = optionsHeaderRe.exec(block);
+  if (optionsHeader) {
+    const afterHeader = block.indexOf('\n', optionsHeader.index) + 1;
     const remainder = block.slice(afterHeader);
-    const nextSiblingIdx = remainder.search(/^      \S/m);
-    const depsBlock = nextSiblingIdx === -1 ? remainder : remainder.slice(0, nextSiblingIdx);
-    const depRe = /- \$\{([\w-]+)\}/g;
-    let dm: RegExpExecArray | null;
-    while ((dm = depRe.exec(depsBlock)) !== null) {
-      dependsOn.push(dm[1]);
+    // Options block extends until next 4-space sibling or end of block
+    const nextSiblingIdx = remainder.search(/^    \S/m);
+    const optionsBody = nextSiblingIdx === -1 ? remainder : remainder.slice(0, nextSiblingIdx);
+
+    if (/\{\{.*\}\}/.test(optionsBody)) {
+      // Contains template expressions — preserve entire options block verbatim
+      rawOptions = block.slice(optionsHeader.index, afterHeader + (nextSiblingIdx === -1 ? remainder.length : nextSiblingIdx)).trimEnd();
+    } else {
+      // Parse dependsOn normally
+      const depsHeaderRe2 = /^\s+dependsOn:\s*$/m;
+      const depsHeader = depsHeaderRe2.exec(optionsBody);
+      if (depsHeader) {
+        const afterDeps = optionsBody.indexOf('\n', depsHeader.index) + 1;
+        const depsRemainder = optionsBody.slice(afterDeps);
+        const depRe = /- \$\{([\w-]+)\}/g;
+        let dm: RegExpExecArray | null;
+        while ((dm = depRe.exec(depsRemainder)) !== null) {
+          dependsOn.push(dm[1]);
+        }
+      }
     }
   }
 
@@ -421,6 +454,7 @@ function tryParseResource(name: string, block: string): ResourceItem | null {
     resourceType,
     properties,
     options: dependsOn.length > 0 ? { dependsOn } : undefined,
+    rawOptions,
   };
 }
 

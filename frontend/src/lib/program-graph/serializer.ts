@@ -86,6 +86,7 @@ export function yamlValue(v: string): string {
 
 /** Remove dependsOn entries that reference resources not in the graph. */
 function cleanStaleDependsOn(item: ProgramItem, validNames: Set<string>): ProgramItem {
+  if (item.kind === 'resource' && item.rawOptions) return item; // Template deps — can't validate statically
   if (item.kind === 'resource' && item.options?.dependsOn) {
     const filtered = item.options.dependsOn.filter(dep => validNames.has(dep));
     if (filtered.length !== item.options.dependsOn.length) {
@@ -356,7 +357,24 @@ function serializeItem(lines: string[], item: ProgramItem, indent: string, loopV
       lines.push(`${indent}  properties:`);
       emitProperties(lines, filledProps, `${indent}    `);
     }
-    if (item.options?.dependsOn && item.options.dependsOn.length > 0) {
+    if (item.rawOptions) {
+      // Preserved verbatim — contains {{ }} template expressions in dependsOn.
+      // Strip the base indent (from the "options:" line) and re-indent relative
+      // to the current resource's position. Go template directives ({{- lines)
+      // are emitted at column 0 since they're control flow, not YAML content.
+      const rawLines = item.rawOptions.split('\n');
+      const baseIndent = rawLines[0].match(/^(\s*)/)?.[1].length ?? 0;
+      for (const line of rawLines) {
+        if (!line.trim()) { lines.push(''); continue; }
+        // Template directives go at column 0
+        if (/^\s*\{\{-?\s*(if|else|end|range)\b/.test(line)) {
+          lines.push(line.trimStart());
+          continue;
+        }
+        const stripped = line.slice(Math.min(baseIndent, line.search(/\S|$/)));
+        lines.push(`${indent}  ${stripped}`);
+      }
+    } else if (item.options?.dependsOn && item.options.dependsOn.length > 0) {
       lines.push(`${indent}  options:`);
       lines.push(`${indent}    dependsOn:`);
       for (const dep of item.options.dependsOn) {

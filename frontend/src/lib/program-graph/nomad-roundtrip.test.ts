@@ -291,9 +291,9 @@ describe('loadbalancer section — NLB resources', () => {
     const resources = lb.items.filter(i => i.kind === 'resource');
     const loops = lb.items.filter(i => i.kind === 'loop');
     // 1 NLB + 3 BackendSets + 3 Listeners = 7 explicit resources
-    expect(resources.length).toBe(7);
+    expect(resources).toHaveLength(7);
     // 3 backend loops (one per port)
-    expect(loops.length).toBe(3);
+    expect(loops).toHaveLength(3);
   });
 
   it('NLB dependsOn chain includes cross-port serialization', () => {
@@ -301,15 +301,23 @@ describe('loadbalancer section — NLB resources', () => {
     const lb = graph.sections.find(s => s.id === 'loadbalancer')!;
     const items = lb.items;
 
-    // Basic chain: bs depends on NLB or previous port's last resource
+    // Basic chain: bs-80 depends on NLB (literal dependsOn)
     const bs80 = findResource(items, 'traefik-nlb-bs-80')!;
     expect(bs80.options?.dependsOn).toContain('traefik-nlb');
 
     const listener80 = findResource(items, 'traefik-nlb-listener-80')!;
     expect(listener80.options?.dependsOn).toContain('traefik-nlb-bs-80');
 
-    // Listener and backend set for 443/4646 depend on previous port's resources
-    // (exact dependency varies by nodeCount due to template conditionals)
+    // bs-443 and bs-4646 have template-based cross-port dependsOn (rawOptions)
+    const bs443 = findResource(items, 'traefik-nlb-bs-443')!;
+    expect(bs443.rawOptions).toBeDefined();
+    expect(bs443.rawOptions).toContain('traefik-nlb-backend-80');
+
+    const bs4646 = findResource(items, 'traefik-nlb-bs-4646')!;
+    expect(bs4646.rawOptions).toBeDefined();
+    expect(bs4646.rawOptions).toContain('traefik-nlb-backend-443');
+
+    // Listeners for 443/4646 have literal dependsOn
     const listener443 = findResource(items, 'traefik-nlb-listener-443')!;
     expect(listener443.options?.dependsOn).toContain('traefik-nlb-bs-443');
 
@@ -331,7 +339,10 @@ describe('loadbalancer section — NLB resources', () => {
     const { graph } = yamlToGraph(yaml);
     const loops = graph.sections.find(s => s.id === 'loadbalancer')!.items
       .filter(i => i.kind === 'loop') as LoopItem[];
-    const backendNames = loops.map(l => (l.items[0] as ResourceItem).name);
+    // Each loop body has a resource item (may be first or nested in conditional)
+    const backendNames = loops.flatMap(l =>
+      l.items.filter(i => i.kind === 'resource').map(i => (i as ResourceItem).name)
+    );
     expect(backendNames).toContain('traefik-nlb-backend-80');
     expect(backendNames).toContain('traefik-nlb-backend-443');
     expect(backendNames).toContain('traefik-nlb-backend-4646');
@@ -361,6 +372,22 @@ describe('loadbalancer section — NLB resources', () => {
       // or a direct resource — either way, it should have items
       expect(loop.items.length).toBeGreaterThan(0);
     }
+  });
+
+  it('cross-port dependsOn chains are preserved in roundtrip', () => {
+    const { graph } = yamlToGraph(yaml);
+    const reserialized = graphToYaml(graph);
+    // bs-443 must depend on the last backend-80 (template expression)
+    expect(reserialized).toContain('sub (atoi $.Config.nodeCount) 1');
+    expect(reserialized).toContain('traefik-nlb-backend-80-{{');
+  });
+
+  it('intra-loop conditional dependsOn is preserved in roundtrip', () => {
+    const { graph } = yamlToGraph(yaml);
+    const reserialized = graphToYaml(graph);
+    // Backend loop has {{ if eq $i 0 }} conditional for dependsOn
+    expect(reserialized).toContain('if eq $i 0');
+    expect(reserialized).toContain('sub $i 1');
   });
 
   it('re-serialized NLB backends have unique names after expansion', () => {
