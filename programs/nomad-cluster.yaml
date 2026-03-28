@@ -162,15 +162,24 @@ resources:
         - protocol: "6"
           source: "0.0.0.0/0"
           sourceType: CIDR_BLOCK
-          tcpOptions: { destinationPortRange: { min: 80, max: 80 } }
+          tcpOptions:
+            destinationPortRange:
+              min: 80
+              max: 80
         - protocol: "6"
           source: "0.0.0.0/0"
           sourceType: CIDR_BLOCK
-          tcpOptions: { destinationPortRange: { min: 443, max: 443 } }
+          tcpOptions:
+            destinationPortRange:
+              min: 443
+              max: 443
         - protocol: "6"
           source: {{ .Config.sshSourceCidr | quote }}
           sourceType: CIDR_BLOCK
-          tcpOptions: { destinationPortRange: { min: 22, max: 22 } }
+          tcpOptions:
+            destinationPortRange:
+              min: 22
+              max: 22
         - protocol: "all"
           source: {{ .Config.vcnCidr | quote }}
           sourceType: CIDR_BLOCK
