@@ -386,6 +386,27 @@
     }
   });
 
+  // Auto-deploy: when navigated with ?autoDeploy=true, start up immediately
+  // then chain deploy-apps on success
+  let pendingAutoDeployApps = $state(false);
+  let autoDeployTriggered = $state(false);
+
+  $effect(() => {
+    if (!autoDeployTriggered && info && !isRunning) {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('autoDeploy') === 'true') {
+        autoDeployTriggered = true;
+        pendingAutoDeployApps = true;
+        // Remove the query param so refresh doesn't re-trigger
+        const url = new URL(window.location.href);
+        url.searchParams.delete('autoDeploy');
+        window.history.replaceState({}, '', url.toString());
+        // Start the deploy
+        doStartOperation('up');
+      }
+    }
+  });
+
   function startOperation(op: 'up' | 'refresh' | 'destroy' | 'preview') {
     if (isRunning) return;
 
@@ -417,6 +438,7 @@
       (status) => {
         isRunning = false;
         cancelFn = null;
+        const wasOp = currentOp;
         currentOp = '';
         logLines = [...logLines, {
           type: 'done',
@@ -424,6 +446,18 @@
           timestamp: new Date().toISOString(),
         }];
         loadInfo();
+
+        // Auto-chain: after successful 'up', deploy apps if pending
+        if (wasOp === 'up' && status === 'succeeded' && pendingAutoDeployApps) {
+          pendingAutoDeployApps = false;
+          logLines = [...logLines, {
+            type: 'separator',
+            data: '─── Auto-deploying applications... ───',
+            timestamp: new Date().toISOString(),
+          }];
+          // Small delay to let agent start
+          setTimeout(() => startDeployApps(), 2000);
+        }
       }
     );
     cancelFn = cancel;

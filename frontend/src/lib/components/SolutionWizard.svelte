@@ -1,0 +1,241 @@
+<script lang="ts">
+  import * as Dialog from '$lib/components/ui/dialog';
+  import { Button } from '$lib/components/ui/button';
+  import { Input } from '$lib/components/ui/input';
+  import * as Select from '$lib/components/ui/select';
+  import { putStack, listImages, listSSHKeys } from '$lib/api';
+  import { navigate } from '$lib/router';
+  import type { SolutionCard } from '$lib/solutions';
+  import type { OciAccount, Passphrase, OciImage, SshKey } from '$lib/types';
+
+  let {
+    open = $bindable(false),
+    solution,
+    accounts = [],
+    passphrases = [],
+  }: {
+    open: boolean;
+    solution: SolutionCard;
+    accounts: OciAccount[];
+    passphrases: Passphrase[];
+  } = $props();
+
+  let stackName = $state('');
+  let selectedAccountId = $state('');
+  let selectedPassphraseId = $state('');
+  let userInput = $state<Record<string, string>>({});
+  let isSaving = $state(false);
+  let saveError = $state('');
+  let showAdvanced = $state(false);
+
+  // Advanced: image + SSH key
+  let images = $state<OciImage[]>([]);
+  let sshKeys = $state<SshKey[]>([]);
+  let selectedImageId = $state('');
+  let selectedSshKeyId = $state('');
+  let nodeCount = $state('1');
+
+  const accountTrigger = $derived(
+    accounts.find(a => a.id === selectedAccountId)?.name ?? 'Select account...'
+  );
+  const passphraseTrigger = $derived(
+    passphrases.find(p => p.id === selectedPassphraseId)?.name ?? 'Select passphrase...'
+  );
+
+  // Load images when account changes
+  $effect(() => {
+    if (selectedAccountId) {
+      listImages(selectedAccountId).then(i => {
+        images = i;
+        // Auto-select first Ubuntu ARM64 image
+        const ubuntu = i.find(img =>
+          img.operatingSystem === 'Canonical Ubuntu' &&
+          img.displayName.includes('aarch64')
+        );
+        if (ubuntu) selectedImageId = ubuntu.id;
+        else if (i.length > 0) selectedImageId = i[0].id;
+      }).catch(() => { images = []; });
+      listSSHKeys().then(k => {
+        sshKeys = k;
+        if (k.length > 0) selectedSshKeyId = k[0].id;
+      }).catch(() => { sshKeys = []; });
+    }
+  });
+
+  // Auto-select first account/passphrase
+  $effect(() => {
+    if (!selectedAccountId && accounts.length > 0) selectedAccountId = accounts[0].id;
+    if (!selectedPassphraseId && passphrases.length > 0) selectedPassphraseId = passphrases[0].id;
+  });
+
+  const canDeploy = $derived(
+    stackName.trim() !== '' &&
+    selectedAccountId !== '' &&
+    selectedPassphraseId !== '' &&
+    solution.userFields.every(f => !f.required || (userInput[f.key] ?? '').trim() !== '')
+  );
+
+  async function deployEverything() {
+    if (!canDeploy) return;
+    isSaving = true;
+    saveError = '';
+
+    try {
+      const derived = solution.deriveConfig(userInput);
+
+      // Merge infra config with defaults + overrides + advanced selections
+      const config: Record<string, string> = {
+        ...derived.config,
+        ...(solution.configOverrides ?? {}),
+        nodeCount,
+      };
+      if (selectedImageId) config.imageId = selectedImageId;
+
+      // SSH key: use selected key's public key if available
+      const sshKey = sshKeys.find(k => k.id === selectedSshKeyId);
+      if (sshKey) config.sshPublicKey = sshKey.publicKey;
+
+      await putStack(
+        stackName,
+        solution.program,
+        config,
+        '',
+        selectedAccountId,
+        selectedPassphraseId,
+        selectedSshKeyId || undefined,
+        derived.applications,
+        derived.appConfig,
+      );
+
+      open = false;
+      // Navigate to the stack with auto-deploy flag
+      navigate(`/stacks/${encodeURIComponent(stackName)}?autoDeploy=true`);
+    } catch (err) {
+      saveError = err instanceof Error ? err.message : String(err);
+    } finally {
+      isSaving = false;
+    }
+  }
+</script>
+
+<Dialog.Root bind:open>
+  <Dialog.Content class="max-w-lg">
+    <Dialog.Header>
+      <Dialog.Title>Deploy {solution.name}</Dialog.Title>
+      <Dialog.Description>{solution.description}</Dialog.Description>
+    </Dialog.Header>
+
+    <div class="space-y-4 py-4">
+      {#if saveError}
+        <div class="p-3 bg-destructive/10 text-destructive text-sm rounded">{saveError}</div>
+      {/if}
+
+      <!-- Stack name -->
+      <div class="space-y-1">
+        <label for="sol-name" class="text-sm font-medium">Stack Name</label>
+        <Input id="sol-name" bind:value={stackName} placeholder="my-nocobase" />
+      </div>
+
+      <!-- Account + Passphrase (side by side) -->
+      <div class="grid grid-cols-2 gap-3">
+        <div class="space-y-1">
+          <label class="text-sm font-medium">OCI Account</label>
+          <Select.Root type="single" bind:value={selectedAccountId}>
+            <Select.Trigger>{accountTrigger}</Select.Trigger>
+            <Select.Content>
+              {#each accounts as account}
+                <Select.Item value={account.id} label={account.name}>
+                  <div>
+                    <div class="font-medium">{account.name}</div>
+                    <div class="text-xs text-muted-foreground">{account.region}</div>
+                  </div>
+                </Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        </div>
+        <div class="space-y-1">
+          <label class="text-sm font-medium">Passphrase</label>
+          <Select.Root type="single" bind:value={selectedPassphraseId}>
+            <Select.Trigger>{passphraseTrigger}</Select.Trigger>
+            <Select.Content>
+              {#each passphrases as pp}
+                <Select.Item value={pp.id} label={pp.name}>{pp.name}</Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        </div>
+      </div>
+
+      <!-- User-specific fields -->
+      {#each solution.userFields as field}
+        <div class="space-y-1">
+          <label for="sol-{field.key}" class="text-sm font-medium">
+            {field.label}{#if field.required}<span class="text-destructive ml-0.5">*</span>{/if}
+          </label>
+          <Input
+            id="sol-{field.key}"
+            type={field.type}
+            bind:value={userInput[field.key]}
+            placeholder={field.placeholder ?? ''}
+          />
+          {#if field.description}
+            <p class="text-xs text-muted-foreground">{field.description}</p>
+          {/if}
+        </div>
+      {/each}
+
+      <!-- Advanced (collapsed) -->
+      <button
+        class="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+        onclick={() => { showAdvanced = !showAdvanced; }}
+      >
+        <span class="text-xs">{showAdvanced ? '▾' : '▸'}</span>
+        Infrastructure settings
+      </button>
+      {#if showAdvanced}
+        <div class="space-y-3 pl-4 border-l-2 border-muted">
+          <div class="space-y-1">
+            <label class="text-xs text-muted-foreground">Nodes</label>
+            <Input type="number" bind:value={nodeCount} class="h-8 text-sm" />
+          </div>
+          {#if images.length > 0}
+            <div class="space-y-1">
+              <label class="text-xs text-muted-foreground">OS Image</label>
+              <Select.Root type="single" bind:value={selectedImageId}>
+                <Select.Trigger class="text-xs h-8">{images.find(i => i.id === selectedImageId)?.displayName ?? 'Select...'}</Select.Trigger>
+                <Select.Content>
+                  {#each images as img}
+                    <Select.Item value={img.id} label={img.displayName}>
+                      <span class="text-xs">{img.displayName}</span>
+                    </Select.Item>
+                  {/each}
+                </Select.Content>
+              </Select.Root>
+            </div>
+          {/if}
+          {#if sshKeys.length > 0}
+            <div class="space-y-1">
+              <label class="text-xs text-muted-foreground">SSH Key</label>
+              <Select.Root type="single" bind:value={selectedSshKeyId}>
+                <Select.Trigger class="text-xs h-8">{sshKeys.find(k => k.id === selectedSshKeyId)?.name ?? 'Select...'}</Select.Trigger>
+                <Select.Content>
+                  {#each sshKeys as key}
+                    <Select.Item value={key.id} label={key.name}>{key.name}</Select.Item>
+                  {/each}
+                </Select.Content>
+              </Select.Root>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
+    <Dialog.Footer>
+      <Button variant="outline" onclick={() => { open = false; }}>Cancel</Button>
+      <Button onclick={deployEverything} disabled={!canDeploy || isSaving}>
+        {isSaving ? 'Creating...' : 'Deploy Everything'}
+      </Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>

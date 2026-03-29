@@ -4,8 +4,11 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import StackCard from '$lib/components/StackCard.svelte';
   import NewStackDialog from '$lib/components/NewStackDialog.svelte';
+  import SolutionWizard from '$lib/components/SolutionWizard.svelte';
   import { listStacks, listPrograms, listAccounts, listPassphrases } from '$lib/api';
   import { navigate } from '$lib/router';
+  import { solutions } from '$lib/solutions';
+  import type { SolutionCard } from '$lib/solutions';
   import type { ProgramMeta, StackSummary, OciAccount, Passphrase } from '$lib/types';
 
   let stacks = $state<StackSummary[]>([]);
@@ -13,6 +16,8 @@
   let accounts = $state<OciAccount[]>([]);
   let passphrases = $state<Passphrase[]>([]);
   let dialogOpen = $state(false);
+  let solutionWizardOpen = $state(false);
+  let activeSolution = $state<SolutionCard | null>(null);
   let loading = $state(true);
   let loadingAccounts = $state(true);
   let loadingPrograms = $state(false);
@@ -74,6 +79,38 @@
     </Tooltip.Root>
   </div>
 
+  <!-- Solution cards -->
+  {#if hasAccounts && passphrases.length > 0}
+    <div class="mb-8">
+      <p class="text-sm text-muted-foreground mb-3">Deploy a solution</p>
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {#each solutions as sol}
+          <button
+            class="text-left border rounded-lg p-4 hover:bg-muted/50 hover:border-primary/30 transition-colors group"
+            onclick={() => { activeSolution = sol; solutionWizardOpen = true; }}
+          >
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-lg">{sol.icon}</span>
+              <span class="font-semibold text-sm">{sol.name}</span>
+            </div>
+            <p class="text-xs text-muted-foreground">{sol.description}</p>
+          </button>
+        {/each}
+        <button
+          class="text-left border rounded-lg p-4 hover:bg-muted/50 hover:border-primary/30 transition-colors border-dashed"
+          onclick={openNewStack}
+          disabled={loadingPrograms}
+        >
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-lg">+</span>
+            <span class="font-semibold text-sm">Custom Stack</span>
+          </div>
+          <p class="text-xs text-muted-foreground">Pick a program and configure from scratch</p>
+        </button>
+      </div>
+    </div>
+  {/if}
+
   {#if !loadingAccounts && accounts.length === 0}
     <Alert class="mb-6">
       <AlertDescription class="flex items-center justify-between gap-3">
@@ -110,3 +147,12 @@
 </div>
 
 <NewStackDialog bind:open={dialogOpen} {programs} {accounts} bind:passphrases />
+
+{#if activeSolution}
+  <SolutionWizard
+    bind:open={solutionWizardOpen}
+    solution={activeSolution}
+    {accounts}
+    {passphrases}
+  />
+{/if}
