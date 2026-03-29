@@ -65,7 +65,7 @@ meta:
           label: pgAdmin Domain
           type: text
           required: false
-          default: "pgadmin.example.com"
+          description: "Optional — for HTTPS via Traefik. Leave empty to use port forwarding."
           description: "Domain for pgAdmin (requires DNS + Traefik)"
     - key: postgres-backup
       name: PostgreSQL Backup
@@ -111,8 +111,8 @@ meta:
         - key: domain
           label: Domain
           type: text
-          required: true
-          description: "Public domain for NocoBase (requires DNS + Traefik)"
+          required: false
+          description: "Optional — for HTTPS via Traefik. Without it, access NocoBase via port forwarding."
         - key: appKey
           label: App Secret Key
           type: text

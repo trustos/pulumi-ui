@@ -50,13 +50,13 @@ job "nocobase" {
       service {
         name = "nocobase"
         port = "http"
-        tags = [
+        tags = [[if .domain]][
           "traefik.enable=true",
           "traefik.http.routers.nocobase.rule=Host(`[[.domain]]`)",
           "traefik.http.routers.nocobase.entrypoints=websecure",
           "traefik.http.routers.nocobase.tls=true",
           "traefik.http.routers.nocobase.tls.certresolver=letsencrypt",
-        ]
+        ][[else]][][[end]]
         check {
           type     = "http"
           path     = "/api/__health"

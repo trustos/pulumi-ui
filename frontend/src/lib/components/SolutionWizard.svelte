@@ -139,7 +139,7 @@
       <!-- Account + Passphrase (side by side) -->
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1">
-          <label class="text-sm font-medium">OCI Account</label>
+          <span class="text-sm font-medium">OCI Account</span>
           <Select.Root type="single" bind:value={selectedAccountId}>
             <Select.Trigger>{accountTrigger}</Select.Trigger>
             <Select.Content>
@@ -155,7 +155,7 @@
           </Select.Root>
         </div>
         <div class="space-y-1">
-          <label class="text-sm font-medium">Passphrase</label>
+          <span class="text-sm font-medium">Passphrase</span>
           <Select.Root type="single" bind:value={selectedPassphraseId}>
             <Select.Trigger>{passphraseTrigger}</Select.Trigger>
             <Select.Content>
@@ -196,12 +196,12 @@
       {#if showAdvanced}
         <div class="space-y-3 pl-4 border-l-2 border-muted">
           <div class="space-y-1">
-            <label class="text-xs text-muted-foreground">Nodes</label>
-            <Input type="number" bind:value={nodeCount} class="h-8 text-sm" />
+            <label for="sol-nodes" class="text-xs text-muted-foreground">Nodes</label>
+            <Input id="sol-nodes" type="number" bind:value={nodeCount} class="h-8 text-sm" />
           </div>
           {#if images.length > 0}
             <div class="space-y-1">
-              <label class="text-xs text-muted-foreground">OS Image</label>
+              <span class="text-xs text-muted-foreground">OS Image</span>
               <Select.Root type="single" bind:value={selectedImageId}>
                 <Select.Trigger class="text-xs h-8">{images.find(i => i.id === selectedImageId)?.displayName ?? 'Select...'}</Select.Trigger>
                 <Select.Content>
@@ -216,7 +216,7 @@
           {/if}
           {#if sshKeys.length > 0}
             <div class="space-y-1">
-              <label class="text-xs text-muted-foreground">SSH Key</label>
+              <span class="text-xs text-muted-foreground">SSH Key</span>
               <Select.Root type="single" bind:value={selectedSshKeyId}>
                 <Select.Trigger class="text-xs h-8">{sshKeys.find(k => k.id === selectedSshKeyId)?.name ?? 'Select...'}</Select.Trigger>
                 <Select.Content>

@@ -160,13 +160,13 @@ EOH
       service {
         name = "pgadmin"
         port = "http"
-        tags = [
+        tags = [[if .pgadminDomain]][
           "traefik.enable=true",
           "traefik.http.routers.pgadmin.rule=Host(`[[.pgadminDomain]]`)",
           "traefik.http.routers.pgadmin.entrypoints=websecure",
           "traefik.http.routers.pgadmin.tls=true",
           "traefik.http.routers.pgadmin.tls.certresolver=letsencrypt",
-        ]
+        ][[else]][][[end]]
         check {
           type     = "http"
           path     = "/misc/ping"
