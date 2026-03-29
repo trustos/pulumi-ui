@@ -50,9 +50,10 @@ type Manager struct {
 	connStore     *db.StackConnectionStore
 	nodeCertStore *db.NodeCertStore
 
-	mu      sync.Mutex
-	tunnels map[string]*Tunnel
-	done    chan struct{}
+	mu         sync.Mutex
+	tunnels    map[string]*Tunnel
+	connecting sync.Map // key → *sync.Once (prevents concurrent retry loops)
+	done       chan struct{}
 }
 
 func NewManager(connStore *db.StackConnectionStore) *Manager {
@@ -234,6 +235,24 @@ func (m *Manager) GetTunnelForNode(stackName string, nodeIndex int) (*Tunnel, er
 	}
 	key := fmt.Sprintf("%s:%d", stackName, nodeIndex)
 
+	m.mu.Lock()
+	if t, ok := m.tunnels[key]; ok {
+		t.mu.Lock()
+		t.lastUsed = time.Now()
+		t.mu.Unlock()
+		m.mu.Unlock()
+		return t, nil
+	}
+	m.mu.Unlock()
+
+	// Serialize connection attempts per key — prevents multiple goroutines
+	// from running the retry loop simultaneously for the same node.
+	lockCh, _ := m.connecting.LoadOrStore(key, make(chan struct{}, 1))
+	ch := lockCh.(chan struct{})
+	ch <- struct{}{} // acquire (blocks if another goroutine holds it)
+	defer func() { <-ch }() // release
+
+	// Re-check cache — another goroutine may have connected while we waited.
 	m.mu.Lock()
 	if t, ok := m.tunnels[key]; ok {
 		t.mu.Lock()
