@@ -32,7 +32,7 @@ describe('NocoBase solution', () => {
 
     expect(result.appConfig['traefik.acmeEmail']).toBe('admin@test.com');
     expect(result.appConfig['postgres.pgadminEmail']).toBe('admin@test.com');
-    expect(result.appConfig['nocobase.dbUser']).toBe('admin');
+    // nocobase.dbUser removed — reads from Consul KV (postgres/adminuser)
     expect(result.appConfig['nocobase.dbName']).toBe('nocobase');
   });
 

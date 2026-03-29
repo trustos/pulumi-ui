@@ -35,16 +35,20 @@ job "nocobase" {
         ]
       }
 
-      env {
-        APP_ENV  = "production"
-        APP_PORT = "13000"
-        APP_KEY  = "[[.appKey]]"
-        DB_DIALECT  = "postgres"
-        DB_HOST     = "postgres.service.consul"
-        DB_PORT     = "5432"
-        DB_DATABASE = "[[.dbName]]"
-        DB_USER     = "[[.dbUser]]"
-        DB_PASSWORD = "[[.dbPassword]]"
+      template {
+        data = <<EOH
+APP_ENV=production
+APP_PORT=13000
+APP_KEY=[[.appKey]]
+DB_DIALECT=postgres
+DB_HOST=postgres.service.consul
+DB_PORT=5432
+DB_DATABASE=[[.dbName]]
+DB_USER={{ key "postgres/adminuser" }}
+DB_PASSWORD={{ key "postgres/adminpassword" }}
+EOH
+        destination = "secrets/env"
+        env         = true
       }
 
       service {

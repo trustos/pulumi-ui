@@ -105,19 +105,8 @@ meta:
         - key: appKey
           label: App Secret Key
           type: text
-          required: true
-          description: "Secret key for session encryption (random string, e.g. openssl rand -hex 32)"
-        - key: dbUser
-          label: Database User
-          type: text
           required: false
-          default: "admin"
-          description: "PostgreSQL user"
-        - key: dbPassword
-          label: Database Password
-          type: text
-          required: true
-          description: "PostgreSQL password"
+          description: "Secret key for session encryption (auto-generated if empty)"
         - key: dbName
           label: Database Name
           type: text
