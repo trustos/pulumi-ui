@@ -325,6 +325,7 @@ Full detail: `docs/roadmap.md`
 | `docs/coding-principles.md` | SOLID principles for this codebase |
 | `docs/visual-editor.md` | Visual editor design, Program Graph model, property system simplification roadmap, known bugs + fix plan |
 | `docs/roadmap.md` | Architecture improvement roadmap |
+| `docs/testing.md` | Testing strategy: 3-tier pyramid, route coverage checks, integration + deploy tests |
 | `docs/application-catalog-architecture.md` | Application catalog, Nebula mesh, per-node NLB architecture, agent binary, auto-injection, two-phase deploy |
 | `docs/oci-networking-rules.md` | OCI networking rules: subnet architecture, security lists, NLB serialization, agent topology coverage (T1–T8), topology decision tree |
 | `docs/phase1-manual-tests.md` | Manual test checklist for multi-node agent connect |
