@@ -47,7 +47,20 @@ const nocobaseSolution: SolutionCard = {
   ],
   deriveConfig: (input) => {
     return {
-      config: { nodeCount: '1' },
+      config: {
+        nodeCount: '1',
+        compartmentName: 'nomad-compartment',
+        compartmentDescription: 'Compartment for Nomad cluster',
+        vcnCidr: '10.0.0.0/16',
+        publicSubnetCidr: '10.0.1.0/24',
+        privateSubnetCidr: '10.0.2.0/24',
+        shape: 'VM.Standard.A1.Flex',
+        ocpusPerNode: '1',
+        memoryGbPerNode: '6',
+        bootVolSizeGb: '50',
+        nomadVersion: '1.11.3',
+        consulVersion: '1.22.6',
+      },
       applications: {
         traefik: true,
         postgres: true,
@@ -80,7 +93,20 @@ const nomadClusterSolution: SolutionCard = {
     { key: 'email', label: 'Email', type: 'email', required: true, placeholder: 'admin@example.com', description: 'Used for Let\'s Encrypt certificates' },
   ],
   deriveConfig: (input) => ({
-    config: {},
+    config: {
+      nodeCount: '3',
+      compartmentName: 'nomad-compartment',
+      compartmentDescription: 'Compartment for Nomad cluster',
+      vcnCidr: '10.0.0.0/16',
+      publicSubnetCidr: '10.0.1.0/24',
+      privateSubnetCidr: '10.0.2.0/24',
+      shape: 'VM.Standard.A1.Flex',
+      ocpusPerNode: '1',
+      memoryGbPerNode: '6',
+      bootVolSizeGb: '50',
+      nomadVersion: '1.11.3',
+      consulVersion: '1.22.6',
+    },
     applications: { traefik: true },
     appConfig: {
       'traefik.acmeEmail': input.email || '',

@@ -457,6 +457,18 @@ resources:
 	assert.Empty(t, apps[0].ConsulEnv)
 }
 
+func TestApplyConfigDefaults_NomadClusterYAML(t *testing.T) {
+	builtinYAML := readBuiltinYAML(t, "nomad-cluster.yaml")
+	minimal := map[string]string{"nodeCount": "1"}
+	merged := ApplyConfigDefaults(builtinYAML, minimal)
+
+	assert.Equal(t, "1", merged["nodeCount"], "user override should win")
+	assert.Equal(t, "nomad-compartment", merged["compartmentName"], "default should be applied")
+	assert.Equal(t, "10.0.0.0/16", merged["vcnCidr"], "default should be applied")
+	assert.Equal(t, "VM.Standard.A1.Flex", merged["shape"], "default should be applied")
+	assert.NotEmpty(t, merged["nomadVersion"], "default should be applied")
+}
+
 func TestParseAgentAccess_NomadClusterYAML(t *testing.T) {
 	builtinYAML := readBuiltinYAML(t, "nomad-cluster.yaml")
 	assert.True(t, ParseAgentAccess(builtinYAML), "nomad-cluster.yaml should have agentAccess: true")
