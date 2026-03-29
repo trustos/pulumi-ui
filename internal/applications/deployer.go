@@ -26,6 +26,9 @@ import (
 // converts between this and engine.SSESender to avoid an import cycle.
 type LogFunc func(eventType, message string)
 
+// deployTimeout is the maximum time to wait for a single app deployment to become healthy.
+const deployTimeout = 10 * time.Minute
+
 // Deployer manages post-infrastructure application deployment over the Nebula mesh.
 type Deployer struct {
 	connStore   *db.StackConnectionStore
@@ -84,8 +87,8 @@ func (d *Deployer) DeployApps(
 			continue
 		}
 
-		// Execute `nomad job run` on the agent.
-		if err := d.deployWorkload(ctx, tunnel, app, send); err != nil {
+		// Register and monitor the Nomad job via the agent.
+		if err := d.deployWorkload(ctx, stackName, tunnel, app, send); err != nil {
 			send("error", fmt.Sprintf("Failed to deploy %s: %v", app.Name, err))
 			failed = append(failed, app.Key)
 			continue
@@ -167,11 +170,16 @@ func (d *Deployer) uploadJobFile(
 
 	// Build template data from appConfig. Keys are stored as "appKey.fieldKey"
 	// (e.g. "github-runner.githubToken"), extract just the field key part.
+	// Internal metadata keys (prefixed with "_") are skipped.
 	data := make(map[string]string)
 	prefix := app.Key + "."
 	for k, v := range appConfig {
 		if strings.HasPrefix(k, prefix) {
-			data[strings.TrimPrefix(k, prefix)] = v
+			fieldKey := strings.TrimPrefix(k, prefix)
+			if strings.HasPrefix(fieldKey, "_") {
+				continue // skip internal metadata keys like _autoCredentials
+			}
+			data[fieldKey] = v
 		}
 	}
 	// Ensure all declared config fields exist in data (with defaults or empty).
@@ -181,11 +189,27 @@ func (d *Deployer) uploadJobFile(
 		}
 	}
 
-	// Auto-generate secrets for empty fields whose key ends with Password,
-	// Key, or Secret. Persist generated values back to appConfig so they
-	// survive re-deploys (the engine saves appConfig after deployment).
+	// Build set of Consul KV-managed secret field keys.
+	secretFields := make(map[string]bool)
+	for _, cf := range app.ConfigFields {
+		if cf.Secret {
+			secretFields[cf.Key] = true
+		}
+	}
+
+	// Auto-generate secrets for empty fields. Fields marked secret: true
+	// are managed by the job's init-secrets task in Consul KV — leave them
+	// empty so init-secrets generates the value. Non-catalog secret fields
+	// (matching isSecretField heuristic) still get Go-side generation.
 	for key, val := range data {
-		if val == "" && isSecretField(key) {
+		if val != "" {
+			continue
+		}
+		if secretFields[key] {
+			// Consul KV init-secrets will handle generation — leave empty.
+			continue
+		}
+		if isSecretField(key) {
 			generated := generateSecret()
 			data[key] = generated
 			appConfig[prefix+key] = generated // persist back
@@ -244,39 +268,131 @@ func (d *Deployer) uploadJobFile(
 	return nil
 }
 
-// deployWorkload sends a command to the agent to deploy a Nomad job.
+// deployWorkload registers a Nomad job and monitors its deployment status.
+// Uses -detach to avoid blocking on a single long-lived exec stream, then
+// polls deployment status with separate short-lived exec calls. Each poll
+// gets a fresh tunnel, making this resilient to tunnel deaths.
 func (d *Deployer) deployWorkload(
 	ctx context.Context,
+	stackName string,
 	tunnel *mesh.Tunnel,
 	app programs.ApplicationDef,
 	send LogFunc,
 ) error {
 	jobFile := fmt.Sprintf("/opt/nomad-jobs/%s.nomad.hcl", app.Key)
 
-	// Build a shell command that reads secrets from Consul KV into env vars
-	// before running the Nomad job. Each app can declare consulEnv mappings.
-	// Values are shell-quoted to prevent injection.
-	var envExports string
-	for envVar, kvPath := range app.ConsulEnv {
-		if !isValidShellIdentifier(envVar) || !isValidKVPath(kvPath) {
-			return fmt.Errorf("invalid consulEnv entry: %s=%s", envVar, kvPath)
-		}
-		envExports += fmt.Sprintf("export %s=$(consul kv get '%s' 2>/dev/null || true) && ", envVar, kvPath)
+	envExports := d.buildEnvExports(app.ConsulEnv)
+	if envExports == "" && len(app.ConsulEnv) > 0 {
+		return fmt.Errorf("invalid consulEnv configuration for %s", app.Key)
 	}
 
+	// Step 1: Register the job (detached — returns immediately).
+	regOutput, regExit, err := d.execOnAgent(ctx, tunnel, envExports+"nomad job run -detach "+jobFile)
+	if err != nil {
+		return fmt.Errorf("job registration: %w", err)
+	}
+	send("output", regOutput)
+	if regExit != 0 {
+		return fmt.Errorf("job registration exited with code %d", regExit)
+	}
+
+	// Periodic/batch jobs (like postgres-backup) print "Job registration successful"
+	// and have no deployment to monitor.
+	if !strings.Contains(regOutput, "Evaluation ID:") {
+		return nil
+	}
+
+	// Step 2: Poll deployment status with short-lived exec calls.
+	send("output", "Monitoring deployment...")
+	deadline := time.Now().Add(deployTimeout)
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				return fmt.Errorf("deployment of %s timed out after %v", app.Key, deployTimeout)
+			}
+
+			// Fresh tunnel per poll — survives tunnel deaths between checks.
+			t, err := d.meshManager.GetTunnelForNode(stackName, 0)
+			if err != nil {
+				send("output", fmt.Sprintf("Tunnel reconnecting: %v", err))
+				continue
+			}
+
+			status, err := d.checkDeploymentStatus(ctx, t, envExports, app.Key)
+			if err != nil {
+				send("output", fmt.Sprintf("Status check: %v (retrying...)", err))
+				continue
+			}
+
+			switch status {
+			case "successful":
+				return nil
+			case "failed", "cancelled":
+				// Fetch detailed status for error context.
+				detail, _, _ := d.execOnAgent(ctx, t, envExports+"nomad job deployments -latest "+app.Key)
+				if detail != "" {
+					send("output", detail)
+				}
+				return fmt.Errorf("deployment %s: %s", app.Key, status)
+			default:
+				send("output", fmt.Sprintf("Deployment status: %s", status))
+			}
+		}
+	}
+}
+
+// checkDeploymentStatus queries the latest deployment status for a Nomad job.
+// Returns the status string: "running", "successful", "failed", "cancelled", or "pending".
+func (d *Deployer) checkDeploymentStatus(
+	ctx context.Context,
+	tunnel *mesh.Tunnel,
+	envExports string,
+	jobKey string,
+) (string, error) {
+	// Use Nomad CLI Go template to extract just the status string.
+	// nomad job deployments -latest -t outputs a single deployment.
+	cmd := fmt.Sprintf(
+		`%snomad job deployments -latest -json %s 2>/dev/null | grep -o '"Status": *"[^"]*"' | head -1 | cut -d'"' -f4`,
+		envExports, jobKey,
+	)
+	output, exitCode, err := d.execOnAgent(ctx, tunnel, cmd)
+	if err != nil {
+		return "", err
+	}
+	if exitCode != 0 {
+		return "", fmt.Errorf("status query exited with code %d", exitCode)
+	}
+
+	status := strings.TrimSpace(output)
+	if status == "" {
+		return "pending", nil
+	}
+	return status, nil
+}
+
+// execOnAgent sends a short-lived command to the agent and returns the output.
+func (d *Deployer) execOnAgent(
+	ctx context.Context,
+	tunnel *mesh.Tunnel,
+	cmdStr string,
+) (string, int, error) {
 	execReq := struct {
 		Command string   `json:"command"`
 		Args    []string `json:"args"`
 	}{
 		Command: "bash",
-		Args:    []string{"-c", envExports + "nomad job run " + jobFile},
+		Args:    []string{"-c", cmdStr},
 	}
 
 	body, _ := json.Marshal(execReq)
-	// Use a long-timeout client for exec — `nomad job run` blocks until
-	// deployment is healthy, which can take minutes for services pulling images.
 	client := &http.Client{
-		Timeout: 10 * time.Minute,
+		Timeout: 2 * time.Minute,
 		Transport: &http.Transport{
 			DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
 				return tunnel.Dial(dialCtx)
@@ -285,50 +401,67 @@ func (d *Deployer) deployWorkload(
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", tunnel.AgentURL()+"/exec", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", -1, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+tunnel.Token())
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("exec request: %w", err)
+		return "", -1, fmt.Errorf("exec request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Stream the output and detect the exit code marker (---EXIT:N---).
+	// Read full output.
 	var output strings.Builder
 	buf := make([]byte, 4096)
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			chunk := string(buf[:n])
-			output.WriteString(chunk)
-			send("output", chunk)
+			output.WriteString(string(buf[:n]))
 		}
 		if readErr == io.EOF {
 			break
 		}
 		if readErr != nil {
-			return fmt.Errorf("read exec output: %w", readErr)
+			return output.String(), -1, fmt.Errorf("read output: %w", readErr)
 		}
 	}
 
-	// Check for non-zero exit code in the output (agent sends ---EXIT:N---).
+	// Parse exit code from ---EXIT:N--- marker.
 	full := output.String()
+	exitCode := 0
 	if idx := strings.Index(full, "---EXIT:"); idx >= 0 {
-		marker := full[idx:] // "---EXIT:1---\n..."
-		if end := strings.Index(marker, "---\n"); end > 8 {
-			code := marker[8:end]
-			if code != "0" {
-				return fmt.Errorf("nomad job run exited with code %s", code)
+		marker := full[idx:]
+		if end := strings.Index(marker[8:], "---"); end >= 0 {
+			code := marker[8 : 8+end]
+			var c int
+			if n, _ := fmt.Sscanf(code, "%d", &c); n == 1 {
+				exitCode = c
 			}
-		} else if !strings.Contains(marker, "---EXIT:0---") {
-			return fmt.Errorf("nomad job run exited with non-zero status")
 		}
+		// Strip the exit marker from the output.
+		full = strings.TrimSpace(full[:idx])
 	}
 
-	return nil
+	return full, exitCode, nil
+}
+
+// buildEnvExports creates shell export statements from consulEnv mappings.
+// Returns empty string if consulEnv is empty. Returns empty string with
+// non-empty consulEnv if validation fails.
+func (d *Deployer) buildEnvExports(consulEnv map[string]string) string {
+	if len(consulEnv) == 0 {
+		return ""
+	}
+	var exports string
+	for envVar, kvPath := range consulEnv {
+		if !isValidShellIdentifier(envVar) || !isValidKVPath(kvPath) {
+			return ""
+		}
+		exports += fmt.Sprintf("export %s=$(consul kv get '%s' 2>/dev/null || true) && ", envVar, kvPath)
+	}
+	return exports
 }
 
 // filterWorkloads returns only workload-tier apps that the user selected.

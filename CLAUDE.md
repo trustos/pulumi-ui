@@ -72,7 +72,7 @@ internal/agentinject/ Universal agent bootstrap injection (Nebula + pulumi-ui ag
   goprog.go          CfgKeyAgentBootstrap constant for Go program injection
 
 internal/applications/ Application catalog deployment orchestration
-  deployer.go        Deploys selected applications via agent (mesh tunnels, job upload + exec)
+  deployer.go        Deploys selected applications via agent (mesh tunnels, job upload + detach/poll)
 
 internal/nebula/     Nebula PKI generation (per-stack CA + host certificates)
   pki.go             Certificate generation using slackhq/nebula library
@@ -256,7 +256,8 @@ consulEnv:
 ```
 Reads are optional (`2>/dev/null || true`). All nomad-cluster workload apps declare
 `NOMAD_TOKEN` since Nomad ACLs are enabled. Other apps can declare additional secrets
-(e.g., `DB_PASSWORD: "myapp/db-password"`).
+(e.g., `DB_PASSWORD: "myapp/db-password"`). Apps with `init-secrets` tasks (e.g., NocoBase)
+write auto-generated credentials to Consul KV before the main job runs.
 
 ---
 
@@ -268,7 +269,7 @@ Full detail: `docs/coding-principles.md`
 - **Services own business logic**: credential resolution, referential integrity, recovery logic live in `internal/services/`.
 - **Stores are dumb**: only SQL. No cross-table rules, no domain logic.
 - **Repository interfaces**: stores implement interfaces from `internal/ports/`; handlers/services depend on interfaces, never on concrete types.
-- **Config layer taxonomy**: every `ConfigField` carries a `ConfigLayer` (`infrastructure`, `compute`, `bootstrap`, `derived`). Derived fields are never editable in the UI.
+- **Config layer taxonomy**: every `ConfigField` carries a `ConfigLayer` (`infrastructure`, `compute`, `bootstrap`, `derived`). Derived fields are never editable in the UI. Fields with `Secret: true` are Consul KV auto-managed credentials with per-app `_autoCredentials` toggle.
 - **Program registration**: explicit `RegisterBuiltins(r)` in `main.go`. No `init()` self-registration.
 
 ---
@@ -328,6 +329,7 @@ Full detail: `docs/roadmap.md`
 | `docs/testing.md` | Testing strategy: 3-tier pyramid, route coverage checks, integration + deploy tests |
 | `docs/application-catalog-architecture.md` | Application catalog, Nebula mesh, per-node NLB architecture, agent binary, auto-injection, two-phase deploy |
 | `docs/oci-networking-rules.md` | OCI networking rules: subnet architecture, security lists, NLB serialization, agent topology coverage (T1–T8), topology decision tree |
+| `docs/traefik-multi-node-acme.md` | Traefik multi-node ACME: leader/follower pattern, Consul KV cert sync, adaptive template design |
 | `docs/phase1-manual-tests.md` | Manual test checklist for multi-node agent connect |
 
 ---

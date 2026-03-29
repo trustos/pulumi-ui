@@ -366,6 +366,7 @@ func TestParseApplications_NomadClusterYAML(t *testing.T) {
 	assert.True(t, keySet["postgres-backup"], "catalog should include postgres-backup")
 	assert.True(t, keySet["nocobase"], "catalog should include nocobase")
 	assert.True(t, keySet["github-runner"], "catalog should include github-runner")
+	assert.True(t, keySet["pgadmin"], "catalog should include pgadmin")
 
 	// Verify dependency chain: nocobase → postgres, postgres-backup → postgres, postgres → traefik
 	nocobase := findApp(apps, "nocobase")
@@ -380,17 +381,34 @@ func TestParseApplications_NomadClusterYAML(t *testing.T) {
 	require.NotNil(t, postgres)
 	assert.Contains(t, postgres.DependsOn, "traefik")
 
-	// Traefik should be defaultOn with port 80
+	// Traefik should be defaultOn with port 8080 (dashboard)
 	traefik := findApp(apps, "traefik")
 	require.NotNil(t, traefik)
 	assert.True(t, traefik.DefaultOn)
-	assert.Equal(t, 80, traefik.Port)
+	assert.Equal(t, 8080, traefik.Port)
 
 	// Postgres should have port 5432
 	assert.Equal(t, 5432, postgres.Port)
 
 	// NocoBase should have port 13000
 	assert.Equal(t, 13000, nocobase.Port)
+
+	// pgAdmin should have port 80, depend on postgres, and require email
+	pgadmin := findApp(apps, "pgadmin")
+	require.NotNil(t, pgadmin)
+	assert.Equal(t, 80, pgadmin.Port)
+	assert.Contains(t, pgadmin.DependsOn, "postgres")
+	assert.False(t, pgadmin.DefaultOn)
+	assert.False(t, pgadmin.Required)
+	// pgAdmin must have an email config field
+	var hasEmail bool
+	for _, cf := range pgadmin.ConfigFields {
+		if cf.Key == "email" {
+			hasEmail = true
+			assert.True(t, cf.Required, "pgadmin email should be required")
+		}
+	}
+	assert.True(t, hasEmail, "pgadmin should have email config field")
 
 	// All should be workload tier
 	for _, a := range apps {
@@ -434,6 +452,52 @@ resources:
 	require.NotNil(t, apps[0].ConsulEnv)
 	assert.Equal(t, "nomad/bootstrap-token", apps[0].ConsulEnv["NOMAD_TOKEN"])
 	assert.Equal(t, "myapp/db-password", apps[0].ConsulEnv["DB_PASSWORD"])
+}
+
+func TestParseApplications_Secret(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+meta:
+  applications:
+    - key: myapp
+      name: My App
+      tier: workload
+      target: first
+      configFields:
+        - key: dbUser
+          label: DB User
+          type: text
+          required: true
+        - key: dbPassword
+          label: DB Password
+          type: text
+          secret: true
+        - key: appKey
+          label: App Key
+          type: text
+          secret: true
+        - key: domain
+          label: Domain
+          type: text
+config:
+  foo:
+    type: string
+resources:
+  r:
+    type: oci:Core/vcn:Vcn
+`
+	apps := ParseApplications(yaml)
+	require.Len(t, apps, 1)
+	require.Len(t, apps[0].ConfigFields, 4)
+
+	// dbUser — not secret
+	assert.False(t, apps[0].ConfigFields[0].Secret, "dbUser should not be secret")
+	// dbPassword — secret: true
+	assert.True(t, apps[0].ConfigFields[1].Secret, "dbPassword should be secret")
+	// appKey — secret: true
+	assert.True(t, apps[0].ConfigFields[2].Secret, "appKey should be secret")
+	// domain — not secret
+	assert.False(t, apps[0].ConfigFields[3].Secret, "domain should not be secret")
 }
 
 func TestParseApplications_NoConsulEnv(t *testing.T) {

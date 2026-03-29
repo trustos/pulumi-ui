@@ -47,6 +47,7 @@ type pulumiMetaAppCF struct {
 	Required    bool   `yaml:"required"`
 	Default     string `yaml:"default"`
 	Description string `yaml:"description"`
+	Secret      bool   `yaml:"secret"`
 }
 
 type pulumiMetaGroup struct {
@@ -319,6 +320,7 @@ func ParseApplications(yamlBody string) []ApplicationDef {
 				Required:    cf.Required,
 				Default:     cf.Default,
 				Description: cf.Description,
+				Secret:      cf.Secret,
 			})
 		}
 		apps = append(apps, app)

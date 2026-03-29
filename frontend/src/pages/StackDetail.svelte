@@ -517,6 +517,7 @@
           timestamp: new Date().toISOString(),
         }];
         loadInfo();
+        loadPersistedLogs();
       }
     );
     deployAppCancelFn = cancel;
@@ -793,7 +794,10 @@
                 {@const isDep = catalog.some(other => editApps[other.key] && other.dependsOn?.includes(app.key))}
                 {@const nomadJob = nomadJobs.find(j => j.name === app.key)}
                 {@const isRunningJob = nomadJob?.status === 'running'}
-                {@const fwdForApp = app.port ? portForwards.find(f => f.remotePort === app.port) : null}
+                {@const allocatedPorts = nomadJob?.ports ?? []}
+                {@const primaryPort = allocatedPorts.length > 0 ? allocatedPorts[0] : null}
+                {@const effectivePort = primaryPort?.value ?? app.port}
+                {@const fwdForApp = effectivePort ? portForwards.find(f => f.remotePort === effectivePort) : null}
                 <div class="border rounded-lg overflow-hidden {isRunningJob ? 'border-green-500/30' : ''}">
                   <div class="flex items-center gap-3 px-4 py-3">
                     <input
@@ -825,8 +829,31 @@
                         <p class="text-xs text-muted-foreground mt-0.5">{app.description}</p>
                       {/if}
                     </div>
-                    <!-- Port forward button (only for running apps with a port) -->
-                    {#if app.port && isRunningJob}
+                    <!-- Port forward buttons for running apps -->
+                    {#if isRunningJob && allocatedPorts.length > 0}
+                      <div class="flex items-center gap-1">
+                        {#each allocatedPorts as port}
+                          {@const fwd = portForwards.find(f => f.remotePort === port.value)}
+                          {#if fwd}
+                            <a
+                              href="http://localhost:{fwd.localPort}"
+                              target="_blank"
+                              rel="noopener"
+                              class="rounded bg-primary/10 text-primary px-2 py-1 text-xs font-mono hover:bg-primary/20 transition-colors"
+                            >:{fwd.localPort}</a>
+                            <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => doStopForward(fwd.id)}>×</button>
+                          {:else}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              class="h-7 px-2 text-xs font-mono text-muted-foreground"
+                              onclick={() => { fwdRemotePort = String(port.value); doStartForward(); }}
+                              disabled={fwdStarting}
+                            >{port.label}:{port.value} →</Button>
+                          {/if}
+                        {/each}
+                      </div>
+                    {:else if isRunningJob && effectivePort}
                       {#if fwdForApp}
                         <a
                           href="http://localhost:{fwdForApp.localPort}"
@@ -840,9 +867,9 @@
                           size="sm"
                           variant="ghost"
                           class="h-7 px-2 text-xs font-mono text-muted-foreground"
-                          onclick={() => { fwdRemotePort = String(app.port); doStartForward(); }}
+                          onclick={() => { fwdRemotePort = String(effectivePort); doStartForward(); }}
                           disabled={fwdStarting}
-                        >:{app.port} →</Button>
+                        >:{effectivePort} →</Button>
                       {/if}
                     {/if}
                   </div>
@@ -868,21 +895,37 @@
                     </div>
                   {/if}
                   {#if isSelected && app.configFields && app.configFields.length > 0}
+                    {@const hasSecretFields = app.configFields.some((f: any) => f.secret)}
+                    {@const autoCredKey = `${app.key}._autoCredentials`}
+                    {@const autoCredentials = (editAppConfig[autoCredKey] ?? 'true') === 'true'}
                     <div class="px-4 pb-3 pt-1 border-t bg-muted/20 space-y-2">
-                      {#each app.configFields as field}
-                        <div class="flex items-center gap-2">
-                          <label for="appfield-{app.key}-{field.key}" class="text-xs text-muted-foreground w-32 shrink-0">
-                            {field.label}{#if field.required}<span class="text-destructive">*</span>{/if}
-                          </label>
+                      {#if hasSecretFields}
+                        <label class="flex items-center gap-2 text-xs">
                           <input
-                            id="appfield-{app.key}-{field.key}"
-                            type="text"
-                            value={editAppConfig[`${app.key}.${field.key}`] ?? field.default ?? ''}
-                            oninput={(e: Event) => { editAppConfig[`${app.key}.${field.key}`] = (e.target as HTMLInputElement).value; appConfigDirty = true; }}
-                            placeholder={field.description ?? ''}
-                            class="h-7 flex-1 rounded border bg-background px-2 text-xs font-mono"
+                            type="checkbox"
+                            checked={autoCredentials}
+                            onchange={() => { editAppConfig[autoCredKey] = autoCredentials ? 'false' : 'true'; appConfigDirty = true; }}
+                            class="h-3.5 w-3.5 rounded border-border"
                           />
-                        </div>
+                          <span class="text-muted-foreground">Auto-generate credentials (Consul KV)</span>
+                        </label>
+                      {/if}
+                      {#each app.configFields as field}
+                        {#if !field.secret || !autoCredentials}
+                          <div class="flex items-center gap-2">
+                            <label for="appfield-{app.key}-{field.key}" class="text-xs text-muted-foreground w-32 shrink-0">
+                              {field.label}{#if field.required}<span class="text-destructive">*</span>{/if}
+                            </label>
+                            <input
+                              id="appfield-{app.key}-{field.key}"
+                              type="text"
+                              value={editAppConfig[`${app.key}.${field.key}`] ?? field.default ?? ''}
+                              oninput={(e: Event) => { editAppConfig[`${app.key}.${field.key}`] = (e.target as HTMLInputElement).value; appConfigDirty = true; }}
+                              placeholder={field.description ?? ''}
+                              class="h-7 flex-1 rounded border bg-background px-2 text-xs font-mono"
+                            />
+                          </div>
+                        {/if}
                       {/each}
                     </div>
                   {/if}
@@ -912,7 +955,7 @@
             {:else}
               <Button
                 size="sm"
-                onclick={saveAndDeployApps}
+                onclick={() => startDeployApps()}
                 disabled={isDeployingApps || isRunning || notDeployed || isSavingApps}
               >
                 {isDeployingApps ? 'Deploying...' : 'Deploy Applications'}

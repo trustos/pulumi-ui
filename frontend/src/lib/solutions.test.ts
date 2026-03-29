@@ -12,6 +12,7 @@ describe('NocoBase solution', () => {
   it('pre-selects correct applications', () => {
     expect(nocobase.applications).toContain('traefik');
     expect(nocobase.applications).toContain('postgres');
+    expect(nocobase.applications).toContain('pgadmin');
     expect(nocobase.applications).toContain('postgres-backup');
     expect(nocobase.applications).toContain('nocobase');
   });
@@ -27,12 +28,24 @@ describe('NocoBase solution', () => {
     expect(result.config.consulVersion).toBeTruthy();
   });
 
+  it('derives compute resource defaults for single-node (4 ocpus, 24gb, 200gb)', () => {
+    const result = nocobase.deriveConfig({});
+
+    expect(result.config.ocpusPerNode).toBe('4');
+    expect(result.config.memoryGbPerNode).toBe('24');
+    expect(result.config.bootVolSizeGb).toBe('200');
+  });
+
+  it('derives compartmentName default', () => {
+    const result = nocobase.deriveConfig({});
+    expect(result.config.compartmentName).toBe('nomad-compartment');
+  });
+
   it('derives appConfig from email', () => {
     const result = nocobase.deriveConfig({ email: 'admin@test.com' });
 
     expect(result.appConfig['traefik.acmeEmail']).toBe('admin@test.com');
-    expect(result.appConfig['postgres.pgadminEmail']).toBe('admin@test.com');
-    // nocobase.dbUser removed — reads from Consul KV (postgres/adminuser)
+    expect(result.appConfig['pgadmin.email']).toBe('admin@test.com');
     expect(result.appConfig['nocobase.dbName']).toBe('nocobase');
   });
 
@@ -41,6 +54,7 @@ describe('NocoBase solution', () => {
 
     expect(result.applications.traefik).toBe(true);
     expect(result.applications.postgres).toBe(true);
+    expect(result.applications.pgadmin).toBe(true);
     expect(result.applications['postgres-backup']).toBe(true);
     expect(result.applications.nocobase).toBe(true);
   });
@@ -67,6 +81,19 @@ describe('Nomad Cluster solution', () => {
   it('derives config with 3 nodes by default', () => {
     const result = nomad.deriveConfig({ email: 'x@x.com' });
     expect(result.config.nodeCount).toBe('3');
+  });
+
+  it('derives compute resource defaults for multi-node (1 ocpu, 6gb, 50gb)', () => {
+    const result = nomad.deriveConfig({});
+
+    expect(result.config.ocpusPerNode).toBe('1');
+    expect(result.config.memoryGbPerNode).toBe('6');
+    expect(result.config.bootVolSizeGb).toBe('50');
+  });
+
+  it('derives compartmentName default', () => {
+    const result = nomad.deriveConfig({});
+    expect(result.config.compartmentName).toBe('nomad-compartment');
   });
 
   it('passes email as acmeEmail', () => {

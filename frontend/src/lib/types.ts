@@ -32,6 +32,7 @@ export interface ConfigField {
   options?: string[];
   group?: string;
   groupLabel?: string;
+  secret?: boolean;
 }
 
 export type ApplicationTier = 'bootstrap' | 'workload';
@@ -200,10 +201,17 @@ export interface OciImportResult {
   error?: string;
 }
 
+export interface NomadPort {
+  label: string;
+  value: number;  // host port (what port forwarding connects to)
+  to: number;     // container port
+}
+
 export interface NomadJob {
   name: string;
   status: string;
   type: string;
+  ports?: NomadPort[];
 }
 
 export interface PortForward {

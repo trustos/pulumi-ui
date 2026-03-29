@@ -422,11 +422,18 @@ Bootstrap services (Docker, Consul, Nomad, Nebula, Agent) are installed by cloud
 | Application | Tier | Target | Default | Dependencies | Config Fields |
 |---|---|---|---|---|---|
 | Traefik | workload | first | on | — | `acmeEmail` |
-| PostgreSQL + pgAdmin | workload | first | off | traefik | `dbUser`, `pgadminEmail`, `pgadminDomain` |
-| NocoBase | workload | first | off | postgres | `domain`, `appKey`, `dbUser`, `dbPassword`, `dbName` |
+| PostgreSQL | workload | first | off | traefik | `dbUser` (secret), `dbPassword` (secret) |
+| pgAdmin | workload | first | off | postgres, traefik | `pgadminEmail`, `pgadminPassword` (secret), `pgadminDomain` |
+| NocoBase | workload | first | off | postgres, traefik | `domain`, `appKey` (secret), `dbUser` (secret), `dbPassword` (secret), `dbName` (secret) |
 | GitHub Actions Runner | workload | first | off | — | `githubToken`, `githubRepo`, `runnerLabels` |
 
-**Dependency chain**: Selecting NocoBase auto-enables PostgreSQL and Traefik. The UI handles this via the `dependsOn` field — the ApplicationSelector component auto-checks dependencies when a downstream app is selected.
+**Dependency chain**: Selecting NocoBase auto-enables PostgreSQL and Traefik. Selecting pgAdmin auto-enables PostgreSQL and Traefik. The UI handles this via the `dependsOn` field — the ApplicationSelector component auto-checks dependencies when a downstream app is selected.
+
+**Init tasks**: Applications can declare init tasks that run before the main job:
+- **`init-secrets`**: Writes auto-generated credentials to Consul KV. For example, NocoBase's `init-secrets` stores `nocobase/db_user`, `nocobase/db_password`, and `nocobase/db_name` in Consul so the Nomad job template can read them at runtime via `{{ key "..." }}`.
+- **`init-db`**: Creates a dedicated database user and database with grants (used by NocoBase to isolate its data from the default postgres user/db).
+
+**Auto-credentials** (`secret: true` + `_autoCredentials`): Config fields marked `secret: true` are Consul KV-managed credentials. Each app has a `_autoCredentials` toggle (default: true). When ON, secret fields are hidden in the UI and left empty — the deployer's `init-secrets` task auto-generates them. When OFF, the user provides values manually.
 
 ### How catalog applications are deployed
 
@@ -434,19 +441,22 @@ Bootstrap services (Docker, Consul, Nomad, Nebula, Agent) are installed by cloud
 2. Templates use `[[` `]]` delimiters for Go template variables (e.g., `[[.acmeEmail]]`). Standard `{{ }}` is reserved for Nomad template expressions (e.g., `{{ key "postgres/adminuser" }}`). This separation prevents the Go template engine from interpreting Nomad expressions.
 3. The deployer extracts per-app config from `appConfig` (stored per-stack in SQLite) using the `appKey.fieldKey` prefix convention
 4. **Config field resolution order**: user value → default → auto-generated (for secret fields)
-5. **Secret auto-generation**: fields ending in `Password`, `Key`, `Secret`, or `Token` are auto-generated (32-char hex) if empty. Generated values are persisted back to `appConfig` so they survive re-deploys.
+5. **Secret auto-generation**: fields with `secret: true` are auto-generated (32-char hex) when the per-app `_autoCredentials` toggle is ON (default). Generated values are written to Consul KV by the `init-secrets` task. When `_autoCredentials` is OFF, the user provides values manually.
 6. **Required field validation**: the deployer rejects deployment if any required config field is empty after resolution
 7. **Consul KV secrets** (`consulEnv`): before running the job, the deployer reads env vars from Consul KV paths declared per-app. Example: `NOMAD_TOKEN` from `nomad/bootstrap-token`. Reads are optional — missing keys silently default to empty.
 8. Rendered job files are uploaded to the agent via `POST /upload` (→ `/opt/nomad-jobs/{key}.nomad.hcl`)
-9. The deployer executes `nomad job run` via `POST /exec` and checks the exit code (`---EXIT:N---` marker). Non-zero exits are reported as errors.
+9. The deployer executes `nomad job run -detach` via `execOnAgent()` and then polls deployment status with `checkDeploymentStatus()` every 10s (each poll creates a fresh tunnel to avoid stale-tunnel hangs). Non-zero exits are reported as errors.
 10. All deploy output is logged to the server terminal with `[deploy-apps]` prefix
+
+**Deployer polling pattern**: The deployer uses `nomad job run -detach` which returns immediately with a deployment ID. It then polls `checkDeploymentStatus()` every 10s until the deployment reaches a terminal state (successful or failed). Each poll call uses `execOnAgent()` which establishes a fresh mesh tunnel, avoiding the previous failure mode where a long-running blocking exec would hang if the tunnel died mid-stream. Helper functions: `execOnAgent()` (tunnel + exec + close), `checkDeploymentStatus()` (Nomad deployment status query), `buildEnvExports()` (Consul KV env var construction).
 
 ### Managing applications on deployed stacks
 
 The **Applications tab** on the Stack Detail page is an interactive management surface:
 - All catalog apps are shown as toggleable cards with checkboxes
 - Checking an app expands its config fields inline
-- Dependency auto-resolution: checking NocoBase auto-checks PostgreSQL and Traefik
+- Dependency auto-resolution: checking NocoBase auto-checks PostgreSQL and Traefik; checking pgAdmin auto-checks PostgreSQL and Traefik
+- **Auto-credentials toggle**: apps with `secret: true` fields show a per-app `_autoCredentials` toggle (default: ON). When ON, secret fields are hidden and the deployer's `init-secrets` auto-generates them into Consul KV. When OFF, the user provides values manually.
 - **Save** persists selections without deploying; **Save & Deploy** persists + runs the deployer
 - No dialog or tab switching required — configure and deploy from one place
 
@@ -576,6 +586,15 @@ The existing 3-step wizard (defined in roadmap FE-1) gains a fourth step for pro
   - Per-app config fields expand when toggled on
   - Dependency validation (auto-enable deps when a dependent is toggled on, warn on disabling with active dependents)
   - If the program has no `ApplicationProvider`, Step 4 is skipped entirely
+
+### Solution Wizard (one-click deploy)
+
+`SolutionWizard.svelte` provides a simplified stack creation flow for pre-configured solutions (defined in `solutions.ts`). Each `SolutionCard` maps to a program + pre-selected applications with minimal user input (typically just an email). The wizard computes full `config`, `applications`, and `appConfig` via `deriveConfig()`.
+
+A collapsible "Infrastructure settings" section exposes configurable overrides:
+- **Compartment Name**, **Node Count**, **OCPUs per Node**, **Memory (GB)**, **Boot Volume (GB)** — initialized from each solution's `deriveConfig` defaults (e.g., NocoBase: 1 node / 4 OCPUs / 24 GB / 200 GB; Nomad Cluster: 3 nodes / 1 OCPU / 6 GB / 50 GB)
+- **Backup Schedule** — cron expression for the postgres-backup application (default: `0 4 * * *`)
+- **OCI Image** — optional image override
 
 ### Stack Detail: Applications Panel
 

@@ -247,6 +247,10 @@ When `agentBootstrap` is nil, the result is a simple gzip+base64 encoded script.
 
 Programs can optionally implement the `ApplicationProvider` interface to expose an application catalog — a list of selectable applications deployed after infrastructure provisioning via the pulumi-ui agent. When a program implements this interface, the engine automatically injects the Nebula mesh + agent bootstrap into every compute resource's `user_data` via multipart MIME composition (see `internal/agentinject`). Nebula and the agent are **not** part of the program's application catalog; they are infrastructure plumbing managed by the engine.
 
+The nomad-cluster catalog includes: Traefik, PostgreSQL, pgAdmin (separate apps — pgAdmin depends on postgres), NocoBase (with `init-secrets` and `init-db` tasks for Consul KV credential setup and dedicated DB creation; image: `nocobase/nocobase:latest`, health check: `HTTP GET /`), and GitHub Actions Runner. Config fields can be marked `secret: true` for Consul KV auto-managed credentials with a per-app `_autoCredentials` toggle.
+
+The deployer uses `nomad job run -detach` + polling (`checkDeploymentStatus()` every 10s with a fresh tunnel per poll) rather than blocking exec streams, avoiding tunnel-death hangs.
+
 Separately, YAML programs can declare `meta.agentAccess: true` to opt into automatic agent connectivity. This causes the engine to:
 1. **Generate Nebula PKI** at stack creation — per-stack CA, UI cert (`.1`, group "server"), agent cert (`.2`, group "agent"), and a `crypto/rand` 32-byte hex auth token. Stored in `stack_connections`.
 2. Inject the agent bootstrap into compute resource `user_data` (same as `ApplicationProvider`). Missing intermediate property nodes (e.g. `metadata`) are created automatically.

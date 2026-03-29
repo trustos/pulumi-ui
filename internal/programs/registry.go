@@ -15,9 +15,10 @@ type ConfigField struct {
 	Required    bool     `json:"required"`
 	Default     string   `json:"default,omitempty"`
 	Description string   `json:"description,omitempty"`
-	Options     []string `json:"options,omitempty"` // for select type
+	Options     []string `json:"options,omitempty"`     // for select type
 	Group       string   `json:"group,omitempty"`      // stable group key, e.g. "iam"
 	GroupLabel  string   `json:"groupLabel,omitempty"` // display heading, e.g. "IAM & Permissions"
+	Secret      bool     `json:"secret,omitempty"`     // true = Consul KV auto-managed credential
 }
 
 // ProgramMeta is the safe, serialisable view of a Program (sent to the UI).

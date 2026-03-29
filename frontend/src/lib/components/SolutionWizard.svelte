@@ -34,6 +34,11 @@
   let selectedImageId = $state('');
   let selectedSshKeyId = $state('');
   let nodeCount = $state('1');
+  let compartmentName = $state('nomad-compartment');
+  let ocpusPerNode = $state('4');
+  let memoryGbPerNode = $state('24');
+  let bootVolSizeGb = $state('200');
+  let backupSchedule = $state('0 4 * * *');
 
   const accountTrigger = $derived(
     accounts.find(a => a.id === selectedAccountId)?.name ?? 'Select account...'
@@ -62,10 +67,18 @@
     }
   });
 
-  // Auto-select first account/passphrase
+  // Auto-select first account/passphrase + initialize defaults from solution
   $effect(() => {
     if (!selectedAccountId && accounts.length > 0) selectedAccountId = accounts[0].id;
     if (!selectedPassphraseId && passphrases.length > 0) selectedPassphraseId = passphrases[0].id;
+  });
+  $effect(() => {
+    const defaults = solution.deriveConfig({}).config;
+    nodeCount = solution.configOverrides?.nodeCount ?? defaults.nodeCount ?? '1';
+    compartmentName = defaults.compartmentName ?? 'nomad-compartment';
+    ocpusPerNode = defaults.ocpusPerNode ?? '4';
+    memoryGbPerNode = defaults.memoryGbPerNode ?? '24';
+    bootVolSizeGb = defaults.bootVolSizeGb ?? '200';
   });
 
   const canDeploy = $derived(
@@ -88,12 +101,22 @@
         ...derived.config,
         ...(solution.configOverrides ?? {}),
         nodeCount,
+        compartmentName,
+        ocpusPerNode,
+        memoryGbPerNode,
+        bootVolSizeGb,
       };
       if (selectedImageId) config.imageId = selectedImageId;
 
       // SSH key: use selected key's public key if available
       const sshKey = sshKeys.find(k => k.id === selectedSshKeyId);
       if (sshKey) config.sshPublicKey = sshKey.publicKey;
+
+      // Merge app config with user-customizable app settings
+      const appConfig: Record<string, string> = {
+        ...derived.appConfig,
+        'postgres-backup.backupSchedule': backupSchedule,
+      };
 
       await putStack(
         stackName,
@@ -104,7 +127,7 @@
         selectedPassphraseId,
         selectedSshKeyId || undefined,
         derived.applications,
-        derived.appConfig,
+        appConfig,
       );
 
       open = false;
@@ -197,8 +220,32 @@
       {#if showAdvanced}
         <div class="space-y-3 pl-4 border-l-2 border-muted">
           <div class="space-y-1">
-            <label for="sol-nodes" class="text-xs text-muted-foreground">Nodes</label>
-            <Input id="sol-nodes" type="number" bind:value={nodeCount} class="h-8 text-sm" />
+            <label for="sol-compartment" class="text-xs text-muted-foreground">Compartment Name</label>
+            <Input id="sol-compartment" bind:value={compartmentName} class="h-8 text-sm" />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="space-y-1">
+              <label for="sol-nodes" class="text-xs text-muted-foreground">Nodes</label>
+              <Input id="sol-nodes" type="number" bind:value={nodeCount} class="h-8 text-sm" />
+            </div>
+            <div class="space-y-1">
+              <label for="sol-ocpus" class="text-xs text-muted-foreground">OCPUs per Node</label>
+              <Input id="sol-ocpus" type="number" bind:value={ocpusPerNode} class="h-8 text-sm" />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="space-y-1">
+              <label for="sol-memory" class="text-xs text-muted-foreground">Memory (GB)</label>
+              <Input id="sol-memory" type="number" bind:value={memoryGbPerNode} class="h-8 text-sm" />
+            </div>
+            <div class="space-y-1">
+              <label for="sol-vol" class="text-xs text-muted-foreground">Boot Volume (GB)</label>
+              <Input id="sol-vol" type="number" bind:value={bootVolSizeGb} class="h-8 text-sm" />
+            </div>
+          </div>
+          <div class="space-y-1">
+            <label for="sol-backup" class="text-xs text-muted-foreground">Backup Schedule (cron)</label>
+            <Input id="sol-backup" bind:value={backupSchedule} placeholder="0 4 * * *" class="h-8 text-sm font-mono" />
           </div>
           {#if images.length > 0}
             <div class="space-y-1">

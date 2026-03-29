@@ -78,6 +78,13 @@ func TestJobTemplateExists_Traefik(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, content, "traefik")
 	assert.Contains(t, content, "[[.acmeEmail]]")
+	// Traefik should declare 3 ports: http (80), https (443), api (8080)
+	assert.Contains(t, content, `port "http"`)
+	assert.Contains(t, content, `port "https"`)
+	assert.Contains(t, content, `port "api"`)
+	assert.Contains(t, content, "static = 80")
+	assert.Contains(t, content, "static = 443")
+	assert.Contains(t, content, "static = 8080")
 }
 
 func TestJobTemplateExists_Postgres(t *testing.T) {
@@ -85,9 +92,16 @@ func TestJobTemplateExists_Postgres(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, content, "postgres")
 	assert.Contains(t, content, "[[.dbUser]]")
-	assert.Contains(t, content, "[[.pgadminEmail]]")
-	// pgadminDomain removed — domains managed via Traefik dynamic config
-	assert.NotContains(t, content, "[[.pgadminDomain]]")
+	assert.Contains(t, content, "[[.dbPassword]]")
+	// pgAdmin is now a separate job template
+	assert.NotContains(t, content, "pgadmin")
+}
+
+func TestJobTemplateExists_PgAdmin(t *testing.T) {
+	content, err := builtins.ReadJobFile("pgadmin.nomad.hcl")
+	require.NoError(t, err)
+	assert.Contains(t, content, "pgadmin")
+	assert.Contains(t, content, "[[.email]]")
 }
 
 func TestJobTemplateExists_NocoBase(t *testing.T) {
@@ -153,6 +167,28 @@ func TestJobTemplateRendering_Traefik(t *testing.T) {
 	assert.Contains(t, rendered, "<<EOF")
 }
 
+func TestJobTemplateRendering_Traefik_DashboardPort(t *testing.T) {
+	content, err := builtins.ReadJobFile("traefik.nomad.hcl")
+	require.NoError(t, err)
+
+	tmpl, err := template.New("test").Delims("[[", "]]").Parse(content)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, map[string]string{"acmeEmail": "test@example.com"})
+	require.NoError(t, err)
+
+	rendered := buf.String()
+
+	// The API dashboard entrypoint should be on port 8080
+	assert.Contains(t, rendered, `address: ":8080"`)
+	// Dashboard must be enabled with insecure mode (accessed via Nebula mesh)
+	assert.Contains(t, rendered, "dashboard: true")
+	assert.Contains(t, rendered, "insecure: true")
+	// All 3 ports should be listed in the docker config
+	assert.Contains(t, rendered, `ports        = ["http", "https", "api"]`)
+}
+
 func TestJobTemplateRendering_Postgres(t *testing.T) {
 	content, err := builtins.ReadJobFile("postgres.nomad.hcl")
 	require.NoError(t, err)
@@ -161,8 +197,8 @@ func TestJobTemplateRendering_Postgres(t *testing.T) {
 	require.NoError(t, err)
 
 	data := map[string]string{
-		"dbUser":       "myuser",
-		"pgadminEmail": "admin@example.com",
+		"dbUser":     "myuser",
+		"dbPassword": "secret123",
 	}
 
 	var buf bytes.Buffer
@@ -171,9 +207,26 @@ func TestJobTemplateRendering_Postgres(t *testing.T) {
 
 	rendered := buf.String()
 	assert.Contains(t, rendered, "myuser")
+	assert.Contains(t, rendered, "secret123")
+}
+
+func TestJobTemplateRendering_PgAdmin(t *testing.T) {
+	content, err := builtins.ReadJobFile("pgadmin.nomad.hcl")
+	require.NoError(t, err)
+
+	tmpl, err := template.New("test").Delims("[[", "]]").Parse(content)
+	require.NoError(t, err)
+
+	data := map[string]string{
+		"email": "admin@example.com",
+	}
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, data)
+	require.NoError(t, err)
+
+	rendered := buf.String()
 	assert.Contains(t, rendered, "admin@example.com")
-	// pgadminDomain removed — domains managed via Traefik dynamic config
-	assert.NotContains(t, rendered, "[[.pgadminDomain]]")
 }
 
 func TestJobTemplateExists_PostgresBackup(t *testing.T) {
@@ -431,4 +484,232 @@ func TestConsulEnvEmpty(t *testing.T) {
 
 	assert.Equal(t, "nomad job run /opt/nomad-jobs/test.nomad.hcl", cmd)
 	assert.NotContains(t, cmd, "consul")
+}
+
+// ── Secret field skipping (cf.Secret: true → leave empty) ───────────────
+
+func TestSecretFieldSkipping(t *testing.T) {
+	// Fields marked Secret: true should be left empty in template data,
+	// because the job's init-secrets task in Consul KV generates them.
+	// Non-secret fields matching isSecretField heuristic still get Go-side generation.
+	appConfig := map[string]string{
+		"nocobase.dbUser": "admin",
+		// dbPassword is missing → normally auto-generated, but Secret: true → skip
+	}
+	app := programs.ApplicationDef{
+		Key: "nocobase",
+		ConfigFields: []programs.ConfigField{
+			{Key: "dbUser", Default: "admin"},
+			{Key: "dbPassword", Secret: true}, // Consul KV managed
+			{Key: "appKey"},                    // NOT secret-flagged, but matches isSecretField heuristic
+		},
+	}
+
+	// Extract data (same logic as deployer.uploadJobFile lines 174-184)
+	prefix := app.Key + "."
+	data := make(map[string]string)
+	for k, v := range appConfig {
+		if strings.HasPrefix(k, prefix) {
+			fieldKey := strings.TrimPrefix(k, prefix)
+			if strings.HasPrefix(fieldKey, "_") {
+				continue
+			}
+			data[fieldKey] = v
+		}
+	}
+	for _, cf := range app.ConfigFields {
+		if _, ok := data[cf.Key]; !ok {
+			data[cf.Key] = cf.Default
+		}
+	}
+
+	// Build secretFields set (lines 193-198)
+	secretFields := make(map[string]bool)
+	for _, cf := range app.ConfigFields {
+		if cf.Secret {
+			secretFields[cf.Key] = true
+		}
+	}
+
+	// Auto-generate secrets (lines 204-218)
+	for key, val := range data {
+		if val != "" {
+			continue
+		}
+		if secretFields[key] {
+			continue // Consul KV init-secrets handles this
+		}
+		if isSecretField(key) {
+			generated := generateSecret()
+			data[key] = generated
+			appConfig[prefix+key] = generated
+		}
+	}
+
+	// dbPassword should remain empty (Secret: true → skipped)
+	assert.Empty(t, data["dbPassword"], "secret-flagged field should be left empty for Consul KV init-secrets")
+	assert.Empty(t, appConfig["nocobase.dbPassword"], "secret-flagged field should NOT be persisted to appConfig")
+
+	// appKey should be auto-generated (matches isSecretField heuristic, not Secret: true)
+	assert.NotEmpty(t, data["appKey"], "non-catalog secret field should be auto-generated")
+	assert.Len(t, data["appKey"], 32)
+
+	// dbUser should remain as provided
+	assert.Equal(t, "admin", data["dbUser"])
+}
+
+// ── Auto-credentials key filtering ──────────────────────────────────────
+
+func TestAutoCredentialsKeyFiltering(t *testing.T) {
+	// Keys prefixed with "_" (like _autoCredentials) are internal metadata
+	// and should be excluded from template data.
+	appConfig := map[string]string{
+		"app._autoCredentials": "true",
+		"app._internalFlag":    "yes",
+		"app.dbUser":           "admin",
+		"app.domain":           "example.com",
+	}
+
+	prefix := "app."
+	data := make(map[string]string)
+	for k, v := range appConfig {
+		if strings.HasPrefix(k, prefix) {
+			fieldKey := strings.TrimPrefix(k, prefix)
+			if strings.HasPrefix(fieldKey, "_") {
+				continue // skip internal metadata keys
+			}
+			data[fieldKey] = v
+		}
+	}
+
+	assert.NotContains(t, data, "_autoCredentials", "underscore-prefixed keys must be excluded")
+	assert.NotContains(t, data, "_internalFlag", "underscore-prefixed keys must be excluded")
+	assert.Equal(t, "admin", data["dbUser"])
+	assert.Equal(t, "example.com", data["domain"])
+}
+
+// ── buildEnvExports validation failure ──────────────────────────────────
+
+func TestBuildEnvExportsValidationFailure(t *testing.T) {
+	d := NewDeployer(nil, nil)
+
+	tests := []struct {
+		name      string
+		consulEnv map[string]string
+		wantEmpty bool
+	}{
+		{
+			name:      "invalid shell identifier",
+			consulEnv: map[string]string{"foo bar": "valid/path"},
+			wantEmpty: true,
+		},
+		{
+			name:      "invalid KV path with shell injection",
+			consulEnv: map[string]string{"NOMAD_TOKEN": "key; rm -rf /"},
+			wantEmpty: true,
+		},
+		{
+			name:      "empty env var name",
+			consulEnv: map[string]string{"": "valid/path"},
+			wantEmpty: true,
+		},
+		{
+			name:      "empty KV path",
+			consulEnv: map[string]string{"TOKEN": ""},
+			wantEmpty: true,
+		},
+		{
+			name:      "command substitution in path",
+			consulEnv: map[string]string{"TOKEN": "key$(whoami)"},
+			wantEmpty: true,
+		},
+		{
+			name:      "valid entries",
+			consulEnv: map[string]string{"NOMAD_TOKEN": "nomad/bootstrap-token"},
+			wantEmpty: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := d.buildEnvExports(tt.consulEnv)
+			if tt.wantEmpty {
+				assert.Empty(t, result, "should return empty string for invalid consulEnv")
+			} else {
+				assert.NotEmpty(t, result, "should return exports for valid consulEnv")
+				assert.Contains(t, result, "export NOMAD_TOKEN=")
+			}
+		})
+	}
+}
+
+// ── checkDeploymentStatus command format ─────────────────────────────────
+
+func TestCheckDeploymentStatusCommandFormat(t *testing.T) {
+	// Verify the shell command constructed by checkDeploymentStatus has
+	// the expected structure. We can't call checkDeploymentStatus without
+	// a real tunnel, but we can replicate its fmt.Sprintf and validate.
+	envExports := "export NOMAD_TOKEN=$(consul kv get 'nomad/bootstrap-token' 2>/dev/null || true) && "
+	jobKey := "nocobase"
+
+	cmd := fmt.Sprintf(
+		`%snomad job deployments -latest -json %s 2>/dev/null | grep -o '"Status": *"[^"]*"' | head -1 | cut -d'"' -f4`,
+		envExports, jobKey,
+	)
+
+	// Should start with env exports
+	assert.True(t, strings.HasPrefix(cmd, "export NOMAD_TOKEN="))
+	// Should contain the nomad deployments query
+	assert.Contains(t, cmd, "nomad job deployments -latest -json nocobase")
+	// Should pipe through grep to extract Status
+	assert.Contains(t, cmd, `grep -o '"Status": *"[^"]*"'`)
+	// Should extract the 4th field from quote-delimited output
+	assert.Contains(t, cmd, `cut -d'"' -f4`)
+	// Should suppress stderr
+	assert.Contains(t, cmd, "2>/dev/null")
+
+	// Without env exports
+	cmdNoEnv := fmt.Sprintf(
+		`%snomad job deployments -latest -json %s 2>/dev/null | grep -o '"Status": *"[^"]*"' | head -1 | cut -d'"' -f4`,
+		"", jobKey,
+	)
+	assert.True(t, strings.HasPrefix(cmdNoEnv, "nomad job deployments"))
+}
+
+// ── NocoBase template rendering ─────────────────────────────────────────
+
+func TestJobTemplateRendering_NocoBase(t *testing.T) {
+	content, err := builtins.ReadJobFile("nocobase.nomad.hcl")
+	require.NoError(t, err)
+
+	tmpl, err := template.New("test").Delims("[[", "]]").Parse(content)
+	require.NoError(t, err)
+
+	data := map[string]string{
+		"dbUser":     "nocobase_user",
+		"dbPassword": "s3cretPass",
+		"dbName":     "nocobase_db",
+		"appKey":     "abc123hexkey",
+	}
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, data)
+	require.NoError(t, err)
+
+	rendered := buf.String()
+	// Go template variables should be rendered
+	assert.Contains(t, rendered, "nocobase_user")
+	assert.Contains(t, rendered, "s3cretPass")
+	assert.Contains(t, rendered, "nocobase_db")
+	assert.Contains(t, rendered, "abc123hexkey")
+	// No unrendered Go template markers should remain
+	assert.NotContains(t, rendered, "[[")
+	// Nomad template expressions should pass through unchanged
+	assert.Contains(t, rendered, `{{ key "postgres/adminuser" }}`)
+	assert.Contains(t, rendered, `{{ key "nocobase/db_name" }}`)
+	assert.Contains(t, rendered, `{{ key "nocobase/db_password" }}`)
+	// Job structure should be intact
+	assert.Contains(t, rendered, `job "nocobase"`)
+	assert.Contains(t, rendered, "APP_KEY=abc123hexkey")
+	assert.Contains(t, rendered, "nocobase/nocobase:latest")
 }

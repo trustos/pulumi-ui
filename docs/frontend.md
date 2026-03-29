@@ -138,6 +138,29 @@ Shown only for programs with an `applications` catalog. Renders `ApplicationSele
 
 ---
 
+## Solution Wizard (SolutionWizard)
+
+`SolutionWizard.svelte` provides a streamlined alternative to `NewStackDialog` for pre-configured deployment recipes. Each solution card (`SolutionCard` from `solutions.ts`) defines a program, pre-selected applications, and a `deriveConfig` function that computes all config from minimal user input.
+
+### User fields
+Each solution declares a small set of `userFields` (typically just an email address). The wizard renders these as the primary form.
+
+### Infrastructure settings (advanced)
+A collapsible "Infrastructure settings" section exposes additional fields initialized from `deriveConfig` defaults:
+- **Compartment Name** — OCI compartment (default: `nomad-compartment`)
+- **Node Count** — number of instances (from `configOverrides` or `deriveConfig`)
+- **OCPUs per Node** — ARM compute units (NocoBase: 4, Nomad Cluster: 1)
+- **Memory (GB)** — per-node RAM (NocoBase: 24, Nomad Cluster: 6)
+- **Boot Volume (GB)** — disk size (NocoBase: 200, Nomad Cluster: 50)
+- **Backup Schedule** — cron expression for postgres-backup (default: `0 4 * * *`)
+- **OCI Image** — optional image picker (only shown when images are available)
+
+These defaults differ per solution to match resource requirements: NocoBase uses a single large node (4 OCPUs, 24 GB, 200 GB) while the bare Nomad Cluster distributes across 3 smaller nodes (1 OCPU, 6 GB, 50 GB each).
+
+The wizard's `$effect` initializes these fields from `solution.deriveConfig({}).config`, using fallbacks for any missing keys (e.g., `defaults.ocpusPerNode ?? '4'`).
+
+---
+
 ## Dashboard Prerequisites
 
 Before showing the "New Stack" button as active, check **both**:
@@ -390,7 +413,8 @@ The `running` flag from `StackInfo` is used to show a spinner and disable action
 The Applications tab is an interactive management surface for the catalog (not a read-only display):
 - All workload-tier apps from the program's catalog are shown as toggleable cards
 - Checking an app expands its config fields inline (e.g., ACME email for Traefik)
-- `dependsOn` auto-resolution: checking NocoBase auto-checks PostgreSQL and Traefik
+- `dependsOn` auto-resolution: checking NocoBase auto-checks PostgreSQL and Traefik; checking pgAdmin auto-checks PostgreSQL and Traefik
+- **Auto-credentials toggle** (`_autoCredentials`): apps with `secret: true` config fields show an auto-credentials toggle (default: ON). When ON, secret fields are hidden — the deployer's `init-secrets` task auto-generates them into Consul KV. When OFF, the user provides values manually. This toggle is per-app.
 - **Save** persists selections to the stack config; **Save & Deploy** persists + runs the deployer
 - `appConfig` values (e.g., `traefik.acmeEmail`) are stored per-stack and rendered into job templates at deploy time
 

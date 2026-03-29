@@ -140,36 +140,100 @@ func handleServices(w http.ResponseWriter, r *http.Request) {
 // --- Nomad Jobs endpoint ---
 
 type nomadJobSummary struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Type   string `json:"type"`
+	Name   string      `json:"name"`
+	Status string      `json:"status"`
+	Type   string      `json:"type"`
+	Ports  []nomadPort `json:"ports,omitempty"`
 }
 
-func handleNomadJobs(w http.ResponseWriter, r *http.Request) {
-	// Read Nomad token from bootstrap file or Consul KV.
-	token := ""
+type nomadPort struct {
+	Label string `json:"label"`
+	Value int    `json:"value"` // host port
+	To    int    `json:"to"`    // container port
+}
+
+func getNomadToken() string {
 	if b, err := os.ReadFile("/etc/nomad.d/nomad-bootstrap-token"); err == nil {
 		var parsed struct {
 			SecretID string `json:"SecretID"`
 		}
 		if json.Unmarshal(b, &parsed) == nil && parsed.SecretID != "" {
-			token = parsed.SecretID
+			return parsed.SecretID
 		}
 	}
-	if token == "" {
-		if out, err := exec.Command("consul", "kv", "get", "nomad/bootstrap-token").Output(); err == nil {
-			token = strings.TrimSpace(string(out))
-		}
+	if out, err := exec.Command("consul", "kv", "get", "nomad/bootstrap-token").Output(); err == nil {
+		return strings.TrimSpace(string(out))
 	}
+	return ""
+}
 
-	// Query Nomad HTTP API.
-	req, _ := http.NewRequestWithContext(r.Context(), "GET", "http://localhost:4646/v1/jobs?meta=false", nil)
+func nomadAPIGet(ctx context.Context, client *http.Client, token, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost:4646"+path, nil)
+	if err != nil {
+		return nil, err
+	}
 	if token != "" {
 		req.Header.Set("X-Nomad-Token", token)
 	}
+	return client.Do(req)
+}
 
+// getAllocPorts queries the allocations for a job and returns ports from the
+// first running allocation. Returns nil if no running allocation or no ports.
+func getAllocPorts(ctx context.Context, client *http.Client, token, jobID string) []nomadPort {
+	resp, err := nomadAPIGet(ctx, client, token, "/v1/job/"+jobID+"/allocations")
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var allocs []struct {
+		ClientStatus       string `json:"ClientStatus"`
+		AllocatedResources struct {
+			Shared struct {
+				Ports []struct {
+					Label  string `json:"Label"`
+					Value  int    `json:"Value"`
+					To     int    `json:"To"`
+					HostIP string `json:"HostIP"`
+				} `json:"Ports"`
+			} `json:"Shared"`
+		} `json:"AllocatedResources"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&allocs); err != nil {
+		return nil
+	}
+
+	// Find the first running allocation with ports.
+	for _, a := range allocs {
+		if a.ClientStatus != "running" {
+			continue
+		}
+		ports := a.AllocatedResources.Shared.Ports
+		if len(ports) == 0 {
+			continue
+		}
+		result := make([]nomadPort, 0, len(ports))
+		for _, p := range ports {
+			result = append(result, nomadPort{
+				Label: p.Label,
+				Value: p.Value,
+				To:    p.To,
+			})
+		}
+		return result
+	}
+	return nil
+}
+
+func handleNomadJobs(w http.ResponseWriter, r *http.Request) {
+	token := getNomadToken()
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+
+	resp, err := nomadAPIGet(r.Context(), client, token, "/v1/jobs?meta=false")
 	if err != nil {
 		http.Error(w, "nomad API unreachable: "+err.Error(), http.StatusBadGateway)
 		return
@@ -182,9 +246,7 @@ func handleNomadJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse the Nomad job list response (array of job objects).
 	var nomadJobs []struct {
-		Name   string `json:"Name"`
 		ID     string `json:"ID"`
 		Status string `json:"Status"`
 		Type   string `json:"Type"`
@@ -196,11 +258,16 @@ func handleNomadJobs(w http.ResponseWriter, r *http.Request) {
 
 	results := make([]nomadJobSummary, 0, len(nomadJobs))
 	for _, j := range nomadJobs {
-		results = append(results, nomadJobSummary{
+		summary := nomadJobSummary{
 			Name:   j.ID,
 			Status: j.Status,
 			Type:   j.Type,
-		})
+		}
+		// For running jobs, fetch allocated ports.
+		if j.Status == "running" {
+			summary.Ports = getAllocPorts(r.Context(), client, token, j.ID)
+		}
+		results = append(results, summary)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

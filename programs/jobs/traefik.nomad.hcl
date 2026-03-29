@@ -12,6 +12,9 @@ job "traefik" {
       port "https" {
         static = 443
       }
+      port "api" {
+        static = 8080
+      }
     }
 
     task "init-dirs" {
@@ -47,6 +50,8 @@ entryPoints:
     address: ":80"
   websecure:
     address: ":443"
+  traefik:
+    address: ":8080"
 
 ping:
   entryPoint: web
@@ -56,7 +61,7 @@ log:
 
 api:
   dashboard: true
-  insecure: false
+  insecure: true
 
 providers:
   providersThrottleDuration: 1s
@@ -90,7 +95,7 @@ EOF
       config {
         image        = "traefik:v3.4"
         network_mode = "host"
-        ports        = ["http", "https"]
+        ports        = ["http", "https", "api"]
         mounts = [
           { type = "bind", source = "local/traefik.yaml", target = "/etc/traefik/traefik.yaml", readonly = true },
           { type = "bind", source = "/opt/traefik/acme",    target = "/etc/traefik/acme",         readonly = false },
