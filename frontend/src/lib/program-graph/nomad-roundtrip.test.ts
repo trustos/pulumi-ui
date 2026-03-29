@@ -6,6 +6,7 @@
  * the nomad-cluster program.
  */
 import { describe, it, expect } from 'vitest';
+// @ts-ignore -- fs is available in vitest (Node.js) but not recognized by svelte-check
 import { readFileSync } from 'fs';
 import { yamlToGraph } from './parser';
 import { graphToYaml } from './serializer';
