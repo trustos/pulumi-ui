@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"text/template"
@@ -204,7 +205,14 @@ func (d *Deployer) uploadJobFile(
 	destPath := fmt.Sprintf("/opt/nomad-jobs/%s.nomad.hcl", app.Key)
 	send("output", fmt.Sprintf("Uploading job file to %s...", destPath))
 
-	client := tunnel.HTTPClient()
+	client := &http.Client{
+		Timeout: 2 * time.Minute,
+		Transport: &http.Transport{
+			DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+				return tunnel.Dial(dialCtx)
+			},
+		},
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", tunnel.AgentURL()+"/upload", &rendered)
 	if err != nil {
 		return err
@@ -257,7 +265,16 @@ func (d *Deployer) deployWorkload(
 	}
 
 	body, _ := json.Marshal(execReq)
-	client := tunnel.HTTPClient()
+	// Use a long-timeout client for exec — `nomad job run` blocks until
+	// deployment is healthy, which can take minutes for services pulling images.
+	client := &http.Client{
+		Timeout: 10 * time.Minute,
+		Transport: &http.Transport{
+			DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+				return tunnel.Dial(dialCtx)
+			},
+		},
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", tunnel.AgentURL()+"/exec", bytes.NewReader(body))
 	if err != nil {
 		return err
