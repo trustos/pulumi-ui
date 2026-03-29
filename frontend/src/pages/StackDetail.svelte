@@ -1317,7 +1317,7 @@
           <Separator class="my-2" />
           <Tooltip.Root>
             <Tooltip.Trigger class="w-full">
-              <Button variant="ghost" class="w-full text-destructive" onclick={handleRemove}>
+              <Button variant="ghost" class="w-full text-destructive" onclick={handleRemove} disabled={isRunning || isDeployingApps}>
                 Remove Stack
               </Button>
             </Tooltip.Trigger>
@@ -1427,6 +1427,13 @@
       <Dialog.Description>
         Remove <strong>{name}</strong> from the dashboard? This deletes the stack configuration and operation history but does not destroy cloud resources.
       </Dialog.Description>
+      {#if info?.deployed}
+        <Alert variant="destructive" class="mt-3">
+          <AlertDescription>
+            This stack has <strong>deployed infrastructure</strong> that is still running in the cloud. Removing the stack will not destroy these resources — they will need to be cleaned up manually from the OCI console. Run <strong>Destroy</strong> first to tear down the infrastructure cleanly.
+          </AlertDescription>
+        </Alert>
+      {/if}
     </Dialog.Header>
     <Dialog.Footer>
       <Button variant="outline" onclick={() => { removeConfirmOpen = false; }}>Cancel</Button>

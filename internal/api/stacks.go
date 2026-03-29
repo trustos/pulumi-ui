@@ -371,6 +371,12 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteStack(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
+	// Prevent deletion while an operation is running.
+	if h.Engine.IsRunning(stackName) {
+		http.Error(w, "cannot remove stack while an operation is running", http.StatusConflict)
+		return
+	}
+
 	// Look up the program name before deleting the SQLite row — we need it
 	// to locate the correct Pulumi state directory on disk.
 	row, err := h.Stacks.Get(stackName)
