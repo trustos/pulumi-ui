@@ -198,6 +198,39 @@ func RegisterYAML(r *ProgramRegistry, name, displayName, description, yamlBody s
 
 ---
 
+## Port Forwarding ✓ DONE
+
+kubectl-style TCP port forwarding through Nebula mesh tunnels. Replaces public NLB exposure for services like Nomad UI (port 4646).
+
+### What was done
+- `internal/mesh/mesh.go` — Added `DialPort(ctx, port)` to dial arbitrary ports through the Nebula overlay
+- `internal/mesh/forward.go` — New `ForwardManager`: local TCP listener → Nebula tunnel → remote port, bidirectional relay
+- `internal/api/port_forward.go` — HTTP handlers: `POST /forward` (start), `DELETE /forward/{id}` (stop), `GET /forward` (list)
+- Frontend: port forward UI card in Nodes tab with port input, active forward list, stop button
+- `programs/nomad-cluster.yaml` — Removed port 4646 NLB resources (NSG rule + backend set + listener + backends)
+- Removed "Join Mesh" button from frontend (NAT coexistence issues)
+
+**Status: complete**
+
+---
+
+## App Catalog ✓ DONE
+
+Application catalog for YAML programs with mesh-based deployment.
+
+### What was done
+- `internal/programs/yaml_config.go` — Added `meta.applications` parsing (`ParseApplications()`)
+- `internal/programs/yaml_program.go` — `YAMLProgram` implements `ApplicationProvider`
+- `internal/applications/deployer.go` — Rewritten to use mesh tunnels (not direct HTTP). Added job template upload before exec. Removed lighthouse dependency.
+- `internal/engine/engine.go` — Simplified `DeployApps()`: removed lighthouse output requirement, added `appConfig` parameter
+- `programs/builtins.go` — Extended embed to include `jobs/*.nomad.hcl`
+- `programs/jobs/github-runner.nomad.hcl` — New Nomad job template for self-hosted GitHub Actions runner
+- `programs/nomad-cluster.yaml` — Added `meta.applications` with GitHub Actions Runner (workload, target: first, config: githubToken + githubRepo + runnerLabels)
+
+**Status: complete**
+
+---
+
 ## FE-1 — 3-Step Stack Creation Wizard
 
 ### Problem

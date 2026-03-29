@@ -137,7 +137,7 @@ firewall:
       proto: any
       host: any
   inbound:
-    - port: 41820
+    - port: any
       proto: tcp
       group: server
     - port: 22

@@ -15,7 +15,7 @@ import (
 	"fmt"
 )
 
-//go:embed *.yaml
+//go:embed *.yaml jobs/*.nomad.hcl
 var fs embed.FS
 
 // ReadFile returns the raw contents of a built-in program YAML file by name
@@ -28,4 +28,14 @@ func ReadFile(name string) string {
 		panic(fmt.Sprintf("builtins: missing embedded file %q: %v", name, err))
 	}
 	return string(b)
+}
+
+// ReadJobFile returns the raw contents of a Nomad job template by name
+// (e.g. "github-runner.nomad.hcl"). The file is read from the jobs/ subdirectory.
+func ReadJobFile(name string) (string, error) {
+	b, err := fs.ReadFile("jobs/" + name)
+	if err != nil {
+		return "", fmt.Errorf("builtins: job file %q not found: %w", name, err)
+	}
+	return string(b), nil
 }

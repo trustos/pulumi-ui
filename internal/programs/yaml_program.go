@@ -9,12 +9,13 @@ import (
 // returns nil as a signal to the engine to use the YAML execution path
 // (UpsertStackLocalSource) instead of the inline Go path.
 type YAMLProgram struct {
-	name        string
-	displayName string
-	description string
-	yamlBody    string        // raw template body as stored in DB
-	fields      []ConfigField // derived from the YAML config: section
-	agentAccess bool          // parsed from meta.agentAccess
+	name         string
+	displayName  string
+	description  string
+	yamlBody     string           // raw template body as stored in DB
+	fields       []ConfigField    // derived from the YAML config: section
+	agentAccess  bool             // parsed from meta.agentAccess
+	applications []ApplicationDef // parsed from meta.applications
 }
 
 // NewYAMLProgram parses a raw Pulumi YAML template body and returns a
@@ -26,12 +27,13 @@ func NewYAMLProgram(name, displayName, description, yamlBody string) (*YAMLProgr
 		fields = []ConfigField{}
 	}
 	return &YAMLProgram{
-		name:        name,
-		displayName: displayName,
-		description: description,
-		yamlBody:    yamlBody,
-		fields:      fields,
-		agentAccess: ParseAgentAccess(yamlBody),
+		name:         name,
+		displayName:  displayName,
+		description:  description,
+		yamlBody:     yamlBody,
+		fields:       fields,
+		agentAccess:  ParseAgentAccess(yamlBody),
+		applications: ParseApplications(yamlBody),
 	}, nil
 }
 
@@ -47,8 +49,12 @@ func (p *YAMLProgram) YAMLBody() string { return p.yamlBody }
 // connectivity injection via meta.agentAccess: true.
 func (p *YAMLProgram) AgentAccess() bool { return p.agentAccess }
 
-// Compile-time check that YAMLProgram implements AgentAccessProvider.
+// Applications returns the application catalog declared in meta.applications.
+func (p *YAMLProgram) Applications() []ApplicationDef { return p.applications }
+
+// Compile-time checks.
 var _ AgentAccessProvider = (*YAMLProgram)(nil)
+var _ ApplicationProvider = (*YAMLProgram)(nil)
 
 // Run returns nil — this signals the engine to use the YAML execution path.
 func (p *YAMLProgram) Run(_ map[string]string) pulumi.RunFunc { return nil }

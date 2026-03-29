@@ -55,16 +55,18 @@ func NewForwardManager(meshManager *Manager) *ForwardManager {
 // Nebula tunnel to remotePort on the given node. If localPort is 0, an
 // ephemeral port is chosen. Returns the PortForward with the actual local port.
 func (fm *ForwardManager) Start(stackName string, nodeIndex, remotePort, localPort int) (*PortForward, error) {
-	// Verify the tunnel can be established before binding a port.
-	var tunnel *Tunnel
-	var err error
-	if nodeIndex >= 0 {
-		tunnel, err = fm.meshManager.GetTunnelForNode(stackName, nodeIndex)
-	} else {
-		tunnel, err = fm.meshManager.GetTunnel(stackName)
+	if fm.meshManager == nil {
+		return nil, fmt.Errorf("mesh manager not available")
 	}
-	if err != nil {
-		return nil, fmt.Errorf("mesh tunnel: %w", err)
+	// Verify the tunnel can be established before binding a port.
+	if nodeIndex >= 0 {
+		if _, err := fm.meshManager.GetTunnelForNode(stackName, nodeIndex); err != nil {
+			return nil, fmt.Errorf("mesh tunnel: %w", err)
+		}
+	} else {
+		if _, err := fm.meshManager.GetTunnel(stackName); err != nil {
+			return nil, fmt.Errorf("mesh tunnel: %w", err)
+		}
 	}
 
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", localPort)
@@ -99,7 +101,7 @@ func (fm *ForwardManager) Start(stackName string, nodeIndex, remotePort, localPo
 	fm.forwards[id] = pf
 	fm.mu.Unlock()
 
-	go pf.acceptLoop(ctx, tunnel)
+	go pf.acceptLoop(ctx)
 
 	log.Printf("[forward] %s: localhost:%d → %s node %d port %d",
 		id, actualPort, stackName, nodeIndex, remotePort)
@@ -162,7 +164,7 @@ func (fm *ForwardManager) StopAll(stackName string) {
 	}
 }
 
-func (pf *PortForward) acceptLoop(ctx context.Context, tunnel *Tunnel) {
+func (pf *PortForward) acceptLoop(ctx context.Context) {
 	for {
 		conn, err := pf.listener.Accept()
 		if err != nil {
@@ -180,13 +182,27 @@ func (pf *PortForward) acceptLoop(ctx context.Context, tunnel *Tunnel) {
 		go func() {
 			defer pf.connWg.Done()
 			defer pf.active.Add(-1)
-			pf.handleConn(ctx, tunnel, conn)
+			pf.handleConn(ctx, conn)
 		}()
 	}
 }
 
-func (pf *PortForward) handleConn(ctx context.Context, tunnel *Tunnel, local net.Conn) {
+func (pf *PortForward) handleConn(ctx context.Context, local net.Conn) {
 	defer local.Close()
+
+	// Resolve tunnel fresh on each connection — the idle reaper may have
+	// replaced the tunnel since the forward was created.
+	var tunnel *Tunnel
+	var err error
+	if pf.NodeIndex >= 0 {
+		tunnel, err = pf.manager.GetTunnelForNode(pf.StackName, pf.NodeIndex)
+	} else {
+		tunnel, err = pf.manager.GetTunnel(pf.StackName)
+	}
+	if err != nil {
+		log.Printf("[forward] %s: get tunnel failed: %v", pf.ID, err)
+		return
+	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

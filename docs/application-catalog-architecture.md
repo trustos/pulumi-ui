@@ -24,16 +24,16 @@ Step A — POST /api/stacks/{name}/up
   → SSE: done (operation status: succeeded/failed)
 
 Step B — POST /api/stacks/{name}/deploy-apps  (only if Step A succeeded)
-  Phase 2: Mesh (Nebula handshake)
+  Phase 2: Mesh connectivity
     cloud-init installs OS deps, Docker, Consul, Nomad, Nebula, agent
-    agent starts → embeds Nebula → connects to lighthouse
-    pulumi-ui embeds Nebula → discovers agent → P2P tunnel established
-    → SSE: "Cluster connected (3 nodes)"
+    agent starts → Nebula handshake via NLB per-node ports
+    deployer polls agent /health through mesh tunnel until healthy
+    → SSE: "Agent is healthy."
 
   Phase 3: Applications (workload tier, via agent)
-    pulumi-ui checks Nomad health via agent
-    pulumi-ui sends job definitions via agent → nomad job run
-    → SSE: "Traefik: running", "PostgreSQL: running"
+    deployer uploads rendered job templates via agent /upload endpoint
+    deployer runs `nomad job run` via agent /exec endpoint
+    → SSE: "GitHub Actions Runner deployed successfully."
 
   → SSE: done (operation status: succeeded/failed)
 ```
@@ -374,48 +374,97 @@ These are virtual IPs on the Nebula overlay. They do not conflict with OCI VCN a
 
 ### User Mesh Access
 
-Users can join the stack's Nebula mesh from their local machine to get direct network access to all nodes (SSH, ping, etc.).
+The backend endpoint `GET /api/stacks/{name}/mesh/config` generates a Nebula config file for joining the mesh from a local machine. It issues a user certificate (IP `.200`, group `"user"`, 1-year validity), builds a `static_host_map` from deployed nodes, and returns a complete Nebula YAML config with inline PEM certs.
 
-**Endpoint**: `GET /api/stacks/{name}/mesh/config` (`internal/api/mesh_config.go`)
-
-**What it does:**
-1. Issues a fresh user certificate (IP `.200`, group `"user"`, 1-year validity) signed by the stack's CA
-2. Builds a `static_host_map` from all deployed nodes (via `NodeCertStore.ListForStack`)
-3. Renders a complete Nebula YAML config with inline PEM certs
-4. Returns as `application/x-yaml` attachment (`nebula-{stackName}.yml`)
-
-**User workflow:**
-1. Click "Join Mesh" on the Nodes tab → downloads `nebula-{stack}.yml`
-2. Run: `sudo nebula -config nebula-{stack}.yml`
-3. SSH: `ssh ubuntu@10.42.x.2` (nodes are reachable via Nebula IPs)
+> **Note**: The "Join Mesh" UI button has been removed due to NAT coexistence issues (the user's local Nebula client conflicts with the server's userspace tunnels when both are behind the same NAT — UDP session affinity on the NLB routes return packets to whichever peer sent first). The endpoint is retained for manual/advanced use.
 
 **Nebula firewall groups**: The agent's Nebula overlay firewall (`agent_bootstrap.sh`) has three inbound rules:
-- Port 41820 TCP from group `server` — management API access for pulumi-ui
+- Any TCP port from group `server` — management API + port forwarding to any service (Nomad UI, Consul UI, etc.)
 - Port 22 TCP from group `user` — SSH access for users joining the mesh
 - ICMP from any — ping for connectivity testing
 
-**Coexistence with server tunnels**: The server's userspace Nebula tunnels (mesh manager) and the user's local Nebula client coexist on the same machine. They use different certs, different Nebula IPs, and different UDP ports (server: ephemeral, user: 4242). The 5-minute idle reaper may close the server tunnel while the user tests locally — it self-heals on next UI health check.
+### Port Forwarding (kubectl-style)
+
+For accessing private services (Nomad UI, Consul UI, application UIs) without public NLB exposure, the server provides TCP port forwarding through the Nebula mesh.
+
+**Endpoints:**
+- `POST /api/stacks/{name}/forward` — start a forward (`{remotePort, nodeIndex, localPort?}`) → returns assigned local port
+- `DELETE /api/stacks/{name}/forward/{id}` — stop a forward
+- `GET /api/stacks/{name}/forward` — list active forwards
+
+**How it works:**
+1. User enters a remote port (e.g., 4646 for Nomad UI) in the Nodes tab
+2. Server opens a local TCP listener on `127.0.0.1:<assigned-port>`
+3. Each accepted connection is dialed through the Nebula tunnel to `<nebulaIP>:<remotePort>` on the target node
+4. Bidirectional TCP relay between the local connection and the tunnel
+
+**Implementation:** `internal/mesh/forward.go` (`ForwardManager`) manages listeners and proxied connections. `Tunnel.DialPort(ctx, port)` dials arbitrary ports through the Nebula overlay (not just the agent port). The UI shows active forwards with local address, connection count, and a stop button.
+
+### Tunnel Reliability
+
+**Handshake probe + retry** (`GetTunnelForNode`): When the server restarts, the agent's Nebula may still have a cached session for the server's VPN IP from the previous process. It ignores new handshakes until the old session becomes stale (~30-90s). `GetTunnelForNode` handles this with a probe-and-retry loop:
+1. Create Nebula tunnel with `static_host_map` pointing to the NLB
+2. Probe: TCP dial to the agent (12s timeout) to verify the handshake completed
+3. If probe succeeds → cache tunnel and return
+4. If probe fails → destroy the Nebula instance, wait 15s, retry
+5. Up to 3 attempts (delays: 0s, 15s, 30s). Total worst case: ~57s.
+
+**Passive tunnel pinning**: During `pulumi up`, a passive tunnel is created before the agent's IP is known. The `Pin()` method prevents the 5-minute idle reaper from killing it mid-deploy. After deploy completes, `CloseTunnel` removes it. Post-deploy, passive tunnels are skipped entirely (the `alreadyDeployed` check in `agentURLFields`).
 
 ---
 
 ## Nomad Cluster Application Catalog
 
-For the Nomad cluster program specifically:
+Bootstrap services (Docker, Consul, Nomad, Nebula, Agent) are installed by cloud-init at first boot — they are not part of the selectable catalog. The catalog contains **workload-tier** applications deployed via agent after infrastructure is ready.
 
-| Application | Tier | Target | Required | Default | Dependencies |
+### Current catalog (`programs/nomad-cluster.yaml` → `meta.applications`):
+
+| Application | Tier | Target | Default | Dependencies | Config Fields |
 |---|---|---|---|---|---|
-| Docker | bootstrap | all | yes | — | — |
-| Consul | bootstrap | all | yes | — | — |
-| Nomad | bootstrap | all | yes | — | docker, consul |
-| Nebula Mesh | bootstrap | all | yes | — | — |
-| pulumi-ui Agent | bootstrap | all | yes | — | nebula |
-| Traefik | workload | first | no | on | nomad |
-| PostgreSQL | workload | first | no | off | nomad |
-| nomad-ops | workload | first | no | off | nomad |
+| Traefik | workload | first | on | — | `acmeEmail` |
+| PostgreSQL + pgAdmin | workload | first | off | traefik | `dbUser`, `pgadminEmail`, `pgadminDomain` |
+| NocoBase | workload | first | off | postgres | `domain`, `appKey`, `dbUser`, `dbPassword`, `dbName` |
+| GitHub Actions Runner | workload | first | off | — | `githubToken`, `githubRepo`, `runnerLabels` |
 
-Note: GlusterFS and ZeroTier have been removed entirely. Nebula replaces ZeroTier as the cluster mesh VPN. GlusterFS shared storage is no longer supported — use a managed storage service instead.
+**Dependency chain**: Selecting NocoBase auto-enables PostgreSQL and Traefik. The UI handles this via the `dependsOn` field — the ApplicationSelector component auto-checks dependencies when a downstream app is selected.
 
-`Required: true` is per-program, not universal. A single-VM program could have a different required set.
+### How catalog applications are deployed
+
+1. Job templates are embedded in the server binary (`programs/jobs/*.nomad.hcl`)
+2. Templates use `[[` `]]` delimiters for Go template variables (e.g., `[[.acmeEmail]]`). Standard `{{ }}` is reserved for Nomad template expressions (e.g., `{{ key "postgres/adminuser" }}`). This separation prevents the Go template engine from interpreting Nomad expressions.
+3. The deployer renders templates with values from `appConfig` (stored per-stack in SQLite)
+4. Rendered job files are uploaded to the agent via `POST /upload` (→ `/opt/nomad-jobs/{key}.nomad.hcl`)
+5. The deployer executes `nomad job run /opt/nomad-jobs/{key}.nomad.hcl` via `POST /exec`
+
+### Managing applications on deployed stacks
+
+The **Applications tab** on the Stack Detail page is an interactive management surface:
+- All catalog apps are shown as toggleable cards with checkboxes
+- Checking an app expands its config fields inline
+- Dependency auto-resolution: checking NocoBase auto-checks PostgreSQL and Traefik
+- **Save** persists selections without deploying; **Save & Deploy** persists + runs the deployer
+- No dialog or tab switching required — configure and deploy from one place
+
+### YAML program application declaration
+
+YAML programs declare applications in the `meta.applications` section:
+```yaml
+meta:
+  agentAccess: true
+  applications:
+    - key: traefik
+      name: Traefik Reverse Proxy
+      tier: workload
+      target: first
+      defaultOn: true
+      configFields:
+        - key: acmeEmail
+          label: ACME Email
+          type: text
+          required: true
+```
+
+Parsed by `ParseApplications()` in `internal/programs/yaml_config.go`. The `YAMLProgram` type implements both `AgentAccessProvider` and `ApplicationProvider`.
 
 ---
 

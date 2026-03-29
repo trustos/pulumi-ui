@@ -32,7 +32,17 @@ type Tunnel struct {
 	agentAddr string // e.g. "10.42.1.2:41820"
 	token     string
 	lastUsed  time.Time
+	pinned    bool // when true, reaper skips this tunnel (used during deploy)
 	mu        sync.Mutex
+}
+
+// Pin marks the tunnel as immune to idle reaping. Used for passive tunnels
+// during deploy to prevent the reaper from killing them before CloseTunnel
+// runs at deploy completion.
+func (t *Tunnel) Pin() {
+	t.mu.Lock()
+	t.pinned = true
+	t.mu.Unlock()
 }
 
 // Manager creates and caches on-demand Nebula tunnels per stack.
@@ -213,6 +223,11 @@ func (m *Manager) GetTunnel(stackName string) (*Tunnel, error) {
 // specific node identified by its index. Each node gets its own tunnel cache
 // entry (key = "stackName:nodeIndex") and connects to that node's Nebula IP
 // and real IP. The server still authenticates with the shared UI cert.
+//
+// If the Nebula handshake fails (e.g., the agent's old session for this VPN IP
+// hasn't expired yet after a server restart), the tunnel is destroyed and
+// retried up to 3 times with increasing delays. The agent's stale session
+// typically expires within 30-90 seconds of no traffic.
 func (m *Manager) GetTunnelForNode(stackName string, nodeIndex int) (*Tunnel, error) {
 	if m.nodeCertStore == nil {
 		return nil, fmt.Errorf("node cert store not available")
@@ -252,20 +267,52 @@ func (m *Manager) GetTunnelForNode(stackName string, nodeIndex int) (*Tunnel, er
 		return nil, fmt.Errorf("load stack connection for %q: %w", stackName, err)
 	}
 
-	t, err := m.connectNode(conn, nc)
-	if err != nil {
-		return nil, err
+	// Try connecting with retries. After a server restart, the agent's Nebula
+	// may still have a cached session for our VPN IP (10.42.x.1) from the
+	// previous server process. It ignores new handshakes until the old session
+	// becomes stale (~30-90s of no traffic). We retry with fresh Nebula
+	// instances to give the agent time to expire the old session.
+	retryDelays := []time.Duration{0, 15 * time.Second, 30 * time.Second}
+	var lastErr error
+	for attempt, delay := range retryDelays {
+		if delay > 0 {
+			log.Printf("[mesh] handshake probe failed for %s node %d (attempt %d), retrying in %s...", stackName, nodeIndex, attempt, delay)
+			time.Sleep(delay)
+		}
+
+		t, err := m.connectNode(conn, nc)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Probe: attempt a TCP dial to verify the handshake completes.
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 12*time.Second)
+		probeConn, probeErr := t.Dial(probeCtx)
+		probeCancel()
+
+		if probeErr == nil {
+			probeConn.Close()
+			log.Printf("[mesh] tunnel to %s node %d established (attempt %d)", stackName, nodeIndex, attempt+1)
+
+			m.mu.Lock()
+			if existing, ok := m.tunnels[key]; ok {
+				m.mu.Unlock()
+				t.Close()
+				return existing, nil
+			}
+			m.tunnels[key] = t
+			m.mu.Unlock()
+			return t, nil
+		}
+
+		// Handshake didn't complete — destroy this instance and retry.
+		log.Printf("[mesh] handshake probe timeout for %s node %d (attempt %d): %v", stackName, nodeIndex, attempt+1, probeErr)
+		t.Close()
+		lastErr = probeErr
 	}
 
-	m.mu.Lock()
-	if existing, ok := m.tunnels[key]; ok {
-		m.mu.Unlock()
-		t.Close()
-		return existing, nil
-	}
-	m.tunnels[key] = t
-	m.mu.Unlock()
-	return t, nil
+	return nil, fmt.Errorf("tunnel to %s node %d failed after %d attempts: %w", stackName, nodeIndex, len(retryDelays), lastErr)
 }
 
 func (m *Manager) connect(conn *db.StackConnection) (*Tunnel, error) {
@@ -549,8 +596,9 @@ func (m *Manager) reaper() {
 			for name, t := range m.tunnels {
 				t.mu.Lock()
 				idle := time.Since(t.lastUsed) > idleTimeout
+				pinned := t.pinned
 				t.mu.Unlock()
-				if idle {
+				if idle && !pinned {
 					log.Printf("[mesh] closing idle tunnel for stack %s", name)
 					t.Close()
 					delete(m.tunnels, name)

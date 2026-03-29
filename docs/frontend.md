@@ -374,6 +374,35 @@ Located at `/stacks/{name}`. Shows:
 
 The `running` flag from `StackInfo` is used to show a spinner and disable action buttons while an operation is in progress.
 
+### Tabs
+
+| Tab | Contents |
+|-----|----------|
+| Logs | SSE log viewer with operation history |
+| Applications | Interactive catalog: toggle apps, configure fields inline, Save & Deploy |
+| Nodes | Node health, services, port forwarding, multi-tab terminal (xterm.js) |
+| Details | Stack info, credentials, maintenance (edit, unlock, remove) |
+| Outputs | Pulumi stack outputs (key-value) |
+| Configuration | Current config values with edit button |
+
+### Applications tab
+
+The Applications tab is an interactive management surface for the catalog (not a read-only display):
+- All workload-tier apps from the program's catalog are shown as toggleable cards
+- Checking an app expands its config fields inline (e.g., ACME email for Traefik)
+- `dependsOn` auto-resolution: checking NocoBase auto-checks PostgreSQL and Traefik
+- **Save** persists selections to the stack config; **Save & Deploy** persists + runs the deployer
+- `appConfig` values (e.g., `traefik.acmeEmail`) are stored per-stack and rendered into job templates at deploy time
+
+### Nodes tab
+
+Terminal-first layout with multi-tab sessions:
+- **Node cards**: health status, Nebula IP, real IP, Connect button per node
+- **Info strip**: service status dots + port forwarding (service-aware quick-forward buttons for known ports like Nomad 4646, Consul 8500)
+- **Terminal tabs**: each tab is an independent WebSocket session. Switching tabs preserves scrollback. Full ANSI 16-color theme (One Dark).
+- **Maximize mode**: hides node cards and info strip, terminal fills entire tab
+- Port forwarding via `POST /api/stacks/{name}/forward` — each accepted TCP connection resolves a fresh tunnel (survives tunnel recreation)
+
 ### Preview operation
 
 **Preview** (`POST /stacks/{name}/preview`) runs `pulumi preview` — it streams the diff of what would be created, updated, or deleted without actually executing changes. The output is rendered in the same SSE log viewer. Preview operations are persisted to the `operations` table so they appear in the log history.

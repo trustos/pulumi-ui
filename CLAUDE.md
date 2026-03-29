@@ -42,6 +42,7 @@ internal/api/        HTTP handlers (one file per domain)
   agent_proxy.go     Agent proxy endpoints (health, services, exec, upload, shell WebSocket) — routes through Nebula mesh
   agent_binary.go    Agent binary serving (GET /api/agent/binary/{os}/{arch})
   mesh_config.go     Nebula mesh config download for user local machine access (GET /api/stacks/{name}/mesh/config)
+  port_forward.go    kubectl-style TCP port forwarding through Nebula mesh (start/stop/list)
 
 cmd/agent/           Standalone agent binary (Nebula mesh + management HTTP API + /shell WebSocket PTY)
 
@@ -55,7 +56,7 @@ internal/programs/   Program registry + program implementations
   nomad_cluster.go   Built-in Nomad + Consul cluster (Go program)
   test_vcn.go        Built-in minimal VCN (Go program, for testing)
   yaml_program.go    User-defined YAML program wrapper
-  yaml_config.go     Parses config: + meta: sections from YAML programs
+  yaml_config.go     Parses config: + meta: sections (including meta.applications) from YAML programs
   validate.go        6-level YAML program validation pipeline
   template.go        Go template rendering + cloudInit / instanceOcpus helpers
   cloudinit.go       Embeds and renders cloudinit.sh for Go programs
@@ -71,14 +72,15 @@ internal/agentinject/ Universal agent bootstrap injection (Nebula + pulumi-ui ag
   goprog.go          CfgKeyAgentBootstrap constant for Go program injection
 
 internal/applications/ Application catalog deployment orchestration
-  deployer.go        Deploys selected applications via agent after infrastructure is ready
+  deployer.go        Deploys selected applications via agent (mesh tunnels, job upload + exec)
 
 internal/nebula/     Nebula PKI generation (per-stack CA + host certificates)
   pki.go             Certificate generation using slackhq/nebula library
   subnet.go          Subnet allocation helpers
 
 internal/mesh/       Nebula tunnel manager (userspace, on-demand per stack + per node)
-  mesh.go            Manager + Tunnel types, gvisor-based service, 5-min idle reaper, HTTP client + WebSocket dial, per-node tunnel support (GetTunnelForNode)
+  mesh.go            Manager + Tunnel types, gvisor-based service, 5-min idle reaper, HTTP client + WebSocket dial, per-node tunnel support (GetTunnelForNode), DialPort for arbitrary port forwarding
+  forward.go         ForwardManager — kubectl-style TCP port forwarding through Nebula tunnels
 
 internal/db/         SQLite stores (one file per domain)
   db.go              Open + Migrate (runs SQL migration files)
@@ -125,11 +127,12 @@ Browser
             └─ Handler methods  (internal/api/*.go)
                  ├─ DB Stores  (internal/db/*.go)  — persistence
                  ├─ Mesh Manager  (internal/mesh/)  — on-demand Nebula tunnels per stack
-                 │    └─ Agent Proxy  (internal/api/agent_proxy.go)  — health/exec/upload/shell via mesh
+                 │    ├─ Agent Proxy  (internal/api/agent_proxy.go)  — health/exec/upload/shell via mesh
+                 │    └─ Forward Manager  (internal/mesh/forward.go)  — kubectl-style TCP port forwarding
                  └─ Engine  (internal/engine/engine.go)  — Pulumi orchestration + post-deploy discovery
                       ├─ Programs  (internal/programs/)  — what to deploy
                       ├─ AgentInject (internal/agentinject/) — auto-injects Nebula + agent into compute user_data
-                      ├─ Deployer  (internal/applications/) — post-infra app deployment via agent
+                      ├─ Deployer  (internal/applications/) — app deployment via mesh tunnels (upload job + exec)
                       └─ Pulumi Automation API  — subprocess management
                            └─ OCI Terraform provider v4.4.0
 ```
@@ -192,6 +195,24 @@ BackendSet / Listener / Backend resources for different ports must be chained vi
 so they execute sequentially. See `nomad_cluster.go` (`prevNlbResource` pattern) and
 the equivalent in YAML templates.
 
+### Agent Nebula firewall — server has full TCP access
+The agent's Nebula overlay firewall (`agent_bootstrap.sh`) allows `port: any` TCP from
+group `server`. This enables port forwarding to any service on the node (Nomad UI 4646,
+Consul UI 8500, etc.) through the mesh tunnel. The OCI NSG only needs UDP 41820 (Nebula
+underlay); all service-level access goes through the encrypted Nebula overlay.
+
+### Tunnel handshake retry on server restart
+After a server restart, the agent's Nebula may still have a cached session for the
+server's VPN IP. It ignores new handshakes until the old session expires (~30-90s).
+`GetTunnelForNode` handles this with a probe-and-retry loop: create tunnel → TCP dial
+probe (12s timeout) → if fails, destroy and retry after 15s/30s. Up to 3 attempts.
+Do not remove this retry logic — it is essential for dev-watch restart workflows.
+
+### Passive tunnel pinning during deploy
+During `pulumi up`, a passive tunnel is pinned (`t.Pin()`) to prevent the 5-minute
+idle reaper from killing it before `CloseTunnel` runs at deploy completion. Post-deploy,
+passive tunnels are skipped entirely (`alreadyDeployed` check in `agentURLFields`).
+
 ### OCI IMDS v2 — `/vnics/` does not return `subnetId`
 ```
 # IMDS /vnics/ returns: vnicId, privateIp, subnetCidrBlock, macAddr, vlanTag
@@ -212,6 +233,19 @@ oci network vnic get --vnic-id "$VNIC_ID" --auth instance_principal \
 # WRONG — Go template tokenizer sees "{{" at position 1, action body starts with "{"
 - ${{{ $prevResource }}}
 ```
+
+### Nomad job templates — `[[` `]]` delimiters
+Job templates in `programs/jobs/*.nomad.hcl` use `[[` `]]` for Go template variables
+(rendered by the deployer) and standard `{{ }}` for Nomad template expressions (rendered
+by Nomad at runtime). Example:
+```hcl
+# Go template variable (rendered by deployer before upload)
+PGADMIN_DEFAULT_EMAIL=[[.pgadminEmail]]
+# Nomad template expression (rendered by Nomad at job start)
+POSTGRES_PASSWORD={{ key "postgres/adminpassword" }}
+```
+The deployer uses `template.New(name).Delims("[[", "]]")`. Do not use `<<` `>>` — they
+conflict with HCL heredoc syntax (`<<EOF`).
 
 ---
 
@@ -261,6 +295,8 @@ Full detail: `docs/roadmap.md`
 | Agent Phase 2 | Nebula mesh (userspace tunnels, post-deploy discovery, agent proxy) | **done** |
 | Agent Phase 3 | Interactive web terminal (WebSocket PTY via Nebula) | **done** |
 | Agent Phase 4 | Health monitoring, auto-update, user mesh access | user mesh access **done** (mesh config download + SSH via Nebula); health monitoring + auto-update pending |
+| Port Forwarding | kubectl-style TCP port forwarding through Nebula mesh | **done** |
+| App Catalog | Application catalog for YAML programs (`meta.applications`) + deployer via mesh tunnels | **done** (GitHub Actions Runner as first catalog app) |
 | FE-4 | Client-side config field validation (needs Part 0) | pending |
 
 ---

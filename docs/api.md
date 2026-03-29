@@ -226,6 +226,38 @@ All agent communication is proxied through the server's userspace Nebula tunnel.
 | POST | `/api/stacks/{name}/agent/upload` | File body, `X-Dest-Path` + `X-File-Mode` headers | Upload result JSON (proxied) |
 | GET | `/api/stacks/{name}/agent/shell` | — | WebSocket upgrade → interactive terminal (PTY) |
 
+### Port Forwarding (requires auth, TCP proxy through Nebula mesh)
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/stacks/{name}/forward` | — | `PortForward[]` |
+| POST | `/api/stacks/{name}/forward` | `{ remotePort, nodeIndex, localPort? }` | `PortForward` |
+| DELETE | `/api/stacks/{name}/forward/{id}` | — | `204 No Content` |
+
+`PortForward` response shape:
+```json
+{
+  "id": "fwd-1",
+  "stackName": "my-cluster",
+  "nodeIndex": 0,
+  "remotePort": 4646,
+  "localPort": 52431,
+  "localAddr": "127.0.0.1:52431",
+  "activeConns": 0,
+  "createdAt": 1742472000
+}
+```
+
+Opens a local TCP listener on `127.0.0.1:<localPort>` that proxies through the Nebula tunnel to `<nebulaIP>:<remotePort>` on the target node. If `localPort` is 0 (default), an ephemeral port is assigned. Used for accessing private services (Nomad UI on 4646, Consul UI on 8500, etc.) without NLB exposure.
+
+### Mesh Config (requires auth)
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/stacks/{name}/mesh/config` | — | Nebula YAML config file download |
+
+Issues a user Nebula certificate and returns a complete config for joining the mesh from a local machine. The UI "Join Mesh" button has been removed but the endpoint is retained for advanced use.
+
 All endpoints return `502 Bad Gateway` if the Nebula tunnel cannot be established (no PKI, no agent real IP, or agent unreachable).
 
 **Per-node routing (`?node=N`):** The `health`, `services`, and `shell` endpoints accept an optional `?node=N` query parameter (0-indexed). When present, the request is routed through a per-node Nebula tunnel (cache key `stackName:N`) to the specific node's agent. Without `?node`, the request goes to the default single-node tunnel (backward compatible). Example: `GET /api/stacks/my-stack/agent/health?node=1` checks health on node 1.

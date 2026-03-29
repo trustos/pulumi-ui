@@ -10,7 +10,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, agentShellUrl, listPortForwards, startPortForward, stopPortForward } from '$lib/api';
+  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, agentShellUrl, listPortForwards, startPortForward, stopPortForward, putStack } from '$lib/api';
   import type { StackInfo, OciAccount, ProgramMeta, ApplicationDef, AgentHealth, AgentService, PortForward } from '$lib/types';
   import EditStackDialog from '$lib/components/EditStackDialog.svelte';
   import WebTerminal from '$lib/components/WebTerminal.svelte';
@@ -38,6 +38,67 @@
   let deployAppLines = $state<Array<{ type: string; data: string; timestamp: string }>>([]);
   let deployAppCancelFn = $state<(() => void) | null>(null);
 
+  // Interactive app catalog state
+  let editApps = $state<Record<string, boolean>>({});
+  let editAppConfig = $state<Record<string, string>>({});
+  let appConfigDirty = $state(false);
+  let isSavingApps = $state(false);
+  let appSaveError = $state('');
+
+  // Sync editApps/editAppConfig from loaded info
+  $effect(() => {
+    if (info?.applications && Object.keys(editApps).length === 0) {
+      editApps = { ...info.applications };
+    }
+    if (info?.appConfig && Object.keys(editAppConfig).length === 0) {
+      editAppConfig = { ...info.appConfig };
+    }
+  });
+
+  function toggleApp(key: string) {
+    const catalog = currentProgram?.applications ?? [];
+    const app = catalog.find(a => a.key === key);
+    if (!app || app.required) return;
+
+    const next = { ...editApps };
+    const newState = !next[key];
+    next[key] = newState;
+
+    if (newState && app.dependsOn) {
+      for (const dep of app.dependsOn) next[dep] = true;
+    }
+    if (!newState) {
+      for (const other of catalog) {
+        if (other.dependsOn?.includes(key) && next[other.key]) next[other.key] = false;
+      }
+    }
+    editApps = next;
+    appConfigDirty = true;
+  }
+
+  async function saveAppSelections() {
+    if (!info) return;
+    isSavingApps = true;
+    appSaveError = '';
+    try {
+      await putStack(info.name, info.program, info.config, '', info.ociAccountId ?? undefined, info.passphraseId ?? undefined, undefined, editApps, editAppConfig);
+      appConfigDirty = false;
+      await loadInfo();
+    } catch (err) {
+      appSaveError = err instanceof Error ? err.message : String(err);
+    } finally {
+      isSavingApps = false;
+    }
+  }
+
+  async function saveAndDeployApps() {
+    if (appConfigDirty) {
+      await saveAppSelections();
+      if (appSaveError) return;
+    }
+    startDeployApps();
+  }
+
   const linkedAccount = $derived(
     info?.ociAccountId ? accounts.find((a) => a.id === info!.ociAccountId) ?? null : null
   );
@@ -57,8 +118,41 @@
   // Services come from the first node (index 0) or the single mesh node
   let agentServices = $state<AgentService[]>([]);
   let agentError = $state('');
-  let showTerminal = $state(false);
-  let selectedNodeIndex = $state<number | undefined>(undefined);
+  // Terminal sessions (multi-tab)
+  interface TermSession { id: string; nodeIndex: number; label: string; }
+  let termSessions = $state<TermSession[]>([]);
+  let activeSessionId = $state<string | null>(null);
+  let termMaximized = $state(false);
+  let nextSessionId = 0;
+
+  function openTerminal(nodeIndex: number) {
+    // Check if already open for this node
+    const existing = termSessions.find(s => s.nodeIndex === nodeIndex);
+    if (existing) {
+      activeSessionId = existing.id;
+      return;
+    }
+    const id = `term-${nextSessionId++}`;
+    const label = `node-${nodeIndex}`;
+    termSessions = [...termSessions, { id, nodeIndex, label }];
+    activeSessionId = id;
+  }
+
+  function closeTerminal(id: string) {
+    termSessions = termSessions.filter(s => s.id !== id);
+    if (activeSessionId === id) {
+      activeSessionId = termSessions.length > 0 ? termSessions[termSessions.length - 1].id : null;
+    }
+    if (termSessions.length === 0) {
+      termMaximized = false;
+    }
+  }
+
+  // Legacy compat
+  let showTerminal = $derived(termSessions.length > 0);
+  let selectedNodeIndex = $derived(
+    activeSessionId ? termSessions.find(s => s.id === activeSessionId)?.nodeIndex : undefined
+  );
 
   // Port forwarding
   let portForwards = $state<PortForward[]>([]);
@@ -66,6 +160,18 @@
   let fwdNodeIndex = $state(0);
   let fwdError = $state('');
   let fwdStarting = $state(false);
+  let fwdOpen = $state(false);
+
+  // Well-known service → UI port mappings for quick port forwarding
+  const SERVICE_PORTS: Record<string, number> = {
+    nomad: 4646,
+    consul: 8500,
+    traefik: 80,
+    postgres: 5432,
+    pgadmin: 80,
+    nocobase: 13000,
+  };
+
   const selectedApps = $derived<Record<string, boolean>>(info?.applications ?? {});
   const bootstrapApps = $derived(appCatalog.filter(a => a.tier === 'bootstrap' && selectedApps[a.key]));
   const workloadApps = $derived(appCatalog.filter(a => a.tier === 'workload' && selectedApps[a.key]));
@@ -632,71 +738,80 @@
             </Card.Content>
           </Card.Root>
 
-          <!-- Selected applications -->
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {#if bootstrapApps.length > 0}
-              <Card.Root>
-                <Card.Header class="pb-3">
-                  <Card.Title class="text-base">Bootstrap</Card.Title>
-                  <p class="text-xs text-muted-foreground">Installed at boot via cloud-init</p>
-                </Card.Header>
-                <Card.Content class="space-y-2">
-                  {#each bootstrapApps as app}
-                    <div class="flex items-center gap-2 text-sm">
-                      <span class="h-1.5 w-1.5 rounded-full bg-green-500 shrink-0"></span>
-                      <span class="font-medium">{app.name}</span>
-                      <span class="text-xs text-muted-foreground ml-auto">{app.target}</span>
-                    </div>
-                  {/each}
-                </Card.Content>
-              </Card.Root>
-            {/if}
-            {#if workloadApps.length > 0}
-              <Card.Root>
-                <Card.Header class="pb-3">
-                  <Card.Title class="text-base">Workloads</Card.Title>
-                  <p class="text-xs text-muted-foreground">Deployed via agent after infrastructure is ready</p>
-                </Card.Header>
-                <Card.Content class="space-y-2">
-                  {#each workloadApps as app}
-                    <div class="flex items-center gap-2 text-sm">
-                      <span class="h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0"></span>
-                      <span class="font-medium">{app.name}</span>
+          <!-- Interactive application catalog -->
+          {#if currentProgram?.applications}
+            {@const catalog = currentProgram.applications}
+            <div class="space-y-2">
+              {#each catalog.filter(a => a.tier === 'workload') as app}
+                {@const isSelected = editApps[app.key] ?? false}
+                {@const isDep = catalog.some(other => editApps[other.key] && other.dependsOn?.includes(app.key))}
+                <div class="border rounded-lg overflow-hidden">
+                  <label class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/30 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      disabled={app.required || isDep}
+                      onchange={() => toggleApp(app.key)}
+                      class="h-4 w-4 rounded border-border"
+                    />
+                    <div class="flex-1 min-w-0">
+                      <span class="text-sm font-medium">{app.name}</span>
                       {#if app.dependsOn && app.dependsOn.length > 0}
-                        <span class="text-xs text-muted-foreground">({app.dependsOn.join(', ')})</span>
+                        <span class="text-xs text-muted-foreground ml-1.5">requires {app.dependsOn.join(', ')}</span>
                       {/if}
-                      <span class="text-xs text-muted-foreground ml-auto">{app.target}</span>
+                      {#if app.description}
+                        <p class="text-xs text-muted-foreground mt-0.5">{app.description}</p>
+                      {/if}
                     </div>
-                  {/each}
-                </Card.Content>
-              </Card.Root>
-            {/if}
-          </div>
+                  </label>
+                  {#if isSelected && app.configFields && app.configFields.length > 0}
+                    <div class="px-4 pb-3 pt-1 border-t bg-muted/20 space-y-2">
+                      {#each app.configFields as field}
+                        <div class="flex items-center gap-2">
+                          <label for="appfield-{app.key}-{field.key}" class="text-xs text-muted-foreground w-32 shrink-0">
+                            {field.label}{#if field.required}<span class="text-destructive">*</span>{/if}
+                          </label>
+                          <input
+                            id="appfield-{app.key}-{field.key}"
+                            type="text"
+                            value={editAppConfig[`${app.key}.${field.key}`] ?? field.default ?? ''}
+                            oninput={(e: Event) => { editAppConfig[`${app.key}.${field.key}`] = (e.target as HTMLInputElement).value; appConfigDirty = true; }}
+                            placeholder={field.description ?? ''}
+                            class="h-7 flex-1 rounded border bg-background px-2 text-xs font-mono"
+                          />
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
 
-          <!-- Deploy button -->
+          <!-- Save + Deploy buttons -->
           <div class="flex items-center gap-3">
-            <Tooltip.Root>
-              <Tooltip.Trigger>
-                <Button
-                  size="sm"
-                  onclick={startDeployApps}
-                  disabled={isDeployingApps || isRunning || notDeployed || workloadApps.length === 0}
-                >
-                  {isDeployingApps ? 'Deploying...' : 'Deploy Applications'}
-                </Button>
-              </Tooltip.Trigger>
-              <Tooltip.Content>
-                {#if notDeployed}
-                  Deploy infrastructure first
-                {:else if workloadApps.length === 0}
-                  No workload applications selected
-                {:else}
-                  Connect to the Nebula mesh and deploy workload applications via the agent
-                {/if}
-              </Tooltip.Content>
-            </Tooltip.Root>
+            {#if appConfigDirty}
+              <Button
+                size="sm"
+                variant="outline"
+                onclick={saveAppSelections}
+                disabled={isSavingApps || isDeployingApps}
+              >
+                {isSavingApps ? 'Saving...' : 'Save'}
+              </Button>
+            {/if}
+            <Button
+              size="sm"
+              onclick={saveAndDeployApps}
+              disabled={isDeployingApps || isRunning || notDeployed || isSavingApps}
+            >
+              {isDeployingApps ? 'Deploying...' : appConfigDirty ? 'Save & Deploy' : 'Deploy Applications'}
+            </Button>
             {#if isDeployingApps}
               <Button variant="outline" size="sm" onclick={() => { deployAppCancelFn?.(); }}>Cancel</Button>
+            {/if}
+            {#if appSaveError}
+              <span class="text-xs text-destructive">{appSaveError}</span>
             {/if}
           </div>
         </div>
@@ -720,9 +835,9 @@
     {#if hasAgent}
       <Tabs.Content value="nodes" class="flex-1 flex flex-col min-h-0">
         {#if isInfraDeployed}
-        <div class="mt-2 space-y-4 flex-1 flex flex-col min-h-0">
-          <!-- Nodes / Mesh Info -->
-          {#if info?.nodes && info.nodes.length > 0}
+        <div class="mt-2 flex-1 flex flex-col min-h-0" class:gap-3={!termMaximized} class:gap-1={termMaximized}>
+          <!-- Nodes / Mesh Info (hidden when terminal maximized) -->
+          {#if !termMaximized && info?.nodes && info.nodes.length > 0}
             <Card.Root>
               <Card.Header class="py-3">
                 <Card.Title class="text-sm flex items-center gap-2">
@@ -771,13 +886,10 @@
                       <div class="flex justify-end">
                         <Button
                           size="sm"
-                          variant={showTerminal && selectedNodeIndex === node.nodeIndex ? 'default' : 'outline'}
-                          onclick={() => {
-                            selectedNodeIndex = node.nodeIndex;
-                            showTerminal = true;
-                          }}
+                          variant={termSessions.some(s => s.nodeIndex === node.nodeIndex) ? 'default' : 'outline'}
+                          onclick={() => openTerminal(node.nodeIndex)}
                         >
-                          {showTerminal && selectedNodeIndex === node.nodeIndex ? 'Connected' : 'Connect'}
+                          {termSessions.some(s => s.nodeIndex === node.nodeIndex) ? 'Connected' : 'Connect'}
                         </Button>
                       </div>
                     </div>
@@ -785,7 +897,7 @@
                 </div>
               </Card.Content>
             </Card.Root>
-          {:else if info?.mesh}
+          {:else if !termMaximized && info?.mesh}
             <Card.Root>
               <Card.Header class="py-3">
                 <Card.Title class="text-sm flex items-center gap-2">
@@ -833,11 +945,11 @@
                     {/if}
                     <Button
                       size="sm"
-                      variant={showTerminal ? 'default' : 'outline'}
+                      variant={termSessions.length > 0 ? 'default' : 'outline'}
                       class="ml-auto"
-                      onclick={() => { selectedNodeIndex = 0; showTerminal = true; }}
+                      onclick={() => openTerminal(0)}
                     >
-                      {showTerminal ? 'Connected' : 'Connect'}
+                      {termSessions.length > 0 ? 'Connected' : 'Connect'}
                     </Button>
                   </div>
                 </div>
@@ -845,87 +957,145 @@
             </Card.Root>
           {/if}
 
-          <!-- Services (from primary node) -->
-          {#if agentServices.length > 0}
-            <Card.Root>
-              <Card.Header class="py-3">
-                <Card.Title class="text-sm">Services</Card.Title>
-              </Card.Header>
-              <Card.Content class="py-2">
-                <div class="flex flex-wrap gap-2">
-                  {#each agentServices as svc}
-                    <Badge variant={svc.active === 'active' ? 'default' : 'secondary'}>
-                      {svc.name}: {svc.active}
-                    </Badge>
-                  {/each}
-                </div>
-              </Card.Content>
-            </Card.Root>
-          {/if}
-
-          <!-- Port Forwarding -->
-          <Card.Root>
-            <Card.Header class="py-3">
-              <Card.Title class="text-sm flex items-center gap-2">
-                Port Forwarding
-                {#if portForwards.length > 0}
-                  <Badge variant="secondary">{portForwards.length}</Badge>
-                {/if}
-              </Card.Title>
-            </Card.Header>
-            <Card.Content class="py-2 space-y-3">
-              <!-- Active forwards -->
-              {#if portForwards.length > 0}
-                <div class="space-y-2">
-                  {#each portForwards as fwd}
-                    <div class="flex items-center gap-3 text-sm border rounded px-3 py-2">
-                      <span class="font-mono text-xs">localhost:{fwd.localPort}</span>
-                      <span class="text-muted-foreground">→</span>
-                      <span class="font-mono text-xs">node {fwd.nodeIndex}:{fwd.remotePort}</span>
-                      {#if fwd.activeConns > 0}
-                        <Badge variant="secondary" class="text-xs">{fwd.activeConns} conn</Badge>
+          <!-- Info strip: services + port forwards -->
+          {#if !termMaximized}
+            <div class="flex items-center gap-2 text-xs shrink-0 border rounded-lg px-3 py-2 bg-card flex-wrap">
+              <!-- Services with port forward buttons -->
+              {#if agentServices.length > 0}
+                {#each agentServices as svc}
+                  {@const svcPort = SERVICE_PORTS[svc.name]}
+                  {@const isForwarded = svcPort ? portForwards.some(f => f.remotePort === svcPort) : false}
+                  {@const fwdInfo = isForwarded ? portForwards.find(f => f.remotePort === svcPort) : null}
+                  <span class="inline-flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full {svc.active === 'active' ? 'bg-green-500' : 'bg-zinc-500'}"></span>
+                    <span class="text-muted-foreground">{svc.name}</span>
+                    {#if svcPort && svc.active === 'active'}
+                      {#if isForwarded && fwdInfo}
+                        <a
+                          href="http://localhost:{fwdInfo.localPort}"
+                          target="_blank"
+                          rel="noopener"
+                          class="rounded bg-primary/10 text-primary px-1.5 py-0.5 font-mono hover:bg-primary/20 transition-colors"
+                        >:{fwdInfo.localPort}</a>
+                        <button class="text-muted-foreground hover:text-destructive transition-colors" onclick={() => { if (fwdInfo) doStopForward(fwdInfo.id); }}>×</button>
+                      {:else}
+                        <button
+                          class="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                          onclick={() => { fwdRemotePort = String(svcPort); doStartForward(); }}
+                          disabled={fwdStarting}
+                        >:{svcPort}</button>
                       {/if}
-                      <Button size="sm" variant="ghost" class="ml-auto h-6 px-2 text-xs text-destructive" onclick={() => doStopForward(fwd.id)}>
-                        Stop
-                      </Button>
-                    </div>
-                  {/each}
-                </div>
+                    {/if}
+                  </span>
+                {/each}
+                <Separator orientation="vertical" class="h-4" />
               {/if}
 
-              <!-- New forward form -->
-              <div class="flex items-center gap-2">
+              <!-- Non-service port forwards -->
+              {#each portForwards.filter(f => !Object.values(SERVICE_PORTS).includes(f.remotePort)) as fwd}
+                <span class="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono">
+                  <a href="http://localhost:{fwd.localPort}" target="_blank" rel="noopener" class="text-primary hover:underline">localhost:{fwd.localPort}</a>
+                  <span class="text-muted-foreground">→</span>
+                  <span class="text-muted-foreground">{fwd.remotePort}</span>
+                  <button class="ml-0.5 text-muted-foreground hover:text-destructive transition-colors" onclick={() => doStopForward(fwd.id)}>×</button>
+                </span>
+              {/each}
+
+              <!-- Custom port forward -->
+              <div class="flex items-center gap-1 ml-auto">
                 {#if info?.nodes && info.nodes.length > 1}
-                  <select bind:value={fwdNodeIndex} class="h-7 rounded border bg-background px-2 text-xs">
+                  <select bind:value={fwdNodeIndex} class="h-6 rounded border bg-background px-1 text-xs font-mono">
                     {#each info.nodes as node}
-                      <option value={node.nodeIndex}>Node {node.nodeIndex}</option>
+                      <option value={node.nodeIndex}>node {node.nodeIndex}</option>
                     {/each}
                   </select>
                 {/if}
                 <input
                   type="number"
                   bind:value={fwdRemotePort}
-                  placeholder="Remote port (e.g. 4646)"
-                  class="h-7 w-48 rounded border bg-background px-2 text-xs font-mono"
+                  placeholder="port"
+                  class="h-6 w-16 rounded border bg-background px-2 text-xs font-mono"
                   onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') doStartForward(); }}
                 />
-                <Button size="sm" variant="outline" class="h-7 px-3 text-xs" onclick={doStartForward} disabled={fwdStarting}>
-                  {fwdStarting ? 'Starting…' : 'Forward'}
+                <Button size="sm" variant="outline" class="h-6 px-2 text-xs" onclick={doStartForward} disabled={fwdStarting}>
+                  Forward
                 </Button>
               </div>
               {#if fwdError}
-                <p class="text-xs text-destructive">{fwdError}</p>
+                <span class="text-destructive">{fwdError}</span>
               {/if}
-            </Card.Content>
-          </Card.Root>
+            </div>
+          {/if}
 
-          <!-- Terminal -->
-          {#if showTerminal && selectedNodeIndex !== undefined}
-            {#key selectedNodeIndex}
-              <div class="flex-1 min-h-[300px]">
-                <WebTerminal url={agentShellUrl(name, selectedNodeIndex)} />
+          <!-- Terminal workspace -->
+          {#if termSessions.length > 0}
+            <div class="flex-1 flex flex-col min-h-0 bg-[#0a0a0a] rounded-lg border border-[#1e2127] overflow-hidden">
+              <!-- Tab bar -->
+              <div class="flex items-center bg-[#1e2127] shrink-0">
+                <div class="flex-1 flex items-center overflow-x-auto">
+                  {#each termSessions as session}
+                    <button
+                      class="flex items-center gap-1.5 px-3 py-1.5 text-xs border-r border-[#0a0a0a] transition-colors whitespace-nowrap {activeSessionId === session.id ? 'bg-[#0a0a0a] text-[#abb2bf]' : 'text-[#5c6370] hover:text-[#abb2bf] hover:bg-[#2c313a]'}"
+                      onclick={() => { activeSessionId = session.id; }}
+                    >
+                      <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                      {session.label}
+                    </button>
+                  {/each}
+                  <!-- Add tab -->
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger>
+                      <button class="px-2 py-1.5 text-xs text-[#5c6370] hover:text-[#abb2bf] hover:bg-[#2c313a] transition-colors">+</button>
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Content align="start" class="min-w-[120px]">
+                      {#if info?.nodes}
+                        {#each info.nodes as node}
+                          <DropdownMenu.Item onclick={() => openTerminal(node.nodeIndex)}>
+                            node-{node.nodeIndex}
+                          </DropdownMenu.Item>
+                        {/each}
+                      {:else}
+                        <DropdownMenu.Item onclick={() => openTerminal(0)}>
+                          node-0
+                        </DropdownMenu.Item>
+                      {/if}
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Root>
+                </div>
+                <!-- Controls -->
+                <div class="flex items-center shrink-0 border-l border-[#0a0a0a]">
+                  <button
+                    class="px-2 py-1.5 text-xs text-[#5c6370] hover:text-[#abb2bf] hover:bg-[#2c313a] transition-colors"
+                    title={termMaximized ? 'Restore' : 'Maximize'}
+                    onclick={() => { termMaximized = !termMaximized; }}
+                  >
+                    {termMaximized ? '⤡' : '⤢'}
+                  </button>
+                  {#if activeSessionId}
+                    <button
+                      class="px-2 py-1.5 text-xs text-[#5c6370] hover:text-[#e06c75] hover:bg-[#2c313a] transition-colors"
+                      title="Close terminal"
+                      onclick={() => { if (activeSessionId) closeTerminal(activeSessionId); }}
+                    >×</button>
+                  {/if}
+                </div>
               </div>
-            {/key}
+              <!-- Terminal panes (all mounted, visibility toggled) -->
+              <div class="flex-1 min-h-0 relative">
+                {#each termSessions as session (session.id)}
+                  <div class="absolute inset-0" class:hidden={activeSessionId !== session.id}>
+                    <WebTerminal url={agentShellUrl(name, session.nodeIndex)} visible={activeSessionId === session.id} />
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {:else}
+            <!-- Empty state: no terminal open -->
+            <div class="flex-1 flex items-center justify-center border rounded-lg bg-muted/30">
+              <div class="text-center space-y-2">
+                <p class="text-sm text-muted-foreground">Click <strong>Connect</strong> on a node to open a terminal</p>
+              </div>
+            </div>
           {/if}
         </div>
         {:else}

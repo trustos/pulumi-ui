@@ -1,13 +1,13 @@
 name: nomad-cluster
 runtime: yaml
-description: "Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible) — individual instances behind a public NLB with Traefik ingress"
+description: "Full Nomad + Consul cluster on OCI VM.Standard.A1.Flex (Always Free eligible) — individual instances behind a public NLB with HTTP ingress"
 
 meta:
   agentAccess: true
   groups:
     - key: infrastructure
       label: "Infrastructure"
-      fields: [nodeCount, compartmentName, compartmentDescription, vcnCidr, publicSubnetCidr, privateSubnetCidr, sshSourceCidr, shape, imageId]
+      fields: [nodeCount, compartmentName, compartmentDescription, vcnCidr, publicSubnetCidr, privateSubnetCidr, shape, imageId]
     - key: compute
       label: "Compute & Storage"
       fields: [ocpusPerNode, memoryGbPerNode, bootVolSizeGb, sshPublicKey]
@@ -21,6 +21,106 @@ meta:
       ui_type: oci-shape
     sshPublicKey:
       ui_type: ssh-public-key
+  applications:
+    - key: traefik
+      name: Traefik Reverse Proxy
+      description: "HTTP/HTTPS ingress with automatic Let's Encrypt certificates and Consul/Nomad service discovery"
+      tier: workload
+      target: first
+      required: false
+      defaultOn: true
+      configFields:
+        - key: acmeEmail
+          label: ACME Email
+          type: text
+          required: true
+          description: "Email for Let's Encrypt certificate notifications"
+    - key: postgres
+      name: PostgreSQL + pgAdmin
+      description: "PostgreSQL 16 database with pgAdmin web UI. Credentials auto-generated and stored in Consul KV."
+      tier: workload
+      target: first
+      required: false
+      defaultOn: false
+      dependsOn: [traefik]
+      configFields:
+        - key: dbUser
+          label: Database User
+          type: text
+          required: false
+          default: "admin"
+          description: "PostgreSQL admin username (password auto-generated)"
+        - key: pgadminEmail
+          label: pgAdmin Email
+          type: text
+          required: true
+          description: "Login email for pgAdmin web UI"
+        - key: pgadminDomain
+          label: pgAdmin Domain
+          type: text
+          required: false
+          default: "pgadmin.example.com"
+          description: "Domain for pgAdmin (requires DNS + Traefik)"
+    - key: nocobase
+      name: NocoBase
+      description: "Open-source no-code/low-code platform for building business applications. Connects to PostgreSQL."
+      tier: workload
+      target: first
+      required: false
+      defaultOn: false
+      dependsOn: [postgres]
+      configFields:
+        - key: domain
+          label: Domain
+          type: text
+          required: true
+          description: "Public domain for NocoBase (requires DNS + Traefik)"
+        - key: appKey
+          label: App Secret Key
+          type: text
+          required: true
+          description: "Secret key for session encryption (random string, e.g. openssl rand -hex 32)"
+        - key: dbUser
+          label: Database User
+          type: text
+          required: false
+          default: "admin"
+          description: "PostgreSQL user"
+        - key: dbPassword
+          label: Database Password
+          type: text
+          required: true
+          description: "PostgreSQL password"
+        - key: dbName
+          label: Database Name
+          type: text
+          required: false
+          default: "nocobase"
+          description: "PostgreSQL database name for NocoBase"
+    - key: github-runner
+      name: GitHub Actions Runner
+      description: "Self-hosted GitHub Actions runner for CI/CD deployment to this cluster"
+      tier: workload
+      target: first
+      required: false
+      defaultOn: false
+      configFields:
+        - key: githubToken
+          label: GitHub Token
+          type: text
+          required: true
+          description: "Personal access token with repo/org runner registration scope"
+        - key: githubRepo
+          label: Repository URL
+          type: text
+          required: true
+          description: "e.g. https://github.com/org/repo (or org URL for org-level runner)"
+        - key: runnerLabels
+          label: Runner Labels
+          type: text
+          required: false
+          default: "self-hosted,nomad"
+          description: "Comma-separated labels for workflow targeting (runs-on)"
 
 config:
   nodeCount:
@@ -41,9 +141,6 @@ config:
   privateSubnetCidr:
     type: string
     default: "10.0.2.0/24"
-  sshSourceCidr:
-    type: string
-    default: "0.0.0.0/0"
   shape:
     type: string
     default: "VM.Standard.A1.Flex"
@@ -60,10 +157,10 @@ config:
     default: 50
   nomadVersion:
     type: string
-    default: "1.10.3"
+    default: "1.11.3"
   consulVersion:
     type: string
-    default: "1.21.3"
+    default: "1.22.6"
   sshPublicKey:
     type: string
 
@@ -148,12 +245,6 @@ resources:
           tcpOptions:
             max: 443
             min: 443
-        - protocol: "6"
-          source: {{ .Config.sshSourceCidr | quote }}
-          sourceType: CIDR_BLOCK
-          tcpOptions:
-            max: 22
-            min: 22
         - protocol: "all"
           source: {{ .Config.vcnCidr | quote }}
           sourceType: CIDR_BLOCK
@@ -225,73 +316,17 @@ resources:
       securityListIds: ["${private-security-list.id}"]
       dhcpOptionsId: ${nomad-vcn.defaultDhcpOptionsId}
 
-  ssh-nsg:
+  ingress-nsg:
     type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
     properties:
       compartmentId: ${nomad-compartment.id}
       vcnId: ${nomad-vcn.id}
-      displayName: "ssh-nsg"
+      displayName: "ingress-nsg"
 
-  ssh-nsg-rule:
+  ingress-nsg-rule-80:
     type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
     properties:
-      networkSecurityGroupId: ${ssh-nsg.id}
-      direction: INGRESS
-      protocol: "6"
-      source: {{ .Config.sshSourceCidr | quote }}
-      sourceType: CIDR_BLOCK
-      tcpOptions:
-        destinationPortRange:
-          min: 22
-          max: 22
-      description: "Allow SSH"
-
-  nomad-nsg:
-    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
-    properties:
-      compartmentId: ${nomad-compartment.id}
-      vcnId: ${nomad-vcn.id}
-      displayName: "nomad-nsg"
-
-  nomad-nsg-rule-4647:
-    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
-    properties:
-      networkSecurityGroupId: ${nomad-nsg.id}
-      direction: INGRESS
-      protocol: "6"
-      source: {{ .Config.publicSubnetCidr | quote }}
-      sourceType: CIDR_BLOCK
-      tcpOptions:
-        destinationPortRange:
-          min: 4647
-          max: 4647
-      description: "Allow Nomad port 4647 from public subnet"
-
-  nomad-nsg-rule-4648:
-    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
-    properties:
-      networkSecurityGroupId: ${nomad-nsg.id}
-      direction: INGRESS
-      protocol: "6"
-      source: {{ .Config.publicSubnetCidr | quote }}
-      sourceType: CIDR_BLOCK
-      tcpOptions:
-        destinationPortRange:
-          min: 4648
-          max: 4648
-      description: "Allow Nomad port 4648 from public subnet"
-
-  traefik-nsg:
-    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
-    properties:
-      compartmentId: ${nomad-compartment.id}
-      vcnId: ${nomad-vcn.id}
-      displayName: "traefik-nsg"
-
-  traefik-nsg-rule-80:
-    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
-    properties:
-      networkSecurityGroupId: ${traefik-nsg.id}
+      networkSecurityGroupId: ${ingress-nsg.id}
       direction: INGRESS
       protocol: "6"
       source: "0.0.0.0/0"
@@ -302,10 +337,10 @@ resources:
           max: 80
       description: "Allow HTTP"
 
-  traefik-nsg-rule-443:
+  ingress-nsg-rule-443:
     type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
     properties:
-      networkSecurityGroupId: ${traefik-nsg.id}
+      networkSecurityGroupId: ${ingress-nsg.id}
       direction: INGRESS
       protocol: "6"
       source: "0.0.0.0/0"
@@ -335,26 +370,26 @@ resources:
       createVnicDetails:
         subnetId: ${private-subnet.id}
         assignPublicIp: false
-        nsgIds: ["${ssh-nsg.id}", "${nomad-nsg.id}", "${traefik-nsg.id}"]
+        nsgIds: ["${ingress-nsg.id}"]
       metadata:
         ssh_authorized_keys: {{ $.Config.sshPublicKey }}
         user_data: {{ cloudInit $i $.Config }}
 {{- end }}
 
 # --- section: loadbalancer ---
-  traefik-nlb:
+  ingress-nlb:
     type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
     properties:
       compartmentId: ${nomad-compartment.id}
       subnetId: ${public-subnet.id}
-      displayName: "traefik-nlb"
+      displayName: "ingress-nlb"
       isPrivate: false
-      networkSecurityGroupIds: ["${traefik-nsg.id}"]
+      networkSecurityGroupIds: ["${ingress-nsg.id}"]
 
-  traefik-nlb-bs-80:
+  ingress-nlb-bs-80:
     type: oci:NetworkLoadBalancer/backendSet:BackendSet
     properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
+      networkLoadBalancerId: ${ingress-nlb.id}
       name: "bs-80"
       policy: FIVE_TUPLE
       isPreserveSource: false
@@ -363,41 +398,41 @@ resources:
         port: 80
     options:
       dependsOn:
-        - ${traefik-nlb}
+        - ${ingress-nlb}
 
-  traefik-nlb-listener-80:
+  ingress-nlb-listener-80:
     type: oci:NetworkLoadBalancer/listener:Listener
     properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
+      networkLoadBalancerId: ${ingress-nlb.id}
       name: "listener-80"
       defaultBackendSetName: "bs-80"
       protocol: TCP
       port: 80
     options:
       dependsOn:
-        - ${traefik-nlb-bs-80}
+        - ${ingress-nlb-bs-80}
 
 {{- range $i := until (atoi $.Config.nodeCount) }}
-  traefik-nlb-backend-80-{{ $i }}:
+  ingress-nlb-backend-80-{{ $i }}:
     type: oci:NetworkLoadBalancer/backend:Backend
     properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
+      networkLoadBalancerId: ${ingress-nlb.id}
       backendSetName: "bs-80"
       targetId: ${nomad-instance-{{ $i }}.id}
       port: 80
     options:
       dependsOn:
 {{- if eq $i 0 }}
-        - ${traefik-nlb-listener-80}
+        - ${ingress-nlb-listener-80}
 {{- else }}
-        - ${traefik-nlb-backend-80-{{ sub $i 1 }}}
+        - ${ingress-nlb-backend-80-{{ sub $i 1 }}}
 {{- end }}
 {{- end }}
 
-  traefik-nlb-bs-443:
+  ingress-nlb-bs-443:
     type: oci:NetworkLoadBalancer/backendSet:BackendSet
     properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
+      networkLoadBalancerId: ${ingress-nlb.id}
       name: "bs-443"
       policy: FIVE_TUPLE
       isPreserveSource: false
@@ -406,38 +441,38 @@ resources:
         port: 443
     options:
       dependsOn:
-        - ${traefik-nlb-backend-80-{{ sub (atoi $.Config.nodeCount) 1 }}}
+        - ${ingress-nlb-backend-80-{{ sub (atoi $.Config.nodeCount) 1 }}}
 
-  traefik-nlb-listener-443:
+  ingress-nlb-listener-443:
     type: oci:NetworkLoadBalancer/listener:Listener
     properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
+      networkLoadBalancerId: ${ingress-nlb.id}
       name: "listener-443"
       defaultBackendSetName: "bs-443"
       protocol: TCP
       port: 443
     options:
       dependsOn:
-        - ${traefik-nlb-bs-443}
+        - ${ingress-nlb-bs-443}
 
 {{- range $i := until (atoi $.Config.nodeCount) }}
-  traefik-nlb-backend-443-{{ $i }}:
+  ingress-nlb-backend-443-{{ $i }}:
     type: oci:NetworkLoadBalancer/backend:Backend
     properties:
-      networkLoadBalancerId: ${traefik-nlb.id}
+      networkLoadBalancerId: ${ingress-nlb.id}
       backendSetName: "bs-443"
       targetId: ${nomad-instance-{{ $i }}.id}
       port: 443
     options:
       dependsOn:
 {{- if eq $i 0 }}
-        - ${traefik-nlb-listener-443}
+        - ${ingress-nlb-listener-443}
 {{- else }}
-        - ${traefik-nlb-backend-443-{{ sub $i 1 }}}
+        - ${ingress-nlb-backend-443-{{ sub $i 1 }}}
 {{- end }}
 {{- end }}
 
 outputs:
-  traefikNlbIps: ${traefik-nlb.ipAddresses}
+  nlbIps: ${ingress-nlb.ipAddresses}
   privateSubnetId: ${private-subnet.id}
-  nlbPublicIp: ${traefik-nlb.ipAddresses[0].ipAddress}
+  nlbPublicIp: ${ingress-nlb.ipAddresses[0].ipAddress}

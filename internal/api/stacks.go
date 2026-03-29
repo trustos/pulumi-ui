@@ -558,22 +558,9 @@ func (h *Handler) StackUnlock(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
-	cfg, row, err := h.loadStackConfig(stackName)
+	cfg, _, err := h.loadStackConfig(stackName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	var ociAccountID, passphraseID, sshKeyID *string
-	if row != nil {
-		ociAccountID = row.OciAccountID
-		passphraseID = row.PassphraseID
-		sshKeyID = row.SshKeyID
-	}
-
-	creds, err := h.resolveCredentials(ociAccountID, passphraseID, sshKeyID)
-	if err != nil {
-		http.Error(w, "credentials not configured: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -593,7 +580,7 @@ func (h *Handler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opCtx := context.Background()
-	status := h.Engine.DeployApps(opCtx, stackName, cfg.Metadata.Program, cfg.Config, cfg.Applications, creds, logSend)
+	status := h.Engine.DeployApps(opCtx, stackName, cfg.Metadata.Program, cfg.Applications, cfg.AppConfig, logSend)
 
 	h.Ops.Finish(opID, status)
 	send(engine.SSEEvent{Type: "done", Data: status})

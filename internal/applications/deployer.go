@@ -6,10 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strings"
+	"text/template"
 	"time"
 
+	builtins "github.com/trustos/pulumi-ui/programs"
+
 	"github.com/trustos/pulumi-ui/internal/db"
+	"github.com/trustos/pulumi-ui/internal/mesh"
 	"github.com/trustos/pulumi-ui/internal/programs"
 )
 
@@ -19,51 +25,36 @@ type LogFunc func(eventType, message string)
 
 // Deployer manages post-infrastructure application deployment over the Nebula mesh.
 type Deployer struct {
-	connStore *db.StackConnectionStore
+	connStore   *db.StackConnectionStore
+	meshManager *mesh.Manager
 }
 
-func NewDeployer(connStore *db.StackConnectionStore) *Deployer {
-	return &Deployer{connStore: connStore}
+func NewDeployer(connStore *db.StackConnectionStore, meshManager *mesh.Manager) *Deployer {
+	return &Deployer{
+		connStore:   connStore,
+		meshManager: meshManager,
+	}
 }
 
-// DeployApps executes the Phase 2 (mesh) and Phase 3 (application deploy) pipeline.
-// It streams progress through the log callback.
+// DeployApps executes the application deployment pipeline.
+// It establishes mesh connectivity, waits for the agent, uploads job templates,
+// and runs each selected workload application via `nomad job run`.
 func (d *Deployer) DeployApps(
 	ctx context.Context,
 	stackName string,
-	lighthouseAddr string,
 	selectedApps map[string]bool,
+	appConfig map[string]string,
 	catalog []programs.ApplicationDef,
 	send LogFunc,
 ) error {
-	send("output", "=== Phase 2: Establishing mesh connectivity ===")
+	send("output", "=== Establishing mesh connectivity ===")
 
-	conn, err := d.connStore.Get(stackName)
+	tunnel, err := d.waitForAgent(ctx, stackName, send)
 	if err != nil {
-		return fmt.Errorf("load stack connection: %w", err)
-	}
-	if conn == nil {
-		return fmt.Errorf("no Nebula PKI found for stack %q — create the stack first", stackName)
-	}
-
-	if lighthouseAddr != "" && (conn.LighthouseAddr == nil || *conn.LighthouseAddr != lighthouseAddr) {
-		if err := d.connStore.UpdateLighthouse(stackName, lighthouseAddr); err != nil {
-			send("error", fmt.Sprintf("Failed to update lighthouse address: %v", err))
-		}
-	}
-
-	agentAddr := "http://10.42.0.2:41820"
-	if conn.AgentNebulaIP != nil {
-		agentAddr = fmt.Sprintf("http://%s:41820", *conn.AgentNebulaIP)
-	}
-
-	send("output", fmt.Sprintf("Waiting for agent at %s...", agentAddr))
-
-	if err := d.waitForAgent(ctx, agentAddr, conn, stackName, send); err != nil {
 		return err
 	}
 
-	send("output", "=== Phase 3: Deploying applications ===")
+	send("output", "=== Deploying applications ===")
 
 	workloadApps := filterWorkloads(catalog, selectedApps)
 	if len(workloadApps) == 0 {
@@ -73,7 +64,15 @@ func (d *Deployer) DeployApps(
 
 	for _, app := range workloadApps {
 		send("output", fmt.Sprintf("Deploying %s...", app.Name))
-		if err := d.deployWorkload(ctx, agentAddr, conn, app, send); err != nil {
+
+		// Upload the rendered job template to the agent.
+		if err := d.uploadJobFile(ctx, tunnel, app, appConfig, send); err != nil {
+			send("error", fmt.Sprintf("Failed to upload job file for %s: %v", app.Name, err))
+			continue
+		}
+
+		// Execute `nomad job run` on the agent.
+		if err := d.deployWorkload(ctx, tunnel, app, send); err != nil {
 			send("error", fmt.Sprintf("Failed to deploy %s: %v", app.Name, err))
 			continue
 		}
@@ -83,33 +82,39 @@ func (d *Deployer) DeployApps(
 	return nil
 }
 
-// waitForAgent polls the agent's /health endpoint until it responds or the
-// context deadline is exceeded (10 minutes by default).
+// waitForAgent polls the agent's /health endpoint through a mesh tunnel until
+// it responds or the context deadline is exceeded (10 minutes).
 func (d *Deployer) waitForAgent(
 	ctx context.Context,
-	agentAddr string,
-	conn *db.StackConnection,
 	stackName string,
 	send LogFunc,
-) error {
+) (*mesh.Tunnel, error) {
 	timeout := 10 * time.Minute
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	send("output", "Waiting for agent to become healthy...")
 
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		case <-ticker.C:
 			if time.Now().After(deadline) {
-				return fmt.Errorf("agent at %s did not become healthy within %v", agentAddr, timeout)
+				return nil, fmt.Errorf("agent for stack %q did not become healthy within %v", stackName, timeout)
 			}
 
-			req, _ := http.NewRequestWithContext(ctx, "GET", agentAddr+"/health", nil)
-			req.Header.Set("Authorization", "Bearer "+conn.AgentToken)
+			tunnel, err := d.meshManager.GetTunnelForNode(stackName, 0)
+			if err != nil {
+				send("output", fmt.Sprintf("Tunnel not ready: %v", err))
+				continue
+			}
+
+			client := tunnel.HTTPClient()
+			req, _ := http.NewRequestWithContext(ctx, "GET", tunnel.AgentURL()+"/health", nil)
+			req.Header.Set("Authorization", "Bearer "+tunnel.Token())
+
 			resp, err := client.Do(req)
 			if err != nil {
 				send("output", fmt.Sprintf("Agent not ready yet: %v", err))
@@ -119,19 +124,87 @@ func (d *Deployer) waitForAgent(
 
 			if resp.StatusCode == http.StatusOK {
 				send("output", "Agent is healthy.")
-				d.connStore.UpdateLastSeen(stackName)
-				return nil
+				if d.connStore != nil {
+					d.connStore.UpdateLastSeen(stackName)
+				}
+				return tunnel, nil
 			}
 			send("output", fmt.Sprintf("Agent returned status %d, retrying...", resp.StatusCode))
 		}
 	}
 }
 
+// uploadJobFile reads the embedded job template for the application, renders
+// it with app-specific config values, and uploads it to the agent.
+func (d *Deployer) uploadJobFile(
+	ctx context.Context,
+	tunnel *mesh.Tunnel,
+	app programs.ApplicationDef,
+	appConfig map[string]string,
+	send LogFunc,
+) error {
+	templateContent, err := builtins.ReadJobFile(app.Key + ".nomad.hcl")
+	if err != nil {
+		return fmt.Errorf("read job template: %w", err)
+	}
+
+	// Build template data from appConfig. Keys are stored as "appKey.fieldKey"
+	// (e.g. "github-runner.githubToken"), extract just the field key part.
+	data := make(map[string]string)
+	prefix := app.Key + "."
+	for k, v := range appConfig {
+		if strings.HasPrefix(k, prefix) {
+			data[strings.TrimPrefix(k, prefix)] = v
+		}
+	}
+	// Also apply defaults from the app's config fields.
+	for _, cf := range app.ConfigFields {
+		if _, ok := data[cf.Key]; !ok && cf.Default != "" {
+			data[cf.Key] = cf.Default
+		}
+	}
+
+	tmpl, err := template.New(app.Key).Delims("[[", "]]").Parse(templateContent)
+	if err != nil {
+		return fmt.Errorf("parse job template: %w", err)
+	}
+
+	var rendered bytes.Buffer
+	if err := tmpl.Execute(&rendered, data); err != nil {
+		return fmt.Errorf("render job template: %w", err)
+	}
+
+	destPath := fmt.Sprintf("/opt/nomad-jobs/%s.nomad.hcl", app.Key)
+	send("output", fmt.Sprintf("Uploading job file to %s...", destPath))
+
+	client := tunnel.HTTPClient()
+	req, err := http.NewRequestWithContext(ctx, "POST", tunnel.AgentURL()+"/upload", &rendered)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tunnel.Token())
+	req.Header.Set("X-Dest-Path", destPath)
+	req.Header.Set("X-File-Mode", "0644")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("upload request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("[deployer] uploaded %s to agent", destPath)
+	return nil
+}
+
 // deployWorkload sends a command to the agent to deploy a Nomad job.
 func (d *Deployer) deployWorkload(
 	ctx context.Context,
-	agentAddr string,
-	conn *db.StackConnection,
+	tunnel *mesh.Tunnel,
 	app programs.ApplicationDef,
 	send LogFunc,
 ) error {
@@ -144,21 +217,21 @@ func (d *Deployer) deployWorkload(
 	}
 
 	body, _ := json.Marshal(execReq)
-	req, err := http.NewRequestWithContext(ctx, "POST", agentAddr+"/exec", bytes.NewReader(body))
+	client := tunnel.HTTPClient()
+	req, err := http.NewRequestWithContext(ctx, "POST", tunnel.AgentURL()+"/exec", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+conn.AgentToken)
+	req.Header.Set("Authorization", "Bearer "+tunnel.Token())
 
-	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("exec request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Stream the output
+	// Stream the output.
 	buf := make([]byte, 4096)
 	for {
 		n, readErr := resp.Body.Read(buf)

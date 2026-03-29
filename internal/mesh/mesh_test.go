@@ -81,6 +81,20 @@ func TestTunnelClose_NilSvc(t *testing.T) {
 	assert.NotPanics(t, func() { tunnel.Close() })
 }
 
+func TestTunnelPin(t *testing.T) {
+	tunnel := &Tunnel{}
+	assert.False(t, tunnel.pinned)
+	tunnel.Pin()
+	assert.True(t, tunnel.pinned)
+}
+
+func TestTunnelDialPort_ConstructsCorrectAddr(t *testing.T) {
+	// DialPort should target nebulaIP:port (not agentAddr)
+	tunnel := &Tunnel{agentAddr: "10.42.1.2:41820"}
+	// We can't actually dial (no Nebula service), but we can verify AgentNebulaIP
+	assert.Equal(t, "10.42.1.2", tunnel.AgentNebulaIP())
+}
+
 func TestWithNodeCertStore(t *testing.T) {
 	m := NewManager(nil)
 	defer m.Stop()

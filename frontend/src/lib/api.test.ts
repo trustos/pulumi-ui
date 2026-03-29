@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { getAgentHealth, getAgentServices, agentShellUrl } from './api';
+import { getAgentHealth, getAgentServices, agentShellUrl, listPortForwards, startPortForward, stopPortForward } from './api';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -150,5 +150,109 @@ describe('agentShellUrl', () => {
 
     const url = agentShellUrl('my-stack');
     expect(url).toBe('wss://example.com/api/stacks/my-stack/agent/shell');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listPortForwards
+// ---------------------------------------------------------------------------
+
+describe('listPortForwards', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('fetches the correct URL', async () => {
+    const body = [{ id: 'fwd-1', stackName: 'test', nodeIndex: 0, remotePort: 4646, localPort: 52431, localAddr: '127.0.0.1:52431', activeConns: 0, createdAt: 1742472000 }];
+    const fakeFetch = mockFetchOk(body);
+    globalThis.fetch = fakeFetch;
+
+    const result = await listPortForwards('test');
+
+    const url = fakeFetch.mock.calls[0][0] as string;
+    expect(url).toBe('/api/stacks/test/forward');
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('fwd-1');
+  });
+
+  it('throws on non-200 response', async () => {
+    globalThis.fetch = mockFetchFail(500);
+    await expect(listPortForwards('test')).rejects.toThrow('HTTP 500');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startPortForward
+// ---------------------------------------------------------------------------
+
+describe('startPortForward', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('sends POST with correct body', async () => {
+    const body = { id: 'fwd-1', stackName: 'test', nodeIndex: 0, remotePort: 4646, localPort: 52431, localAddr: '127.0.0.1:52431', activeConns: 0, createdAt: 1742472000 };
+    const fakeFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+    } as unknown as Response);
+    globalThis.fetch = fakeFetch;
+
+    const result = await startPortForward('test', 4646, 0);
+
+    expect(fakeFetch).toHaveBeenCalledOnce();
+    const [url, opts] = fakeFetch.mock.calls[0];
+    expect(url).toBe('/api/stacks/test/forward');
+    expect(opts.method).toBe('POST');
+    const parsed = JSON.parse(opts.body);
+    expect(parsed.remotePort).toBe(4646);
+    expect(parsed.nodeIndex).toBe(0);
+    expect(parsed.localPort).toBe(0);
+    expect(result.id).toBe('fwd-1');
+  });
+
+  it('throws with body text on error', async () => {
+    const fakeFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: () => Promise.resolve('mesh tunnel: no real IP'),
+    } as unknown as Response);
+    globalThis.fetch = fakeFetch;
+
+    await expect(startPortForward('test', 4646, 0)).rejects.toThrow('mesh tunnel: no real IP');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stopPortForward
+// ---------------------------------------------------------------------------
+
+describe('stopPortForward', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('sends DELETE to correct URL', async () => {
+    const fakeFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+    } as unknown as Response);
+    globalThis.fetch = fakeFetch;
+
+    await stopPortForward('test', 'fwd-1');
+
+    const [url, opts] = fakeFetch.mock.calls[0];
+    expect(url).toBe('/api/stacks/test/forward/fwd-1');
+    expect(opts.method).toBe('DELETE');
+  });
+
+  it('throws on non-200 response', async () => {
+    globalThis.fetch = mockFetchFail(404);
+    await expect(stopPortForward('test', 'fwd-99')).rejects.toThrow('HTTP 404');
+  });
+
+  it('URL-encodes stack name and forward ID', async () => {
+    const fakeFetch = vi.fn().mockResolvedValue({ ok: true, status: 204 } as unknown as Response);
+    globalThis.fetch = fakeFetch;
+
+    await stopPortForward('my stack', 'fwd-1');
+
+    const url = fakeFetch.mock.calls[0][0] as string;
+    expect(url).toBe('/api/stacks/my%20stack/forward/fwd-1');
   });
 });

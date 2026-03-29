@@ -53,6 +53,8 @@ OCI recommends NSGs over security lists for per-resource rules. Our agent-inject
 
 No additional security list rules needed for Nebula agent connectivity.
 
+**Note**: There are two firewalls at play — the OCI NSG (external, controls which UDP packets reach the instance) and the Nebula overlay firewall (internal, controls which TCP connections are allowed through the tunnel). The OCI NSG only needs UDP 41820. The Nebula overlay firewall (`agent_bootstrap.sh`) allows: any TCP from group `server` (enables port forwarding to Nomad/Consul/etc.), TCP 22 from group `user` (SSH), and ICMP from any.
+
 ### When to Add Explicit Security Lists
 
 Only needed when the default rules are insufficient:
@@ -81,6 +83,20 @@ The agent-inject system automatically chains its `__agent_bs_*` / `__agent_ln_*`
 
 ### NLB Health Check
 Agent backend sets use TCP:22 (SSH) as health check. This works because SSH starts before cloud-init completes. The health check confirms the instance is reachable from the NLB, not that the agent is running.
+
+### NLB Listener Port Allocation
+
+The nomad-cluster NLB has the following listeners:
+
+| Listener Port | Purpose | Protocol | Notes |
+|---|---|---|---|
+| 80 | HTTP user traffic (Traefik) | TCP | Per-node backends |
+| 443 | HTTPS user traffic (Traefik) | TCP | Per-node backends |
+| 41821 | Nebula agent (node 0) | UDP | Agent-inject auto-generated |
+| 41822 | Nebula agent (node 1) | UDP | Agent-inject auto-generated |
+| 41820+N+1 | Nebula agent (node N) | UDP | Agent-inject auto-generated |
+
+Port 4646 (Nomad UI) was removed from the NLB — access the Nomad UI via port forwarding through the Nebula mesh instead (`POST /api/stacks/{name}/forward` with `remotePort: 4646`).
 
 ### NLB Backend Port
 Agent NLB backends forward to port 41820 (Nebula agent). Each node gets a unique NLB listener port:

@@ -493,12 +493,12 @@ describe('getMissingAgentOutputs', () => {
       [],
       [
         compute('my-vcn', 'oci:Core/vcn:Vcn'),
-        compute('traefik-nlb', NLB_RESOURCE_TYPE),
+        compute('ingress-nlb', NLB_RESOURCE_TYPE),
         compute('my-subnet', 'oci:Core/subnet:Subnet'),
       ],
     );
     expect(result).toEqual([
-      { key: 'nlbPublicIp', value: '${traefik-nlb.ipAddresses[0].ipAddress}' },
+      { key: 'nlbPublicIp', value: '${ingress-nlb.ipAddresses[0].ipAddress}' },
     ]);
   });
 

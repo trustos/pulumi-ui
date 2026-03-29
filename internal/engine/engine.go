@@ -434,13 +434,18 @@ func (e *Engine) agentURLFields(stackName string, conn *db.StackConnection) (ser
 		}
 	}
 
-	// Pre-start a passive Nebula tunnel: server listens without knowing the
-	// agent's real IP yet, so that when the agent initiates the handshake
-	// (using the server's real IP from static_host_map) the server responds.
-	if e.meshManager != nil && serverVPNIP != "" && conn != nil {
-		if _, err := e.meshManager.GetOrStartPassive(stackName, conn); err != nil {
+	// Pre-start a passive Nebula tunnel ONLY during the initial deploy (when
+	// the agent real IP is not yet known). After deploy completes and the
+	// agent's NLB IP is discovered, active per-node tunnels (GetTunnelForNode)
+	// handle connectivity. Creating passive tunnels post-deploy causes multiple
+	// Nebula instances with the same VPN identity to compete for handshake
+	// responses, causing the active tunnel's handshakes to time out.
+	alreadyDeployed := conn != nil && conn.AgentRealIP != nil && *conn.AgentRealIP != ""
+	if e.meshManager != nil && serverVPNIP != "" && conn != nil && !alreadyDeployed {
+		if t, err := e.meshManager.GetOrStartPassive(stackName, conn); err != nil {
 			log.Printf("[mesh] failed to pre-start passive tunnel for %s: %v", stackName, err)
 		} else {
+			t.Pin() // prevent reaper from killing tunnel during long deploys
 			log.Printf("[mesh] pre-started passive tunnel for stack %s (server VPN: %s real: %s)", stackName, serverVPNIP, serverRealIP)
 		}
 	}
@@ -1134,7 +1139,7 @@ func (w *sseWriter) Write(p []byte) (n int, err error) {
 }
 
 // DeployApps runs Phase 2 + Phase 3 (mesh connectivity + workload deployment).
-func (e *Engine) DeployApps(ctx context.Context, stackName, programName string, cfg map[string]string, selectedApps map[string]bool, creds Credentials, send SSESender) (status string) {
+func (e *Engine) DeployApps(ctx context.Context, stackName, programName string, selectedApps map[string]bool, appConfig map[string]string, send SSESender) (status string) {
 	if !e.tryLock(stackName) {
 		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
 		return "conflict"
@@ -1174,29 +1179,12 @@ func (e *Engine) DeployApps(ctx context.Context, stackName, programName string, 
 		cancel()
 	}()
 
-	if isAppProvider {
-		outputs, err := e.GetStackOutputs(opCtx, stackName, programName, cfg, creds)
-		if err != nil {
-			send(SSEEvent{Type: "error", Data: "failed to read stack outputs: " + err.Error()})
-			return "failed"
-		}
-
-		lighthouseAddr := ""
-		if v, ok := outputs["nebulaLighthouseAddr"]; ok {
-			if s, ok := v.Value.(string); ok {
-				lighthouseAddr = s
-			}
-		}
-
-		if lighthouseAddr == "" {
-			send(SSEEvent{Type: "error", Data: "nebulaLighthouseAddr not found in stack outputs — deploy infrastructure first"})
-			return "failed"
-		}
-
+	catalog := provider.Applications()
+	if isAppProvider && len(catalog) > 0 {
 		logFn := func(eventType, message string) {
 			send(SSEEvent{Type: eventType, Data: message})
 		}
-		if err := e.deployer.DeployApps(opCtx, stackName, lighthouseAddr, selectedApps, provider.Applications(), logFn); err != nil {
+		if err := e.deployer.DeployApps(opCtx, stackName, selectedApps, appConfig, catalog, logFn); err != nil {
 			if opCtx.Err() != nil {
 				send(SSEEvent{Type: "output", Data: "Application deployment cancelled."})
 				return "cancelled"
@@ -1204,7 +1192,7 @@ func (e *Engine) DeployApps(ctx context.Context, stackName, programName string, 
 			send(SSEEvent{Type: "error", Data: err.Error()})
 			return "failed"
 		}
-	} else {
+	} else if isAgentAccess {
 		send(SSEEvent{Type: "output", Data: "Agent access program — agent connects via Nebula mesh."})
 		send(SSEEvent{Type: "output", Data: "Use the Nodes tab for terminal access and command execution."})
 	}

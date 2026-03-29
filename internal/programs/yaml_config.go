@@ -20,9 +20,31 @@ type pulumiConfigField struct {
 }
 
 type pulumiMeta struct {
-	Groups      []pulumiMetaGroup          `yaml:"groups"`
-	Fields      map[string]pulumiMetaField `yaml:"fields"`
-	AgentAccess bool                       `yaml:"agentAccess"`
+	Groups       []pulumiMetaGroup          `yaml:"groups"`
+	Fields       map[string]pulumiMetaField `yaml:"fields"`
+	AgentAccess  bool                       `yaml:"agentAccess"`
+	Applications []pulumiMetaApp            `yaml:"applications"`
+}
+
+type pulumiMetaApp struct {
+	Key          string            `yaml:"key"`
+	Name         string            `yaml:"name"`
+	Description  string            `yaml:"description"`
+	Tier         string            `yaml:"tier"`
+	Target       string            `yaml:"target"`
+	Required     bool              `yaml:"required"`
+	DefaultOn    bool              `yaml:"defaultOn"`
+	DependsOn    []string          `yaml:"dependsOn"`
+	ConfigFields []pulumiMetaAppCF `yaml:"configFields"`
+}
+
+type pulumiMetaAppCF struct {
+	Key         string `yaml:"key"`
+	Label       string `yaml:"label"`
+	Type        string `yaml:"type"`
+	Required    bool   `yaml:"required"`
+	Default     string `yaml:"default"`
+	Description string `yaml:"description"`
 }
 
 type pulumiMetaGroup struct {
@@ -255,6 +277,49 @@ func ParseAgentAccess(yamlBody string) bool {
 		return false
 	}
 	return doc.Meta.AgentAccess
+}
+
+// ParseApplications parses the meta.applications section of a YAML program
+// and returns the corresponding ApplicationDef slice. Returns nil if no
+// applications are declared.
+func ParseApplications(yamlBody string) []ApplicationDef {
+	parseable := truncateAtResources(yamlBody)
+	var doc pulumiYAMLConfig
+	if err := yaml.Unmarshal([]byte(parseable), &doc); err != nil || doc.Meta == nil {
+		return nil
+	}
+	if len(doc.Meta.Applications) == 0 {
+		return nil
+	}
+	apps := make([]ApplicationDef, 0, len(doc.Meta.Applications))
+	for _, ma := range doc.Meta.Applications {
+		app := ApplicationDef{
+			Key:         ma.Key,
+			Name:        ma.Name,
+			Description: ma.Description,
+			Tier:        ApplicationTier(ma.Tier),
+			Target:      TargetMode(ma.Target),
+			Required:    ma.Required,
+			DefaultOn:   ma.DefaultOn,
+			DependsOn:   ma.DependsOn,
+		}
+		for _, cf := range ma.ConfigFields {
+			fieldType := cf.Type
+			if fieldType == "" {
+				fieldType = "text"
+			}
+			app.ConfigFields = append(app.ConfigFields, ConfigField{
+				Key:         cf.Key,
+				Label:       cf.Label,
+				Type:        fieldType,
+				Required:    cf.Required,
+				Default:     cf.Default,
+				Description: cf.Description,
+			})
+		}
+		apps = append(apps, app)
+	}
+	return apps
 }
 
 // stripMetaSection removes the `meta:` top-level block from a YAML body by

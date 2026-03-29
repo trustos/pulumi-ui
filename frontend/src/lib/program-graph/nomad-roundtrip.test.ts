@@ -57,20 +57,19 @@ describe('structural integrity', () => {
     );
   });
 
-  it('preserves all 15 config fields', () => {
+  it('preserves all 14 config fields', () => {
     const { graph } = yamlToGraph(yaml);
-    expect(graph.configFields).toHaveLength(15);
+    expect(graph.configFields).toHaveLength(14);
     expect(graph.configFields.map(f => f.key)).toContain('nodeCount');
     expect(graph.configFields.map(f => f.key)).toContain('sshPublicKey');
+    expect(graph.configFields.map(f => f.key)).not.toContain('sshSourceCidr');
     expect(graph.configFields.map(f => f.key)).not.toContain('skipDynamicGroup');
-    expect(graph.configFields.map(f => f.key)).not.toContain('adminGroupName');
-    expect(graph.configFields.map(f => f.key)).not.toContain('identityDomain');
   });
 
   it('preserves 3 static outputs', () => {
     const { graph } = yamlToGraph(yaml);
     expect(graph.outputs).toHaveLength(3);
-    expect(graph.outputs.map(o => o.key)).toEqual(['traefikNlbIps', 'privateSubnetId', 'nlbPublicIp']);
+    expect(graph.outputs.map(o => o.key)).toEqual(['nlbIps', 'privateSubnetId', 'nlbPublicIp']);
   });
 
   it('preserves variables block (fn::invoke)', () => {
@@ -187,17 +186,11 @@ describe('networking section — property formats', () => {
     expect(rules).toMatch(/^\[/);
   });
 
-  it('ssh-nsg-rule tcpOptions is present (nested object loses inner fields)', () => {
+  it('ingress-nsg-rule-80 tcpOptions is present (nested object)', () => {
     const { graph } = yamlToGraph(yaml);
     const allItems = graph.sections.find(s => s.id === 'networking')!.items;
-    const rule = findResource(allItems, 'ssh-nsg-rule')!;
+    const rule = findResource(allItems, 'ingress-nsg-rule-80')!;
     const tcp = prop(rule, 'tcpOptions');
-    // tcpOptions is a 2-level nested object (destinationPortRange → min/max).
-    // tryCollectExpandedObject reads only one level of 8-space key:value lines.
-    // The inner min/max at 10-space are captured into destinationPortRange,
-    // but destinationPortRange itself has no inline value on the 8-space line.
-    // Known limitation: the inner fields may render as { destinationPortRange: { min: 22, max: 22 } }
-    // or as {} depending on parser behavior. Either way the property exists.
     expect(tcp).toBeDefined();
   });
 
@@ -266,10 +259,7 @@ describe('compute section — instance loop', () => {
     const instance = loop.items[0] as ResourceItem;
     const vnic = prop(instance, 'createVnicDetails');
     expect(vnic).toBeDefined();
-    // nsgIds must be present (was previously lost)
-    expect(vnic).toContain('ssh-nsg.id');
-    expect(vnic).toContain('nomad-nsg.id');
-    expect(vnic).toContain('traefik-nsg.id');
+    expect(vnic).toContain('ingress-nsg.id');
   });
 
   it('instance availabilityDomain is literal (not @auto)', () => {
@@ -285,15 +275,15 @@ describe('compute section — instance loop', () => {
 // ── Load Balancer section: explicit resources + backend loops ────────────
 
 describe('loadbalancer section — NLB resources', () => {
-  it('loadbalancer section has NLB + 6 explicit resources + 3 backend loops', () => {
+  it('loadbalancer section has NLB + 4 explicit resources + 2 backend loops', () => {
     const { graph } = yamlToGraph(yaml);
     const lb = graph.sections.find(s => s.id === 'loadbalancer')!;
     const resources = lb.items.filter(i => i.kind === 'resource');
     const loops = lb.items.filter(i => i.kind === 'loop');
-    // 1 NLB + 3 BackendSets + 3 Listeners = 7 explicit resources
-    expect(resources).toHaveLength(7);
-    // 3 backend loops (one per port)
-    expect(loops).toHaveLength(3);
+    // 1 NLB + 2 BackendSets + 2 Listeners = 5 explicit resources
+    expect(resources).toHaveLength(5);
+    // 2 backend loops (one per port: 80, 443)
+    expect(loops).toHaveLength(2);
   });
 
   it('NLB dependsOn chain includes cross-port serialization', () => {
@@ -302,50 +292,41 @@ describe('loadbalancer section — NLB resources', () => {
     const items = lb.items;
 
     // Basic chain: bs-80 depends on NLB (literal dependsOn)
-    const bs80 = findResource(items, 'traefik-nlb-bs-80')!;
-    expect(bs80.options?.dependsOn).toContain('traefik-nlb');
+    const bs80 = findResource(items, 'ingress-nlb-bs-80')!;
+    expect(bs80.options?.dependsOn).toContain('ingress-nlb');
 
-    const listener80 = findResource(items, 'traefik-nlb-listener-80')!;
-    expect(listener80.options?.dependsOn).toContain('traefik-nlb-bs-80');
+    const listener80 = findResource(items, 'ingress-nlb-listener-80')!;
+    expect(listener80.options?.dependsOn).toContain('ingress-nlb-bs-80');
 
-    // bs-443 and bs-4646 have template-based cross-port dependsOn (rawOptions)
-    const bs443 = findResource(items, 'traefik-nlb-bs-443')!;
+    // bs-443 has template-based cross-port dependsOn (rawOptions)
+    const bs443 = findResource(items, 'ingress-nlb-bs-443')!;
     expect(bs443.rawOptions).toBeDefined();
-    expect(bs443.rawOptions).toContain('traefik-nlb-backend-80');
+    expect(bs443.rawOptions).toContain('ingress-nlb-backend-80');
 
-    const bs4646 = findResource(items, 'traefik-nlb-bs-4646')!;
-    expect(bs4646.rawOptions).toBeDefined();
-    expect(bs4646.rawOptions).toContain('traefik-nlb-backend-443');
-
-    // Listeners for 443/4646 have literal dependsOn
-    const listener443 = findResource(items, 'traefik-nlb-listener-443')!;
-    expect(listener443.options?.dependsOn).toContain('traefik-nlb-bs-443');
-
-    const listener4646 = findResource(items, 'traefik-nlb-listener-4646')!;
-    expect(listener4646.options?.dependsOn).toContain('traefik-nlb-bs-4646');
+    // Listener for 443 has literal dependsOn
+    const listener443 = findResource(items, 'ingress-nlb-listener-443')!;
+    expect(listener443.options?.dependsOn).toContain('ingress-nlb-bs-443');
   });
 
   it('each backend loop is until-config with nodeCount', () => {
     const { graph } = yamlToGraph(yaml);
     const loops = graph.sections.find(s => s.id === 'loadbalancer')!.items
       .filter(i => i.kind === 'loop') as LoopItem[];
-    expect(loops).toHaveLength(3);
+    expect(loops).toHaveLength(2);
     for (const loop of loops) {
       expect(loop.source).toEqual({ type: 'until-config', configKey: 'nodeCount' });
     }
   });
 
-  it('backend resource names contain literal port numbers (80, 443, 4646)', () => {
+  it('backend resource names contain literal port numbers (80, 443)', () => {
     const { graph } = yamlToGraph(yaml);
     const loops = graph.sections.find(s => s.id === 'loadbalancer')!.items
       .filter(i => i.kind === 'loop') as LoopItem[];
-    // Each loop body has a resource item (may be first or nested in conditional)
     const backendNames = loops.flatMap(l =>
       l.items.filter(i => i.kind === 'resource').map(i => (i as ResourceItem).name)
     );
-    expect(backendNames).toContain('traefik-nlb-backend-80');
-    expect(backendNames).toContain('traefik-nlb-backend-443');
-    expect(backendNames).toContain('traefik-nlb-backend-4646');
+    expect(backendNames).toContain('ingress-nlb-backend-80');
+    expect(backendNames).toContain('ingress-nlb-backend-443');
   });
 
   it('backend resources reference correct instance via loop variable', () => {
@@ -379,7 +360,7 @@ describe('loadbalancer section — NLB resources', () => {
     const reserialized = graphToYaml(graph);
     // bs-443 must depend on the last backend-80 (template expression)
     expect(reserialized).toContain('sub (atoi $.Config.nodeCount) 1');
-    expect(reserialized).toContain('traefik-nlb-backend-80-{{');
+    expect(reserialized).toContain('ingress-nlb-backend-80-{{');
   });
 
   it('intra-loop conditional dependsOn is preserved in roundtrip', () => {
@@ -393,10 +374,10 @@ describe('loadbalancer section — NLB resources', () => {
   it('re-serialized NLB backends have unique names after expansion', () => {
     const { graph } = yamlToGraph(yaml);
     const out = graphToYaml(graph);
-    const backendNames = [...out.matchAll(/^  (traefik-nlb-backend[^:]*?):\s*$/gm)].map(m => m[1]);
+    const backendNames = [...out.matchAll(/^  (ingress-nlb-backend[^:]*?):\s*$/gm)].map(m => m[1]);
     // Each should contain a literal port and a {{ $i }} suffix
     for (const name of backendNames) {
-      expect(/\b(80|443|4646)\b/.test(name), `"${name}" should have literal port`).toBe(true);
+      expect(/\b(80|443)\b/.test(name), `"${name}" should have literal port`).toBe(true);
       expect(/\{\{.*\$i.*\}\}/.test(name), `"${name}" should have loop variable`).toBe(true);
     }
   });
@@ -453,12 +434,12 @@ describe('output details', () => {
   it('nlbPublicIp output references ipAddresses[0].ipAddress', () => {
     const { graph } = yamlToGraph(yaml);
     const output = graph.outputs.find(o => o.key === 'nlbPublicIp');
-    expect(output?.value).toBe('${traefik-nlb.ipAddresses[0].ipAddress}');
+    expect(output?.value).toBe('${ingress-nlb.ipAddresses[0].ipAddress}');
   });
 
-  it('traefikNlbIps output references full ipAddresses', () => {
+  it('nlbIps output references full ipAddresses', () => {
     const { graph } = yamlToGraph(yaml);
-    const output = graph.outputs.find(o => o.key === 'traefikNlbIps');
-    expect(output?.value).toBe('${traefik-nlb.ipAddresses}');
+    const output = graph.outputs.find(o => o.key === 'nlbIps');
+    expect(output?.value).toBe('${ingress-nlb.ipAddresses}');
   });
 });

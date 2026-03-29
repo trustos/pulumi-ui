@@ -5,7 +5,7 @@
   import { WebLinksAddon } from '@xterm/addon-web-links';
   import '@xterm/xterm/css/xterm.css';
 
-  let { url }: { url: string } = $props();
+  let { url, visible = true }: { url: string; visible?: boolean } = $props();
 
   let containerEl: HTMLDivElement;
   let terminal: Terminal | null = null;
@@ -15,6 +15,32 @@
   let errorMsg = $state('');
 
   const RESIZE_PREFIX = 1;
+
+  // One Dark inspired ANSI color palette
+  const THEME = {
+    background: '#0a0a0a',
+    foreground: '#abb2bf',
+    cursor: '#528bff',
+    cursorAccent: '#0a0a0a',
+    selectionBackground: '#3e4451',
+    selectionForeground: '#abb2bf',
+    black: '#1e2127',
+    red: '#e06c75',
+    green: '#98c379',
+    yellow: '#d19a66',
+    blue: '#61afef',
+    magenta: '#c678dd',
+    cyan: '#56b6c2',
+    white: '#abb2bf',
+    brightBlack: '#5c6370',
+    brightRed: '#e06c75',
+    brightGreen: '#98c379',
+    brightYellow: '#e5c07b',
+    brightBlue: '#61afef',
+    brightMagenta: '#c678dd',
+    brightCyan: '#56b6c2',
+    brightWhite: '#ffffff',
+  };
 
   function sendResize(rows: number, cols: number) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -35,12 +61,7 @@
       cursorBlink: true,
       fontSize: 13,
       fontFamily: 'JetBrains Mono, Menlo, Monaco, monospace',
-      theme: {
-        background: '#0a0a0a',
-        foreground: '#e4e4e7',
-        cursor: '#e4e4e7',
-        selectionBackground: '#3f3f46',
-      },
+      theme: THEME,
     });
 
     fitAddon = new FitAddon();
@@ -107,29 +128,35 @@
     fitAddon = null;
   }
 
+  // Re-fit when visibility changes (tab switched back to us)
+  $effect(() => {
+    if (visible && fitAddon) {
+      // Small delay to let the DOM settle after display change
+      setTimeout(() => fitAddon?.fit(), 10);
+    }
+  });
+
   onMount(() => {
     connect();
     const observer = new ResizeObserver(() => {
-      if (fitAddon) fitAddon.fit();
+      if (fitAddon && visible) fitAddon.fit();
     });
     observer.observe(containerEl);
     return () => observer.disconnect();
   });
 
   onDestroy(cleanup);
+
+  // Expose status for parent (tab bar indicators)
+  export function getStatus() { return status; }
 </script>
 
-<div class="flex flex-col h-full w-full bg-[#0a0a0a] rounded-md overflow-hidden border border-border">
-  <div class="flex items-center justify-between px-3 py-1.5 bg-card border-b border-border">
-    <div class="flex items-center gap-2 text-xs text-muted-foreground">
-      <span class="inline-block w-2 h-2 rounded-full {status === 'connected' ? 'bg-green-500' : status === 'connecting' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}"></span>
-      <span>
-        {#if status === 'connected'}Connected{:else if status === 'connecting'}Connecting...{:else if status === 'error'}{errorMsg || 'Error'}{:else}Disconnected{/if}
-      </span>
+<div class="flex flex-col h-full w-full bg-[#0a0a0a] overflow-hidden" class:hidden={!visible}>
+  <div bind:this={containerEl} class="flex-1 min-h-0 p-0.5"></div>
+  {#if status === 'disconnected' || status === 'error'}
+    <div class="flex items-center justify-center gap-2 px-3 py-1.5 bg-[#1e2127] border-t border-[#3e4451] text-xs">
+      <span class="text-[#e06c75]">{status === 'error' ? errorMsg || 'Connection error' : 'Disconnected'}</span>
+      <button class="px-2 py-0.5 rounded bg-[#3e4451] text-[#abb2bf] hover:bg-[#4b5263] transition-colors" onclick={reconnect}>Reconnect</button>
     </div>
-    {#if status === 'disconnected' || status === 'error'}
-      <button class="text-xs px-2 py-0.5 rounded bg-primary text-primary-foreground hover:bg-primary/90" onclick={reconnect}>Reconnect</button>
-    {/if}
-  </div>
-  <div bind:this={containerEl} class="flex-1 min-h-0 p-1"></div>
+  {/if}
 </div>
