@@ -149,6 +149,11 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			// Mesh config download (for local machine Nebula access)
 			r.Get("/stacks/{name}/mesh/config", h.DownloadMeshConfig)
 
+			// App domain management (Traefik dynamic config)
+			r.Get("/stacks/{name}/app-domains", h.ListAppDomains)
+			r.Put("/stacks/{name}/app-domains/{appKey}", h.SetAppDomain)
+			r.Delete("/stacks/{name}/app-domains/{appKey}", h.RemoveAppDomain)
+
 			// Port forwarding (TCP proxy through Nebula mesh)
 			r.Get("/stacks/{name}/forward", h.ListPortForwards)
 			r.Post("/stacks/{name}/forward", h.StartPortForward)

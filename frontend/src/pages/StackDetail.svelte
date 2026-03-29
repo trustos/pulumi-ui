@@ -10,7 +10,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward, putStack } from '$lib/api';
+  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward, putStack, setAppDomain, removeAppDomain } from '$lib/api';
   import type { StackInfo, OciAccount, ProgramMeta, ApplicationDef, AgentHealth, AgentService, NomadJob, PortForward } from '$lib/types';
   import EditStackDialog from '$lib/components/EditStackDialog.svelte';
   import WebTerminal from '$lib/components/WebTerminal.svelte';
@@ -846,6 +846,27 @@
                       {/if}
                     {/if}
                   </div>
+                  <!-- Domain management (for running apps with a port) -->
+                  {#if app.port && isRunningJob}
+                    {@const currentDomain = editAppConfig[`${app.key}.domain`] ?? ''}
+                    <div class="flex items-center gap-2 px-4 py-2 border-t bg-muted/10">
+                      <span class="text-xs text-muted-foreground w-16 shrink-0">Domain</span>
+                      <input
+                        type="text"
+                        value={currentDomain}
+                        oninput={(e: Event) => { editAppConfig[`${app.key}.domain`] = (e.target as HTMLInputElement).value; }}
+                        placeholder="nocobase.example.com"
+                        class="h-7 flex-1 rounded border bg-background px-2 text-xs font-mono"
+                        onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') { const val = editAppConfig[`${app.key}.domain`]?.trim(); if (val) setAppDomain(name, app.key, val).then(() => loadInfo()); } }}
+                      />
+                      {#if currentDomain.trim()}
+                        <Button size="sm" variant="outline" class="h-7 px-2 text-xs" onclick={() => { setAppDomain(name, app.key, currentDomain.trim()).then(() => loadInfo()); }}>
+                          Apply
+                        </Button>
+                        <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => { editAppConfig[`${app.key}.domain`] = ''; removeAppDomain(name, app.key).then(() => loadInfo()); }}>×</button>
+                      {/if}
+                    </div>
+                  {/if}
                   {#if isSelected && app.configFields && app.configFields.length > 0}
                     <div class="px-4 pb-3 pt-1 border-t bg-muted/20 space-y-2">
                       {#each app.configFields as field}

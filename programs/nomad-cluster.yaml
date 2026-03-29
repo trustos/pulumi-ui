@@ -61,12 +61,6 @@ meta:
           type: text
           required: true
           description: "Login email for pgAdmin web UI"
-        - key: pgadminDomain
-          label: pgAdmin Domain
-          type: text
-          required: false
-          description: "Optional — for HTTPS via Traefik. Leave empty to use port forwarding."
-          description: "Domain for pgAdmin (requires DNS + Traefik)"
     - key: postgres-backup
       name: PostgreSQL Backup
       description: "Scheduled pg_dump with upload to OCI Object Storage. Runs as a periodic Nomad batch job."
@@ -108,11 +102,6 @@ meta:
       consulEnv:
         NOMAD_TOKEN: "nomad/bootstrap-token"
       configFields:
-        - key: domain
-          label: Domain
-          type: text
-          required: false
-          description: "Optional — for HTTPS via Traefik. Without it, access NocoBase via port forwarding."
         - key: appKey
           label: App Secret Key
           type: text

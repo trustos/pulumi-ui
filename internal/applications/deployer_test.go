@@ -86,14 +86,18 @@ func TestJobTemplateExists_Postgres(t *testing.T) {
 	assert.Contains(t, content, "postgres")
 	assert.Contains(t, content, "[[.dbUser]]")
 	assert.Contains(t, content, "[[.pgadminEmail]]")
+	// pgadminDomain removed — domains managed via Traefik dynamic config
+	assert.NotContains(t, content, "[[.pgadminDomain]]")
 }
 
 func TestJobTemplateExists_NocoBase(t *testing.T) {
 	content, err := builtins.ReadJobFile("nocobase.nomad.hcl")
 	require.NoError(t, err)
 	assert.Contains(t, content, "nocobase")
-	assert.Contains(t, content, "[[.domain]]")
 	assert.Contains(t, content, "[[.dbName]]")
+	assert.Contains(t, content, "[[.appKey]]")
+	// Domain is now managed via Traefik dynamic config, not in job template
+	assert.NotContains(t, content, "[[.domain]]")
 }
 
 func TestJobTemplateNotFound(t *testing.T) {
@@ -157,9 +161,8 @@ func TestJobTemplateRendering_Postgres(t *testing.T) {
 	require.NoError(t, err)
 
 	data := map[string]string{
-		"dbUser":        "myuser",
-		"pgadminEmail":  "admin@example.com",
-		"pgadminDomain": "pgadmin.example.com",
+		"dbUser":       "myuser",
+		"pgadminEmail": "admin@example.com",
 	}
 
 	var buf bytes.Buffer
@@ -169,7 +172,8 @@ func TestJobTemplateRendering_Postgres(t *testing.T) {
 	rendered := buf.String()
 	assert.Contains(t, rendered, "myuser")
 	assert.Contains(t, rendered, "admin@example.com")
-	assert.Contains(t, rendered, "pgadmin.example.com")
+	// pgadminDomain removed — domains managed via Traefik dynamic config
+	assert.NotContains(t, rendered, "[[.pgadminDomain]]")
 }
 
 func TestJobTemplateExists_PostgresBackup(t *testing.T) {

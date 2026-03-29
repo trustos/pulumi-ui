@@ -60,6 +60,9 @@ api:
 
 providers:
   providersThrottleDuration: 1s
+  file:
+    directory: "/etc/traefik/dynamic"
+    watch: true
   nomad:
     endpoint:
       address: "http://localhost:4646"

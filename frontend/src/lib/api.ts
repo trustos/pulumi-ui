@@ -595,6 +595,26 @@ export async function stopPortForward(stackName: string, id: string): Promise<vo
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
+// App domain management (Traefik dynamic config)
+export async function setAppDomain(stackName: string, appKey: string, domain: string): Promise<void> {
+  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/app-domains/${encodeURIComponent(appKey)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ domain }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+}
+
+export async function removeAppDomain(stackName: string, appKey: string): Promise<void> {
+  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/app-domains/${encodeURIComponent(appKey)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
 export function streamLogs(onEntry: (entry: LogEntry) => void, onError?: (err: Error) => void): () => void {
   const es = new EventSource('/api/logs/stream');
   es.onmessage = (e) => {
