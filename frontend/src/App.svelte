@@ -20,7 +20,8 @@
   let initializing = $state(true);
 
   let stackName = $derived.by(() => {
-    const m = path.match(/^\/stacks\/([^/]+)/);
+    const cleanPath = path.split('?')[0];
+    const m = cleanPath.match(/^\/stacks\/([^/]+)/);
     return m ? decodeURIComponent(m[1]) : '';
   });
 

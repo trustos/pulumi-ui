@@ -16,7 +16,8 @@ function createRouter() {
     navigate(path: string) {
       if (typeof window !== 'undefined') {
         window.history.pushState({}, '', path);
-        set(path);
+        // Store path without query params for route matching
+        set(path.split('?')[0]);
       }
     },
   };
