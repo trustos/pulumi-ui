@@ -170,10 +170,10 @@ release: _release-preflight
 	go test ./internal/... -count=1
 	cd frontend && npx vitest run
 	cd frontend && npx svelte-check --threshold warning
-	@# Commit, tag, push
+	@# Commit (skip if version files are already at target version), tag
 	git add internal/engine/engine.go internal/engine/agent_vars_test.go internal/agentinject/agent_bootstrap.sh
-	git commit -m "release: $(VERSION)"
-	git tag $(VERSION)
+	git diff --cached --quiet || git commit -m "release: $(VERSION)"
+	git tag -f $(VERSION)
 	git push origin main
 	git push origin $(VERSION)
 	@echo ""
