@@ -1000,8 +1000,9 @@
                           size="sm"
                           variant={termSessions.some(s => s.nodeIndex === node.nodeIndex) ? 'default' : 'outline'}
                           onclick={() => openTerminal(node.nodeIndex)}
+                          disabled={!nodeHealthMap.has(node.nodeIndex) && !termSessions.some(s => s.nodeIndex === node.nodeIndex)}
                         >
-                          {termSessions.some(s => s.nodeIndex === node.nodeIndex) ? 'Connected' : 'Connect'}
+                          {termSessions.some(s => s.nodeIndex === node.nodeIndex) ? 'Connected' : nodeHealthMap.get(node.nodeIndex) ? 'Connect' : 'Unreachable'}
                         </Button>
                       </div>
                     </div>
