@@ -176,7 +176,8 @@
           <Input
             id="sol-{field.key}"
             type={field.type}
-            bind:value={userInput[field.key]}
+            value={userInput[field.key] ?? ''}
+            oninput={(e: Event) => { userInput[field.key] = (e.target as HTMLInputElement).value; }}
             placeholder={field.placeholder ?? ''}
           />
           {#if field.description}
