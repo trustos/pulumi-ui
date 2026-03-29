@@ -52,8 +52,7 @@ func (d *Deployer) DeployApps(
 ) error {
 	send("output", "=== Establishing mesh connectivity ===")
 
-	tunnel, err := d.waitForAgent(ctx, stackName, send)
-	if err != nil {
+	if _, err := d.waitForAgent(ctx, stackName, send); err != nil {
 		return err
 	}
 
@@ -68,6 +67,15 @@ func (d *Deployer) DeployApps(
 	var failed []string
 	for _, app := range workloadApps {
 		send("output", fmt.Sprintf("Deploying %s...", app.Name))
+
+		// Resolve tunnel fresh for each app — cached tunnels may be replaced
+		// by health check retries or the idle reaper between deploys.
+		tunnel, err := d.meshManager.GetTunnelForNode(stackName, 0)
+		if err != nil {
+			send("error", fmt.Sprintf("Failed to get tunnel for %s: %v", app.Name, err))
+			failed = append(failed, app.Key)
+			continue
+		}
 
 		// Upload the rendered job template to the agent.
 		if err := d.uploadJobFile(ctx, tunnel, app, appConfig, send); err != nil {
