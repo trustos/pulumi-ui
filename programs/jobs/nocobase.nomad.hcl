@@ -11,12 +11,17 @@ job "nocobase" {
 
     task "init-dirs" {
       driver = "raw_exec"
-      lifecycle { hook = "prestart" }
+      lifecycle {
+        hook = "prestart"
+      }
       config {
         command = "mkdir"
         args    = ["-p", "/opt/nocobase/storage"]
       }
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "nocobase" {

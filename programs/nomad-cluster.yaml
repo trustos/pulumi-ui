@@ -27,8 +27,11 @@ meta:
       description: "HTTP/HTTPS ingress with automatic Let's Encrypt certificates and Consul/Nomad service discovery"
       tier: workload
       target: first
+      port: 80
       required: false
       defaultOn: true
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
       configFields:
         - key: acmeEmail
           label: ACME Email
@@ -40,9 +43,12 @@ meta:
       description: "PostgreSQL 16 database with pgAdmin web UI. Credentials auto-generated and stored in Consul KV."
       tier: workload
       target: first
+      port: 5432
       required: false
       defaultOn: false
       dependsOn: [traefik]
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
       configFields:
         - key: dbUser
           label: Database User
@@ -61,14 +67,46 @@ meta:
           required: false
           default: "pgadmin.example.com"
           description: "Domain for pgAdmin (requires DNS + Traefik)"
-    - key: nocobase
-      name: NocoBase
-      description: "Open-source no-code/low-code platform for building business applications. Connects to PostgreSQL."
+    - key: postgres-backup
+      name: PostgreSQL Backup
+      description: "Scheduled pg_dump with upload to OCI Object Storage. Runs as a periodic Nomad batch job."
       tier: workload
       target: first
       required: false
       defaultOn: false
       dependsOn: [postgres]
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
+      configFields:
+        - key: backupSchedule
+          label: Schedule (cron)
+          type: text
+          required: false
+          default: "0 4 * * *"
+          description: "Cron expression for backup schedule (default: daily at 4am UTC)"
+        - key: bucketName
+          label: OCI Bucket
+          type: text
+          required: false
+          default: "postgres-backups"
+          description: "OCI Object Storage bucket name (auto-created if missing)"
+        - key: retentionCount
+          label: Retention Count
+          type: text
+          required: false
+          default: "7"
+          description: "Number of backups to keep per database"
+    - key: nocobase
+      name: NocoBase
+      description: "Open-source no-code/low-code platform for building business applications. Connects to PostgreSQL."
+      tier: workload
+      target: first
+      port: 13000
+      required: false
+      defaultOn: false
+      dependsOn: [postgres]
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
       configFields:
         - key: domain
           label: Domain
@@ -104,6 +142,8 @@ meta:
       target: first
       required: false
       defaultOn: false
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
       configFields:
         - key: githubToken
           label: GitHub Token

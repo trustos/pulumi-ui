@@ -141,6 +141,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			// Agent proxy (routes through Nebula mesh)
 			r.Get("/stacks/{name}/agent/health", h.AgentHealth)
 			r.Get("/stacks/{name}/agent/services", h.AgentServices)
+			r.Get("/stacks/{name}/agent/nomad-jobs", h.AgentNomadJobs)
 			r.Post("/stacks/{name}/agent/exec", h.AgentExec)
 			r.Post("/stacks/{name}/agent/upload", h.AgentUpload)
 			r.Get("/stacks/{name}/agent/shell", h.AgentShell)

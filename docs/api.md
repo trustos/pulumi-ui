@@ -225,6 +225,7 @@ All agent communication is proxied through the server's userspace Nebula tunnel.
 | POST | `/api/stacks/{name}/agent/exec` | `{ command, args? }` | SSE stream (proxied command output) |
 | POST | `/api/stacks/{name}/agent/upload` | File body, `X-Dest-Path` + `X-File-Mode` headers | Upload result JSON (proxied) |
 | GET | `/api/stacks/{name}/agent/shell` | — | WebSocket upgrade → interactive terminal (PTY) |
+| GET | `/api/stacks/{name}/agent/nomad-jobs` | — | Nomad job list JSON (proxied) |
 
 ### Port Forwarding (requires auth, TCP proxy through Nebula mesh)
 

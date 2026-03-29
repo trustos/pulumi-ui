@@ -218,12 +218,16 @@ func (pf *PortForward) handleConn(ctx context.Context, local net.Conn) {
 
 	// local → remote
 	go func() {
-		io.Copy(remote, local)
+		if _, err := io.Copy(remote, local); err != nil {
+			log.Printf("[forward] %s: local→remote copy error: %v", pf.ID, err)
+		}
 		close(done)
 	}()
 
 	// remote → local
-	io.Copy(local, remote)
+	if _, err := io.Copy(local, remote); err != nil {
+		log.Printf("[forward] %s: remote→local copy error: %v", pf.ID, err)
+	}
 
 	<-done
 }

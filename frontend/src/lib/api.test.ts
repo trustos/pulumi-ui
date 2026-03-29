@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { getAgentHealth, getAgentServices, agentShellUrl, listPortForwards, startPortForward, stopPortForward } from './api';
+import { getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward } from './api';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -150,6 +150,43 @@ describe('agentShellUrl', () => {
 
     const url = agentShellUrl('my-stack');
     expect(url).toBe('wss://example.com/api/stacks/my-stack/agent/shell');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getNomadJobs
+// ---------------------------------------------------------------------------
+
+describe('getNomadJobs', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('fetches the correct URL', async () => {
+    const body = [{ name: 'traefik', status: 'running', type: 'service' }];
+    const fakeFetch = mockFetchOk(body);
+    globalThis.fetch = fakeFetch;
+
+    const result = await getNomadJobs('test');
+
+    const url = fakeFetch.mock.calls[0][0] as string;
+    expect(url).toBe('/api/stacks/test/agent/nomad-jobs');
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('traefik');
+  });
+
+  it('appends ?node=0 when nodeIndex=0', async () => {
+    const fakeFetch = mockFetchOk([]);
+    globalThis.fetch = fakeFetch;
+
+    await getNomadJobs('test', 0);
+
+    const url = fakeFetch.mock.calls[0][0] as string;
+    expect(url).toBe('/api/stacks/test/agent/nomad-jobs?node=0');
+  });
+
+  it('returns empty array on error (graceful)', async () => {
+    globalThis.fetch = mockFetchFail(502);
+    const result = await getNomadJobs('test');
+    expect(result).toEqual([]);
   });
 });
 

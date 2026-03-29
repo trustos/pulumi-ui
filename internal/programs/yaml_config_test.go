@@ -363,41 +363,98 @@ func TestParseApplications_NomadClusterYAML(t *testing.T) {
 	}
 	assert.True(t, keySet["traefik"], "catalog should include traefik")
 	assert.True(t, keySet["postgres"], "catalog should include postgres")
+	assert.True(t, keySet["postgres-backup"], "catalog should include postgres-backup")
 	assert.True(t, keySet["nocobase"], "catalog should include nocobase")
 	assert.True(t, keySet["github-runner"], "catalog should include github-runner")
 
-	// Verify dependency chain: nocobase → postgres, postgres → traefik
+	// Verify dependency chain: nocobase → postgres, postgres-backup → postgres, postgres → traefik
 	nocobase := findApp(apps, "nocobase")
 	require.NotNil(t, nocobase)
 	assert.Contains(t, nocobase.DependsOn, "postgres")
+
+	pgBackup := findApp(apps, "postgres-backup")
+	require.NotNil(t, pgBackup)
+	assert.Contains(t, pgBackup.DependsOn, "postgres")
 
 	postgres := findApp(apps, "postgres")
 	require.NotNil(t, postgres)
 	assert.Contains(t, postgres.DependsOn, "traefik")
 
-	// Traefik should be defaultOn
+	// Traefik should be defaultOn with port 80
 	traefik := findApp(apps, "traefik")
 	require.NotNil(t, traefik)
 	assert.True(t, traefik.DefaultOn)
+	assert.Equal(t, 80, traefik.Port)
+
+	// Postgres should have port 5432
+	assert.Equal(t, 5432, postgres.Port)
+
+	// NocoBase should have port 13000
+	assert.Equal(t, 13000, nocobase.Port)
 
 	// All should be workload tier
 	for _, a := range apps {
 		assert.Equal(t, ApplicationTier("workload"), a.Tier, "app %s should be workload tier", a.Key)
 	}
 
-	// Each app with configFields should have at least one required field
+	// Every app should have config fields (all workload apps need some config)
 	for _, a := range apps {
-		if len(a.ConfigFields) > 0 {
-			hasRequired := false
-			for _, f := range a.ConfigFields {
-				if f.Required {
-					hasRequired = true
-					break
-				}
-			}
-			assert.True(t, hasRequired, "app %s should have at least one required config field", a.Key)
-		}
+		assert.NotEmpty(t, a.ConfigFields, "app %s should have config fields", a.Key)
 	}
+
+	// Every app should have consulEnv with NOMAD_TOKEN
+	for _, a := range apps {
+		assert.NotEmpty(t, a.ConsulEnv, "app %s should have consulEnv", a.Key)
+		assert.Equal(t, "nomad/bootstrap-token", a.ConsulEnv["NOMAD_TOKEN"],
+			"app %s should read NOMAD_TOKEN from consul", a.Key)
+	}
+}
+
+func TestParseApplications_WithConsulEnv(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+meta:
+  applications:
+    - key: myapp
+      name: My App
+      tier: workload
+      target: first
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
+        DB_PASSWORD: "myapp/db-password"
+config:
+  foo:
+    type: string
+resources:
+  r:
+    type: oci:Core/vcn:Vcn
+`
+	apps := ParseApplications(yaml)
+	require.Len(t, apps, 1)
+	require.NotNil(t, apps[0].ConsulEnv)
+	assert.Equal(t, "nomad/bootstrap-token", apps[0].ConsulEnv["NOMAD_TOKEN"])
+	assert.Equal(t, "myapp/db-password", apps[0].ConsulEnv["DB_PASSWORD"])
+}
+
+func TestParseApplications_NoConsulEnv(t *testing.T) {
+	yaml := `name: test
+runtime: yaml
+meta:
+  applications:
+    - key: simple
+      name: Simple
+      tier: workload
+      target: first
+config:
+  foo:
+    type: string
+resources:
+  r:
+    type: oci:Core/vcn:Vcn
+`
+	apps := ParseApplications(yaml)
+	require.Len(t, apps, 1)
+	assert.Empty(t, apps[0].ConsulEnv)
 }
 
 func TestParseAgentAccess_NomadClusterYAML(t *testing.T) {

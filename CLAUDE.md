@@ -247,6 +247,17 @@ POSTGRES_PASSWORD={{ key "postgres/adminpassword" }}
 The deployer uses `template.New(name).Delims("[[", "]]")`. Do not use `<<` `>>` — they
 conflict with HCL heredoc syntax (`<<EOF`).
 
+### Consul KV secrets for Nomad job deployment (`consulEnv`)
+Each catalog application can declare `consulEnv` — a map of env var name → Consul KV
+path. Before `nomad job run`, the deployer reads each value from Consul and exports it.
+```yaml
+consulEnv:
+  NOMAD_TOKEN: "nomad/bootstrap-token"
+```
+Reads are optional (`2>/dev/null || true`). All nomad-cluster workload apps declare
+`NOMAD_TOKEN` since Nomad ACLs are enabled. Other apps can declare additional secrets
+(e.g., `DB_PASSWORD: "myapp/db-password"`).
+
 ---
 
 ## Coding Principles (summary)

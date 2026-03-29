@@ -34,8 +34,10 @@ type pulumiMetaApp struct {
 	Target       string            `yaml:"target"`
 	Required     bool              `yaml:"required"`
 	DefaultOn    bool              `yaml:"defaultOn"`
-	DependsOn    []string          `yaml:"dependsOn"`
-	ConfigFields []pulumiMetaAppCF `yaml:"configFields"`
+	DependsOn    []string           `yaml:"dependsOn"`
+	ConfigFields []pulumiMetaAppCF  `yaml:"configFields"`
+	ConsulEnv    map[string]string  `yaml:"consulEnv"`
+	Port         int                `yaml:"port"`
 }
 
 type pulumiMetaAppCF struct {
@@ -302,6 +304,8 @@ func ParseApplications(yamlBody string) []ApplicationDef {
 			Required:    ma.Required,
 			DefaultOn:   ma.DefaultOn,
 			DependsOn:   ma.DependsOn,
+			ConsulEnv:   ma.ConsulEnv,
+			Port:        ma.Port,
 		}
 		for _, cf := range ma.ConfigFields {
 			fieldType := cf.Type

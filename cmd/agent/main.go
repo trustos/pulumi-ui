@@ -43,6 +43,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /services", handleServices)
+	mux.HandleFunc("GET /nomad-jobs", handleNomadJobs)
 	mux.HandleFunc("POST /exec", handleExec)
 	mux.HandleFunc("POST /upload", handleUpload)
 	mux.HandleFunc("GET /shell", handleShell)
@@ -129,6 +130,76 @@ func handleServices(w http.ResponseWriter, r *http.Request) {
 		results = append(results, serviceStatus{
 			Name:   u,
 			Active: strings.TrimSpace(string(out)),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}
+
+// --- Nomad Jobs endpoint ---
+
+type nomadJobSummary struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Type   string `json:"type"`
+}
+
+func handleNomadJobs(w http.ResponseWriter, r *http.Request) {
+	// Read Nomad token from bootstrap file or Consul KV.
+	token := ""
+	if b, err := os.ReadFile("/etc/nomad.d/nomad-bootstrap-token"); err == nil {
+		var parsed struct {
+			SecretID string `json:"SecretID"`
+		}
+		if json.Unmarshal(b, &parsed) == nil && parsed.SecretID != "" {
+			token = parsed.SecretID
+		}
+	}
+	if token == "" {
+		if out, err := exec.Command("consul", "kv", "get", "nomad/bootstrap-token").Output(); err == nil {
+			token = strings.TrimSpace(string(out))
+		}
+	}
+
+	// Query Nomad HTTP API.
+	req, _ := http.NewRequestWithContext(r.Context(), "GET", "http://localhost:4646/v1/jobs?meta=false", nil)
+	if token != "" {
+		req.Header.Set("X-Nomad-Token", token)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "nomad API unreachable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		http.Error(w, fmt.Sprintf("nomad API error (%d): %s", resp.StatusCode, string(body)), resp.StatusCode)
+		return
+	}
+
+	// Parse the Nomad job list response (array of job objects).
+	var nomadJobs []struct {
+		Name   string `json:"Name"`
+		ID     string `json:"ID"`
+		Status string `json:"Status"`
+		Type   string `json:"Type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&nomadJobs); err != nil {
+		http.Error(w, "parse nomad response: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	results := make([]nomadJobSummary, 0, len(nomadJobs))
+	for _, j := range nomadJobs {
+		results = append(results, nomadJobSummary{
+			Name:   j.ID,
+			Status: j.Status,
+			Type:   j.Type,
 		})
 	}
 

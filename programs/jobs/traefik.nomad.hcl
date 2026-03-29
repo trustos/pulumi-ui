@@ -16,16 +16,29 @@ job "traefik" {
 
     task "init-dirs" {
       driver = "raw_exec"
-      lifecycle { hook = "prestart" }
+      lifecycle {
+        hook = "prestart"
+      }
       config {
         command = "bash"
         args    = ["-c", "mkdir -p /opt/traefik/acme /opt/traefik/dynamic && chmod 600 /opt/traefik/acme"]
       }
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "traefik" {
       driver = "docker"
+
+      template {
+        data = <<EOH
+TRAEFIK_TOKEN={{ key "nomad/bootstrap-token" }}
+EOH
+        destination = "secrets/env"
+        env         = true
+      }
 
       template {
         data = <<EOF
@@ -50,6 +63,7 @@ providers:
   nomad:
     endpoint:
       address: "http://localhost:4646"
+      token: {{ key "nomad/bootstrap-token" }}
     watch: true
     namespaces:
       - "default"
@@ -71,8 +85,9 @@ EOF
       }
 
       config {
-        image = "traefik:v3.4"
-        ports = ["http", "https"]
+        image        = "traefik:v3.4"
+        network_mode = "host"
+        ports        = ["http", "https"]
         mounts = [
           { type = "bind", source = "local/traefik.yaml", target = "/etc/traefik/traefik.yaml", readonly = true },
           { type = "bind", source = "/opt/traefik/acme",    target = "/etc/traefik/acme",         readonly = false },

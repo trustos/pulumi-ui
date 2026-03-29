@@ -47,6 +47,8 @@ export interface ApplicationDef {
   defaultOn: boolean;
   dependsOn?: string[];
   configFields?: ConfigField[];
+  consulEnv?: Record<string, string>;
+  port?: number;
 }
 
 export interface ProgramMeta {
@@ -196,6 +198,12 @@ export interface OciImportResult {
   accountName: string;
   accountId?: string;
   error?: string;
+}
+
+export interface NomadJob {
+  name: string;
+  status: string;
+  type: string;
 }
 
 export interface PortForward {

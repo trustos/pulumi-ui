@@ -102,6 +102,40 @@ func (h *Handler) AgentServices(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
+// AgentNomadJobs proxies a Nomad job list request to the agent.
+// Accepts an optional ?node=N query parameter to target a specific node.
+func (h *Handler) AgentNomadJobs(w http.ResponseWriter, r *http.Request) {
+	stackName := chi.URLParam(r, "name")
+
+	var tunnel *mesh.Tunnel
+	var err error
+	if nodeStr := r.URL.Query().Get("node"); nodeStr != "" {
+		nodeIndex, parseErr := strconv.Atoi(nodeStr)
+		if parseErr != nil {
+			http.Error(w, "invalid node index", http.StatusBadRequest)
+			return
+		}
+		tunnel, err = h.MeshManager.GetTunnelForNode(stackName, nodeIndex)
+	} else {
+		tunnel, err = h.MeshManager.GetTunnel(stackName)
+	}
+	if err != nil {
+		http.Error(w, "mesh tunnel: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	resp, err := agentRequest(r.Context(), tunnel, "GET", "/nomad-jobs", nil)
+	if err != nil {
+		http.Error(w, "agent unreachable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
 // AgentExec proxies a command execution to the agent, streaming output via SSE.
 func (h *Handler) AgentExec(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")

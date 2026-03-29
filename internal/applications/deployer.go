@@ -3,6 +3,8 @@ package applications
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -62,23 +64,29 @@ func (d *Deployer) DeployApps(
 		return nil
 	}
 
+	var failed []string
 	for _, app := range workloadApps {
 		send("output", fmt.Sprintf("Deploying %s...", app.Name))
 
 		// Upload the rendered job template to the agent.
 		if err := d.uploadJobFile(ctx, tunnel, app, appConfig, send); err != nil {
 			send("error", fmt.Sprintf("Failed to upload job file for %s: %v", app.Name, err))
+			failed = append(failed, app.Key)
 			continue
 		}
 
 		// Execute `nomad job run` on the agent.
 		if err := d.deployWorkload(ctx, tunnel, app, send); err != nil {
 			send("error", fmt.Sprintf("Failed to deploy %s: %v", app.Name, err))
+			failed = append(failed, app.Key)
 			continue
 		}
 		send("output", fmt.Sprintf("%s deployed successfully.", app.Name))
 	}
 
+	if len(failed) > 0 {
+		return fmt.Errorf("%d application(s) failed to deploy: %s", len(failed), strings.Join(failed, ", "))
+	}
 	return nil
 }
 
@@ -157,10 +165,29 @@ func (d *Deployer) uploadJobFile(
 			data[strings.TrimPrefix(k, prefix)] = v
 		}
 	}
-	// Also apply defaults from the app's config fields.
+	// Ensure all declared config fields exist in data (with defaults or empty).
 	for _, cf := range app.ConfigFields {
-		if _, ok := data[cf.Key]; !ok && cf.Default != "" {
-			data[cf.Key] = cf.Default
+		if _, ok := data[cf.Key]; !ok {
+			data[cf.Key] = cf.Default // empty string if no default
+		}
+	}
+
+	// Auto-generate secrets for empty fields whose key ends with Password,
+	// Key, or Secret. Persist generated values back to appConfig so they
+	// survive re-deploys (the engine saves appConfig after deployment).
+	for key, val := range data {
+		if val == "" && isSecretField(key) {
+			generated := generateSecret()
+			data[key] = generated
+			appConfig[prefix+key] = generated // persist back
+			send("output", fmt.Sprintf("  Auto-generated %s.%s", app.Key, key))
+		}
+	}
+
+	// Validate all required config fields have non-empty values.
+	for _, cf := range app.ConfigFields {
+		if cf.Required && data[cf.Key] == "" {
+			return fmt.Errorf("required config field %q is empty", cf.Key)
 		}
 	}
 
@@ -208,12 +235,25 @@ func (d *Deployer) deployWorkload(
 	app programs.ApplicationDef,
 	send LogFunc,
 ) error {
+	jobFile := fmt.Sprintf("/opt/nomad-jobs/%s.nomad.hcl", app.Key)
+
+	// Build a shell command that reads secrets from Consul KV into env vars
+	// before running the Nomad job. Each app can declare consulEnv mappings.
+	// Values are shell-quoted to prevent injection.
+	var envExports string
+	for envVar, kvPath := range app.ConsulEnv {
+		if !isValidShellIdentifier(envVar) || !isValidKVPath(kvPath) {
+			return fmt.Errorf("invalid consulEnv entry: %s=%s", envVar, kvPath)
+		}
+		envExports += fmt.Sprintf("export %s=$(consul kv get '%s' 2>/dev/null || true) && ", envVar, kvPath)
+	}
+
 	execReq := struct {
 		Command string   `json:"command"`
 		Args    []string `json:"args"`
 	}{
-		Command: "nomad",
-		Args:    []string{"job", "run", fmt.Sprintf("/opt/nomad-jobs/%s.nomad.hcl", app.Key)},
+		Command: "bash",
+		Args:    []string{"-c", envExports + "nomad job run " + jobFile},
 	}
 
 	body, _ := json.Marshal(execReq)
@@ -231,18 +271,35 @@ func (d *Deployer) deployWorkload(
 	}
 	defer resp.Body.Close()
 
-	// Stream the output.
+	// Stream the output and detect the exit code marker (---EXIT:N---).
+	var output strings.Builder
 	buf := make([]byte, 4096)
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			send("output", string(buf[:n]))
+			chunk := string(buf[:n])
+			output.WriteString(chunk)
+			send("output", chunk)
 		}
 		if readErr == io.EOF {
 			break
 		}
 		if readErr != nil {
 			return fmt.Errorf("read exec output: %w", readErr)
+		}
+	}
+
+	// Check for non-zero exit code in the output (agent sends ---EXIT:N---).
+	full := output.String()
+	if idx := strings.Index(full, "---EXIT:"); idx >= 0 {
+		marker := full[idx:] // "---EXIT:1---\n..."
+		if end := strings.Index(marker, "---\n"); end > 8 {
+			code := marker[8:end]
+			if code != "0" {
+				return fmt.Errorf("nomad job run exited with code %s", code)
+			}
+		} else if !strings.Contains(marker, "---EXIT:0---") {
+			return fmt.Errorf("nomad job run exited with non-zero status")
 		}
 	}
 
@@ -261,4 +318,57 @@ func filterWorkloads(catalog []programs.ApplicationDef, selected map[string]bool
 		}
 	}
 	return result
+}
+
+// isSecretField returns true if the config field key looks like a secret
+// that should be auto-generated when empty.
+func isSecretField(key string) bool {
+	lower := strings.ToLower(key)
+	return strings.HasSuffix(lower, "password") ||
+		strings.HasSuffix(lower, "key") ||
+		strings.HasSuffix(lower, "secret") ||
+		strings.HasSuffix(lower, "token")
+}
+
+// generateSecret returns a 32-character hex string from crypto/rand.
+func generateSecret() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "change-me-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// isValidShellIdentifier checks that a string is safe for use as a shell
+// variable name (alphanumeric + underscore, starts with letter or underscore).
+func isValidShellIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range s {
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_' {
+			continue
+		}
+		if i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// isValidKVPath checks that a Consul KV path contains only safe characters
+// (alphanumeric, /, -, _, .).
+func isValidKVPath(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '/' || c == '-' || c == '_' || c == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }

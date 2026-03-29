@@ -1,4 +1,4 @@
-import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward } from './types';
+import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob } from './types';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -538,6 +538,14 @@ export async function getAgentServices(stackName: string, nodeIndex?: number): P
   const url = nodeIndex !== undefined ? `${base}?node=${nodeIndex}` : base;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getNomadJobs(stackName: string, nodeIndex?: number): Promise<NomadJob[]> {
+  const base = `/api/stacks/${encodeURIComponent(stackName)}/agent/nomad-jobs`;
+  const url = nodeIndex !== undefined ? `${base}?node=${nodeIndex}` : base;
+  const res = await fetch(url);
+  if (!res.ok) return []; // graceful — nomad might not be running yet
   return res.json();
 }
 

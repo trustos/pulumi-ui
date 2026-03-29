@@ -582,6 +582,18 @@ func (h *Handler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
 	opCtx := context.Background()
 	status := h.Engine.DeployApps(opCtx, stackName, cfg.Metadata.Program, cfg.Applications, cfg.AppConfig, logSend)
 
+	// Persist any auto-generated secrets back to the stack config so they
+	// survive re-deploys. The deployer mutates appConfig in place.
+	if yamlStr, marshalErr := cfg.ToYAML(); marshalErr == nil {
+		if row, _ := h.Stacks.Get(stackName); row != nil {
+			if err := h.Stacks.Upsert(stackName, row.Program, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID); err != nil {
+				log.Printf("[deploy-apps] WARNING: failed to persist appConfig for %s: %v (auto-generated secrets may be lost on re-deploy)", stackName, err)
+			}
+		}
+	} else {
+		log.Printf("[deploy-apps] WARNING: failed to marshal config for %s: %v", stackName, marshalErr)
+	}
+
 	h.Ops.Finish(opID, status)
 	send(engine.SSEEvent{Type: "done", Data: status})
 }

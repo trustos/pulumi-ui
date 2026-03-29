@@ -616,7 +616,9 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 					log.Printf("[agent-discover] failed to store node %d NLB addr for %s: %v", i, stackName, err)
 				}
 				if i == 0 {
-					_ = e.connStore.UpdateAgentRealIP(stackName, addr)
+					if err := e.connStore.UpdateAgentRealIP(stackName, addr); err != nil {
+						log.Printf("[agent-discover] WARNING: failed to update agent real IP for %s: %v", stackName, err)
+					}
 				}
 			}
 			send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: NLB %s (%d node(s))", nlbIP, numDeployedNodes)})
@@ -645,7 +647,9 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 					send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: node %d at %s", i, ip)})
 					// Also store node 0's IP as the legacy single-agent IP.
 					if i == 0 {
-						_ = e.connStore.UpdateAgentRealIP(stackName, ip)
+						if updateErr := e.connStore.UpdateAgentRealIP(stackName, ip); updateErr != nil {
+							log.Printf("[agent-discover] WARNING: failed to update agent real IP for %s: %v", stackName, updateErr)
+						}
 					}
 					foundAny = true
 				}
@@ -1183,6 +1187,11 @@ func (e *Engine) DeployApps(ctx context.Context, stackName, programName string, 
 	if isAppProvider && len(catalog) > 0 {
 		logFn := func(eventType, message string) {
 			send(SSEEvent{Type: eventType, Data: message})
+			if eventType == "error" {
+				log.Printf("[deploy-apps] %s: ERROR: %s", stackName, message)
+			} else {
+				log.Printf("[deploy-apps] %s: %s", stackName, message)
+			}
 		}
 		if err := e.deployer.DeployApps(opCtx, stackName, selectedApps, appConfig, catalog, logFn); err != nil {
 			if opCtx.Err() != nil {

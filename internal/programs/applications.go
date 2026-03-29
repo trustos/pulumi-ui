@@ -26,8 +26,10 @@ type ApplicationDef struct {
 	Target       TargetMode      `json:"target"`
 	Required     bool            `json:"required"`               // always deployed, cannot be deselected
 	DefaultOn    bool            `json:"defaultOn"`              // pre-selected in UI when not required
-	DependsOn    []string        `json:"dependsOn,omitempty"`    // keys of other ApplicationDefs
-	ConfigFields []ConfigField   `json:"configFields,omitempty"` // app-specific config fields
+	DependsOn    []string           `json:"dependsOn,omitempty"`    // keys of other ApplicationDefs
+	ConfigFields []ConfigField      `json:"configFields,omitempty"` // app-specific config fields
+	ConsulEnv    map[string]string  `json:"consulEnv,omitempty"`    // env var name → Consul KV path (read before job run)
+	Port         int                `json:"port,omitempty"`         // default port for port forwarding (e.g., 80 for traefik)
 }
 
 // ApplicationProvider is an optional interface a Program can implement to expose

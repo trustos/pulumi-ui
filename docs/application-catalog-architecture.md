@@ -432,9 +432,14 @@ Bootstrap services (Docker, Consul, Nomad, Nebula, Agent) are installed by cloud
 
 1. Job templates are embedded in the server binary (`programs/jobs/*.nomad.hcl`)
 2. Templates use `[[` `]]` delimiters for Go template variables (e.g., `[[.acmeEmail]]`). Standard `{{ }}` is reserved for Nomad template expressions (e.g., `{{ key "postgres/adminuser" }}`). This separation prevents the Go template engine from interpreting Nomad expressions.
-3. The deployer renders templates with values from `appConfig` (stored per-stack in SQLite)
-4. Rendered job files are uploaded to the agent via `POST /upload` (→ `/opt/nomad-jobs/{key}.nomad.hcl`)
-5. The deployer executes `nomad job run /opt/nomad-jobs/{key}.nomad.hcl` via `POST /exec`
+3. The deployer extracts per-app config from `appConfig` (stored per-stack in SQLite) using the `appKey.fieldKey` prefix convention
+4. **Config field resolution order**: user value → default → auto-generated (for secret fields)
+5. **Secret auto-generation**: fields ending in `Password`, `Key`, `Secret`, or `Token` are auto-generated (32-char hex) if empty. Generated values are persisted back to `appConfig` so they survive re-deploys.
+6. **Required field validation**: the deployer rejects deployment if any required config field is empty after resolution
+7. **Consul KV secrets** (`consulEnv`): before running the job, the deployer reads env vars from Consul KV paths declared per-app. Example: `NOMAD_TOKEN` from `nomad/bootstrap-token`. Reads are optional — missing keys silently default to empty.
+8. Rendered job files are uploaded to the agent via `POST /upload` (→ `/opt/nomad-jobs/{key}.nomad.hcl`)
+9. The deployer executes `nomad job run` via `POST /exec` and checks the exit code (`---EXIT:N---` marker). Non-zero exits are reported as errors.
+10. All deploy output is logged to the server terminal with `[deploy-apps]` prefix
 
 ### Managing applications on deployed stacks
 
@@ -457,12 +462,28 @@ meta:
       tier: workload
       target: first
       defaultOn: true
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
       configFields:
         - key: acmeEmail
           label: ACME Email
           type: text
           required: true
 ```
+
+The `consulEnv` field maps environment variable names to Consul KV paths. Before running `nomad job run`, the deployer reads each value from Consul and exports it as an env var. This is how the Nomad ACL token reaches the CLI without hardcoding it in the deployer.
+
+The `port` field (optional) declares the default port for port forwarding. The Applications tab shows a quick-forward button next to running apps that have a port defined.
+
+### Live application status
+
+The agent exposes `GET /nomad-jobs` which queries the local Nomad HTTP API and returns running jobs. The Applications tab uses this to show live status badges:
+- **running** (green) — Nomad job is active with healthy allocations
+- **pending** (yellow) — job submitted but allocations not yet placed
+- **dead** — job stopped or failed
+- **not running** — app is selected but no Nomad job exists
+
+Infrastructure services (docker, consul, nomad, nebula) are shown separately as read-only status indicators from the `GET /agent/services` endpoint (systemd service status).
 
 Parsed by `ParseApplications()` in `internal/programs/yaml_config.go`. The `YAMLProgram` type implements both `AgentAccessProvider` and `ApplicationProvider`.
 

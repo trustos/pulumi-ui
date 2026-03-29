@@ -93,9 +93,6 @@
                                 </p>
                             {/if}
                         </div>
-                        <span class="text-xs text-muted-foreground shrink-0"
-                            >{app.target}</span
-                        >
                     </label>
                 {/each}
             </div>
@@ -133,9 +130,6 @@
                                 </p>
                             {/if}
                         </div>
-                        <span class="text-xs text-muted-foreground shrink-0"
-                            >{app.target}</span
-                        >
                     </label>
                 {/each}
             </div>

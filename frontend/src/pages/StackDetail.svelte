@@ -10,8 +10,8 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, agentShellUrl, listPortForwards, startPortForward, stopPortForward, putStack } from '$lib/api';
-  import type { StackInfo, OciAccount, ProgramMeta, ApplicationDef, AgentHealth, AgentService, PortForward } from '$lib/types';
+  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward, putStack } from '$lib/api';
+  import type { StackInfo, OciAccount, ProgramMeta, ApplicationDef, AgentHealth, AgentService, NomadJob, PortForward } from '$lib/types';
   import EditStackDialog from '$lib/components/EditStackDialog.svelte';
   import WebTerminal from '$lib/components/WebTerminal.svelte';
 
@@ -45,12 +45,13 @@
   let isSavingApps = $state(false);
   let appSaveError = $state('');
 
-  // Sync editApps/editAppConfig from loaded info
+  // Sync editApps/editAppConfig from loaded info (re-sync when info changes
+  // and user hasn't made local edits)
   $effect(() => {
-    if (info?.applications && Object.keys(editApps).length === 0) {
+    if (info?.applications && !appConfigDirty) {
       editApps = { ...info.applications };
     }
-    if (info?.appConfig && Object.keys(editAppConfig).length === 0) {
+    if (info?.appConfig && !appConfigDirty) {
       editAppConfig = { ...info.appConfig };
     }
   });
@@ -117,6 +118,7 @@
   let nodeErrorMap = $state<Map<number, string>>(new Map());
   // Services come from the first node (index 0) or the single mesh node
   let agentServices = $state<AgentService[]>([]);
+  let nomadJobs = $state<NomadJob[]>([]);
   let agentError = $state('');
   // Terminal sessions (multi-tab)
   interface TermSession { id: string; nodeIndex: number; label: string; }
@@ -162,14 +164,10 @@
   let fwdStarting = $state(false);
   let fwdOpen = $state(false);
 
-  // Well-known service → UI port mappings for quick port forwarding
-  const SERVICE_PORTS: Record<string, number> = {
+  // Infrastructure service ports (not catalog apps — those use ApplicationDef.port)
+  const INFRA_PORTS: Record<string, number> = {
     nomad: 4646,
     consul: 8500,
-    traefik: 80,
-    postgres: 5432,
-    pgadmin: 80,
-    nocobase: 13000,
   };
 
   const selectedApps = $derived<Record<string, boolean>>(info?.applications ?? {});
@@ -240,12 +238,13 @@
       });
       nodeHealthMap = newHealth;
       nodeErrorMap = newErrors;
-      // Services from node 0 (primary)
+      // Services + Nomad jobs from node 0 (primary)
       try {
         agentServices = await getAgentServices(name, nodes[0].nodeIndex);
       } catch {
         agentServices = [];
       }
+      nomadJobs = await getNomadJobs(name, nodes[0].nodeIndex);
     } else {
       // Single-node (legacy mesh path)
       try {
@@ -254,10 +253,12 @@
         nodeHealthMap = new Map([[0, health]]);
         nodeErrorMap = new Map([[0, '']]);
         agentServices = await getAgentServices(name);
+        nomadJobs = await getNomadJobs(name);
       } catch (err) {
         agentError = err instanceof Error ? err.message : String(err);
         nodeHealthMap = new Map([[0, null]]);
         agentServices = [];
+        nomadJobs = [];
       }
     }
   }
@@ -340,6 +341,24 @@
     loadForwards();
     listAccounts().then((a) => { accounts = a; }).catch(() => {});
     listPrograms().then((p) => { programs = p; }).catch(() => {});
+  });
+
+  // Auto-load agent status when stack has agent access and infra is deployed.
+  // Runs after info is loaded (hasAgent and isInfraDeployed derive from info).
+  let agentStatusLoaded = $state(false);
+  $effect(() => {
+    if (hasAgent && isInfraDeployed && !agentStatusLoaded) {
+      agentStatusLoaded = true;
+      loadAgentStatus();
+    }
+    // Clear stale agent data when infra is destroyed
+    if (!isInfraDeployed && agentStatusLoaded) {
+      agentServices = [];
+      nomadJobs = [];
+      nodeHealthMap = new Map();
+      nodeErrorMap = new Map();
+      agentStatusLoaded = false;
+    }
   });
 
   $effect(() => {
@@ -696,74 +715,103 @@
     <!-- Applications tab -->
     {#if hasApps}
       <Tabs.Content value="applications" class="flex-1 flex flex-col min-h-0">
-        <div class="mt-2 space-y-4 max-w-3xl">
-          <!-- Mesh status -->
-          <Card.Root>
-            <Card.Header class="pb-3">
-              <Card.Title class="text-base flex items-center gap-2">
-                Mesh Connectivity
-                {#if info?.mesh?.connected}
-                  <Badge variant="default">Connected</Badge>
-                {:else if info?.mesh}
-                  <Badge variant="secondary">Not connected</Badge>
-                {:else}
-                  <Badge variant="secondary">No PKI</Badge>
-                {/if}
-              </Card.Title>
-            </Card.Header>
-            <Card.Content class="space-y-2 text-sm">
-              {#if info?.mesh?.lighthouseAddr}
-                <div class="flex justify-between">
-                  <span class="text-muted-foreground">Lighthouse</span>
-                  <span class="font-mono text-xs">{info.mesh.lighthouseAddr}</span>
-                </div>
-              {/if}
-              {#if info?.mesh?.agentNebulaIp}
-                <div class="flex justify-between">
-                  <span class="text-muted-foreground">Agent IP</span>
-                  <span class="font-mono text-xs">{info.mesh.agentNebulaIp}</span>
-                </div>
-              {/if}
-              {#if info?.mesh?.lastSeenAt}
-                <div class="flex justify-between">
-                  <span class="text-muted-foreground">Last seen</span>
-                  <span>{new Date(info.mesh.lastSeenAt * 1000).toLocaleString()}</span>
-                </div>
-              {/if}
-              {#if !info?.mesh?.connected}
-                <p class="text-xs text-muted-foreground">
-                  {info?.mesh ? 'Deploy infrastructure to establish mesh connectivity.' : 'No Nebula PKI provisioned yet.'}
-                </p>
-              {/if}
-            </Card.Content>
-          </Card.Root>
+        {#if !isInfraDeployed}
+          <div class="flex-1 flex items-center justify-center">
+            <div class="text-center space-y-2">
+              <p class="text-sm font-medium">Infrastructure not deployed</p>
+              <p class="text-xs text-muted-foreground">Deploy this stack first, then install applications.</p>
+            </div>
+          </div>
+        {:else}
+        <div class="mt-2 space-y-4 max-w-3xl overflow-y-auto">
+          <!-- Infrastructure services (read-only) -->
+          {#if agentServices.length > 0}
+            <div class="border rounded-lg px-4 py-3">
+              <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Infrastructure</p>
+              <div class="flex items-center gap-3 flex-wrap">
+                {#each agentServices as svc}
+                  {@const infraPort = INFRA_PORTS[svc.name]}
+                  {@const infraFwd = infraPort ? portForwards.find(f => f.remotePort === infraPort) : null}
+                  <span class="inline-flex items-center gap-1.5 text-sm">
+                    <span class="w-2 h-2 rounded-full {svc.active === 'active' ? 'bg-green-500' : 'bg-zinc-500'}"></span>
+                    <span class="{svc.active === 'active' ? 'text-foreground' : 'text-muted-foreground'}">{svc.name}</span>
+                    {#if infraPort && svc.active === 'active'}
+                      {#if infraFwd}
+                        <a href="http://localhost:{infraFwd.localPort}" target="_blank" rel="noopener" class="rounded bg-primary/10 text-primary px-1.5 py-0.5 text-xs font-mono hover:bg-primary/20 transition-colors">:{infraFwd.localPort}</a>
+                        <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => { if (infraFwd) doStopForward(infraFwd.id); }}>×</button>
+                      {:else}
+                        <button class="rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-muted-foreground hover:text-foreground hover:bg-accent transition-colors" onclick={() => { fwdRemotePort = String(infraPort); doStartForward(); }} disabled={fwdStarting}>:{infraPort}</button>
+                      {/if}
+                    {/if}
+                  </span>
+                {/each}
+              </div>
+            </div>
+          {/if}
 
-          <!-- Interactive application catalog -->
+          <!-- Application catalog with live Nomad status -->
           {#if currentProgram?.applications}
             {@const catalog = currentProgram.applications}
             <div class="space-y-2">
+              <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Applications</p>
               {#each catalog.filter(a => a.tier === 'workload') as app}
                 {@const isSelected = editApps[app.key] ?? false}
                 {@const isDep = catalog.some(other => editApps[other.key] && other.dependsOn?.includes(app.key))}
-                <div class="border rounded-lg overflow-hidden">
-                  <label class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/30 transition-colors">
+                {@const nomadJob = nomadJobs.find(j => j.name === app.key)}
+                {@const isRunningJob = nomadJob?.status === 'running'}
+                {@const fwdForApp = app.port ? portForwards.find(f => f.remotePort === app.port) : null}
+                <div class="border rounded-lg overflow-hidden {isRunningJob ? 'border-green-500/30' : ''}">
+                  <div class="flex items-center gap-3 px-4 py-3">
                     <input
                       type="checkbox"
                       checked={isSelected}
                       disabled={app.required || isDep}
                       onchange={() => toggleApp(app.key)}
-                      class="h-4 w-4 rounded border-border"
+                      class="h-4 w-4 rounded border-border cursor-pointer"
                     />
                     <div class="flex-1 min-w-0">
-                      <span class="text-sm font-medium">{app.name}</span>
-                      {#if app.dependsOn && app.dependsOn.length > 0}
-                        <span class="text-xs text-muted-foreground ml-1.5">requires {app.dependsOn.join(', ')}</span>
-                      {/if}
+                      <div class="flex items-center gap-1.5 flex-wrap">
+                        <span class="text-sm font-medium">{app.name}</span>
+                        {#if isRunningJob}
+                          <Badge variant="default" class="text-xs">running</Badge>
+                        {:else if nomadJob?.status === 'pending'}
+                          <Badge variant="secondary" class="text-xs">pending</Badge>
+                        {:else if nomadJob?.status === 'dead' && nomadJob.type === 'batch'}
+                          <Badge variant="secondary" class="text-xs">completed</Badge>
+                        {:else if nomadJob}
+                          <Badge variant="destructive" class="text-xs">{nomadJob.status}</Badge>
+                        {:else if isSelected && info?.applications?.[app.key]}
+                          <span class="text-xs text-muted-foreground">not running</span>
+                        {/if}
+                        {#if app.dependsOn && app.dependsOn.length > 0}
+                          <span class="text-xs text-muted-foreground">requires {app.dependsOn.join(', ')}</span>
+                        {/if}
+                      </div>
                       {#if app.description}
                         <p class="text-xs text-muted-foreground mt-0.5">{app.description}</p>
                       {/if}
                     </div>
-                  </label>
+                    <!-- Port forward button (only for running apps with a port) -->
+                    {#if app.port && isRunningJob}
+                      {#if fwdForApp}
+                        <a
+                          href="http://localhost:{fwdForApp.localPort}"
+                          target="_blank"
+                          rel="noopener"
+                          class="rounded bg-primary/10 text-primary px-2 py-1 text-xs font-mono hover:bg-primary/20 transition-colors"
+                        >:{fwdForApp.localPort}</a>
+                        <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => { if (fwdForApp) doStopForward(fwdForApp.id); }}>×</button>
+                      {:else}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          class="h-7 px-2 text-xs font-mono text-muted-foreground"
+                          onclick={() => { fwdRemotePort = String(app.port); doStartForward(); }}
+                          disabled={fwdStarting}
+                        >:{app.port} →</Button>
+                      {/if}
+                    {/if}
+                  </div>
                   {#if isSelected && app.configFields && app.configFields.length > 0}
                     <div class="px-4 pb-3 pt-1 border-t bg-muted/20 space-y-2">
                       {#each app.configFields as field}
@@ -799,14 +847,22 @@
               >
                 {isSavingApps ? 'Saving...' : 'Save'}
               </Button>
+              <Button
+                size="sm"
+                onclick={saveAndDeployApps}
+                disabled={isDeployingApps || isRunning || notDeployed || isSavingApps}
+              >
+                {isDeployingApps ? 'Deploying...' : 'Save & Deploy'}
+              </Button>
+            {:else}
+              <Button
+                size="sm"
+                onclick={saveAndDeployApps}
+                disabled={isDeployingApps || isRunning || notDeployed || isSavingApps}
+              >
+                {isDeployingApps ? 'Deploying...' : 'Deploy Applications'}
+              </Button>
             {/if}
-            <Button
-              size="sm"
-              onclick={saveAndDeployApps}
-              disabled={isDeployingApps || isRunning || notDeployed || isSavingApps}
-            >
-              {isDeployingApps ? 'Deploying...' : appConfigDirty ? 'Save & Deploy' : 'Deploy Applications'}
-            </Button>
             {#if isDeployingApps}
               <Button variant="outline" size="sm" onclick={() => { deployAppCancelFn?.(); }}>Cancel</Button>
             {/if}
@@ -827,6 +883,7 @@
               {/each}
             </div>
           </div>
+        {/if}
         {/if}
       </Tabs.Content>
     {/if}
@@ -963,7 +1020,7 @@
               <!-- Services with port forward buttons -->
               {#if agentServices.length > 0}
                 {#each agentServices as svc}
-                  {@const svcPort = SERVICE_PORTS[svc.name]}
+                  {@const svcPort = INFRA_PORTS[svc.name]}
                   {@const isForwarded = svcPort ? portForwards.some(f => f.remotePort === svcPort) : false}
                   {@const fwdInfo = isForwarded ? portForwards.find(f => f.remotePort === svcPort) : null}
                   <span class="inline-flex items-center gap-1.5">
@@ -992,7 +1049,7 @@
               {/if}
 
               <!-- Non-service port forwards -->
-              {#each portForwards.filter(f => !Object.values(SERVICE_PORTS).includes(f.remotePort)) as fwd}
+              {#each portForwards.filter(f => !Object.values(INFRA_PORTS).includes(f.remotePort)) as fwd}
                 <span class="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono">
                   <a href="http://localhost:{fwd.localPort}" target="_blank" rel="noopener" class="text-primary hover:underline">localhost:{fwd.localPort}</a>
                   <span class="text-muted-foreground">→</span>

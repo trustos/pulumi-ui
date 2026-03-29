@@ -13,17 +13,24 @@ job "postgres" {
 
     task "init-dirs" {
       driver = "raw_exec"
-      lifecycle { hook = "prestart" }
+      lifecycle {
+        hook = "prestart"
+      }
       config {
         command = "bash"
         args    = ["-c", "mkdir -p /opt/postgres/data && chown -R 999:999 /opt/postgres/data"]
       }
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "init-secrets" {
       driver = "raw_exec"
-      lifecycle { hook = "prestart" }
+      lifecycle {
+        hook = "prestart"
+      }
       config {
         command = "bash"
         args = ["-c", <<-EOT
@@ -39,7 +46,10 @@ job "postgres" {
         EOT
         ]
       }
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "postgres" {
@@ -88,12 +98,17 @@ EOH
 
     task "init-dirs" {
       driver = "raw_exec"
-      lifecycle { hook = "prestart" }
+      lifecycle {
+        hook = "prestart"
+      }
       config {
         command = "bash"
         args    = ["-c", "mkdir -p /opt/postgres/pgadmin && chown -R 5050:5050 /opt/postgres/pgadmin"]
       }
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "pgadmin" {
