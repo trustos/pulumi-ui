@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward } from './api';
+import { getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward, setAppDomain, removeAppDomain } from './api';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -291,5 +291,62 @@ describe('stopPortForward', () => {
 
     const url = fakeFetch.mock.calls[0][0] as string;
     expect(url).toBe('/api/stacks/my%20stack/forward/fwd-1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setAppDomain
+// ---------------------------------------------------------------------------
+
+describe('setAppDomain', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('sends PUT with correct body', async () => {
+    const fakeFetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: () => Promise.resolve({}),
+    } as unknown as Response);
+    globalThis.fetch = fakeFetch;
+
+    await setAppDomain('my-stack', 'nocobase', 'nocobase.example.com');
+
+    const [url, opts] = fakeFetch.mock.calls[0];
+    expect(url).toBe('/api/stacks/my-stack/app-domains/nocobase');
+    expect(opts.method).toBe('PUT');
+    expect(JSON.parse(opts.body)).toEqual({ domain: 'nocobase.example.com' });
+  });
+
+  it('throws with error text on failure', async () => {
+    const fakeFetch = vi.fn().mockResolvedValue({
+      ok: false, status: 400, text: () => Promise.resolve('domain is required'),
+    } as unknown as Response);
+    globalThis.fetch = fakeFetch;
+
+    await expect(setAppDomain('my-stack', 'nocobase', '')).rejects.toThrow('domain is required');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// removeAppDomain
+// ---------------------------------------------------------------------------
+
+describe('removeAppDomain', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('sends DELETE to correct URL', async () => {
+    const fakeFetch = vi.fn().mockResolvedValue({
+      ok: true, status: 204,
+    } as unknown as Response);
+    globalThis.fetch = fakeFetch;
+
+    await removeAppDomain('my-stack', 'nocobase');
+
+    const [url, opts] = fakeFetch.mock.calls[0];
+    expect(url).toBe('/api/stacks/my-stack/app-domains/nocobase');
+    expect(opts.method).toBe('DELETE');
+  });
+
+  it('throws on non-200', async () => {
+    globalThis.fetch = mockFetchFail(404);
+    await expect(removeAppDomain('test', 'foo')).rejects.toThrow('HTTP 404');
   });
 });
