@@ -21,7 +21,7 @@ describe("NocoBase solution", () => {
     const result = nocobase.deriveConfig({ email: "admin@example.com" });
 
     expect(result.config.nodeCount).toBe("1");
-    expect(result.config.compartmentName).toBe("nomad-compartment");
+    expect(result.config.compartmentName).toBe("nocobase-nomad");
     expect(result.config.vcnCidr).toBe("10.0.0.0/16");
     expect(result.config.shape).toBe("VM.Standard.A1.Flex");
     expect(result.config.nomadVersion).toBeTruthy();
@@ -38,7 +38,7 @@ describe("NocoBase solution", () => {
 
   it("derives compartmentName default", () => {
     const result = nocobase.deriveConfig({});
-    expect(result.config.compartmentName).toBe("nomad-compartment");
+    expect(result.config.compartmentName).toBe("nocobase-nomad");
   });
 
   it("derives appConfig from email", () => {
@@ -122,7 +122,7 @@ describe("Nomad Cluster solution", () => {
 
   it("derives compartmentName default", () => {
     const result = nomad.deriveConfig({});
-    expect(result.config.compartmentName).toBe("nocobase-nomad");
+    expect(result.config.compartmentName).toBe("nomad-compartment");
   });
 
   it("passes email as acmeEmail", () => {

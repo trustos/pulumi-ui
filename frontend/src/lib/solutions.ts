@@ -63,7 +63,7 @@ const nocobaseSolution: SolutionCard = {
     return {
       config: {
         nodeCount: "1",
-        compartmentName: "nomad-compartment",
+        compartmentName: "nocobase-nomad",
         compartmentDescription: "Compartment for Nomad cluster",
         vcnCidr: "10.0.0.0/16",
         publicSubnetCidr: "10.0.1.0/24",
@@ -117,7 +117,7 @@ const nomadClusterSolution: SolutionCard = {
   deriveConfig: (input) => ({
     config: {
       nodeCount: "3",
-      compartmentName: "nocobase-nomad",
+      compartmentName: "nomad-compartment",
       compartmentDescription: "Compartment for Nomad cluster",
       vcnCidr: "10.0.0.0/16",
       publicSubnetCidr: "10.0.1.0/24",
