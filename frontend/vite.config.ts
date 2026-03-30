@@ -19,6 +19,15 @@ export default defineConfig({
   build: {
     outDir: '../cmd/server/frontend/dist',
     emptyOutDir: true,
+    chunkSizeWarningLimit: 800, // main chunk ~780KB after splitting monaco/xterm; workers are larger but async
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'monaco': ['monaco-editor', '@monaco-editor/loader'],
+          'xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links'],
+        },
+      },
+    },
   },
   server: {
     proxy: {

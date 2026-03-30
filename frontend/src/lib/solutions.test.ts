@@ -64,6 +64,33 @@ describe('NocoBase solution', () => {
     expect(required).toHaveLength(1);
     expect(required[0].key).toBe('email');
   });
+
+  it('does not include backupSchedule in deriveConfig (wizard handles it separately)', () => {
+    const result = nocobase.deriveConfig({ email: 'admin@test.com' });
+
+    // backupSchedule is added by the SolutionWizard component (hardcoded default '0 4 * * *'),
+    // NOT by deriveConfig. Verify it's absent from both config and appConfig.
+    expect(result.config).not.toHaveProperty('backupSchedule');
+    expect(result.appConfig).not.toHaveProperty('postgres-backup.backupSchedule');
+  });
+
+  it('includes all expected infrastructure config fields', () => {
+    const result = nocobase.deriveConfig({});
+    const configKeys = Object.keys(result.config);
+
+    // Verify all fields that the wizard initializes from are present
+    expect(configKeys).toContain('nodeCount');
+    expect(configKeys).toContain('compartmentName');
+    expect(configKeys).toContain('vcnCidr');
+    expect(configKeys).toContain('publicSubnetCidr');
+    expect(configKeys).toContain('privateSubnetCidr');
+    expect(configKeys).toContain('shape');
+    expect(configKeys).toContain('ocpusPerNode');
+    expect(configKeys).toContain('memoryGbPerNode');
+    expect(configKeys).toContain('bootVolSizeGb');
+    expect(configKeys).toContain('nomadVersion');
+    expect(configKeys).toContain('consulVersion');
+  });
 });
 
 describe('Nomad Cluster solution', () => {

@@ -163,6 +163,7 @@
   let fwdError = $state('');
   let fwdStarting = $state(false);
   let fwdOpen = $state(false);
+  let stoppingForwards = $state<Set<string>>(new Set());
 
   // Infrastructure service ports (not catalog apps — those use ApplicationDef.port)
   const INFRA_PORTS: Record<string, number> = {
@@ -291,11 +292,14 @@
   }
 
   async function doStopForward(id: string) {
+    stoppingForwards = new Set([...stoppingForwards, id]);
     try {
       await stopPortForward(name, id);
-      await loadForwards();
     } catch (err) {
       fwdError = err instanceof Error ? err.message : String(err);
+    } finally {
+      stoppingForwards = new Set([...stoppingForwards].filter(x => x !== id));
+      await loadForwards();
     }
   }
 
@@ -772,8 +776,12 @@
                     <span class="{svc.active === 'active' ? 'text-foreground' : 'text-muted-foreground'}">{svc.name}</span>
                     {#if infraPort && svc.active === 'active'}
                       {#if infraFwd}
-                        <a href="http://localhost:{infraFwd.localPort}" target="_blank" rel="noopener" class="rounded bg-primary/10 text-primary px-1.5 py-0.5 text-xs font-mono hover:bg-primary/20 transition-colors">:{infraFwd.localPort}</a>
-                        <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => { if (infraFwd) doStopForward(infraFwd.id); }}>×</button>
+                        {#if stoppingForwards.has(infraFwd.id)}
+                          <span class="rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-muted-foreground">stopping...</span>
+                        {:else}
+                          <a href="http://localhost:{infraFwd.localPort}" target="_blank" rel="noopener" class="rounded bg-primary/10 text-primary px-1.5 py-0.5 text-xs font-mono hover:bg-primary/20 transition-colors">:{infraFwd.localPort}</a>
+                          <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => { if (infraFwd) doStopForward(infraFwd.id); }}>×</button>
+                        {/if}
                       {:else}
                         <button class="rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-muted-foreground hover:text-foreground hover:bg-accent transition-colors" onclick={() => { fwdRemotePort = String(infraPort); doStartForward(); }} disabled={fwdStarting}>:{infraPort}</button>
                       {/if}
@@ -835,13 +843,17 @@
                         {#each allocatedPorts as port}
                           {@const fwd = portForwards.find(f => f.remotePort === port.value)}
                           {#if fwd}
-                            <a
-                              href="http://localhost:{fwd.localPort}"
-                              target="_blank"
-                              rel="noopener"
-                              class="rounded bg-primary/10 text-primary px-2 py-1 text-xs font-mono hover:bg-primary/20 transition-colors"
-                            >:{fwd.localPort}</a>
-                            <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => doStopForward(fwd.id)}>×</button>
+                            {#if stoppingForwards.has(fwd.id)}
+                              <span class="rounded bg-muted px-2 py-1 text-xs font-mono text-muted-foreground">stopping...</span>
+                            {:else}
+                              <a
+                                href="http://localhost:{fwd.localPort}"
+                                target="_blank"
+                                rel="noopener"
+                                class="rounded bg-primary/10 text-primary px-2 py-1 text-xs font-mono hover:bg-primary/20 transition-colors"
+                              >:{fwd.localPort}</a>
+                              <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => doStopForward(fwd.id)}>×</button>
+                            {/if}
                           {:else}
                             <Button
                               size="sm"
@@ -855,13 +867,17 @@
                       </div>
                     {:else if isRunningJob && effectivePort}
                       {#if fwdForApp}
-                        <a
-                          href="http://localhost:{fwdForApp.localPort}"
-                          target="_blank"
-                          rel="noopener"
-                          class="rounded bg-primary/10 text-primary px-2 py-1 text-xs font-mono hover:bg-primary/20 transition-colors"
-                        >:{fwdForApp.localPort}</a>
-                        <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => { if (fwdForApp) doStopForward(fwdForApp.id); }}>×</button>
+                        {#if stoppingForwards.has(fwdForApp.id)}
+                          <span class="rounded bg-muted px-2 py-1 text-xs font-mono text-muted-foreground">stopping...</span>
+                        {:else}
+                          <a
+                            href="http://localhost:{fwdForApp.localPort}"
+                            target="_blank"
+                            rel="noopener"
+                            class="rounded bg-primary/10 text-primary px-2 py-1 text-xs font-mono hover:bg-primary/20 transition-colors"
+                          >:{fwdForApp.localPort}</a>
+                          <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => { if (fwdForApp) doStopForward(fwdForApp.id); }}>×</button>
+                        {/if}
                       {:else}
                         <Button
                           size="sm"
@@ -1127,13 +1143,17 @@
                     <span class="text-muted-foreground">{svc.name}</span>
                     {#if svcPort && svc.active === 'active'}
                       {#if isForwarded && fwdInfo}
-                        <a
-                          href="http://localhost:{fwdInfo.localPort}"
-                          target="_blank"
-                          rel="noopener"
-                          class="rounded bg-primary/10 text-primary px-1.5 py-0.5 font-mono hover:bg-primary/20 transition-colors"
-                        >:{fwdInfo.localPort}</a>
-                        <button class="text-muted-foreground hover:text-destructive transition-colors" onclick={() => { if (fwdInfo) doStopForward(fwdInfo.id); }}>×</button>
+                        {#if stoppingForwards.has(fwdInfo.id)}
+                          <span class="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">stopping...</span>
+                        {:else}
+                          <a
+                            href="http://localhost:{fwdInfo.localPort}"
+                            target="_blank"
+                            rel="noopener"
+                            class="rounded bg-primary/10 text-primary px-1.5 py-0.5 font-mono hover:bg-primary/20 transition-colors"
+                          >:{fwdInfo.localPort}</a>
+                          <button class="text-muted-foreground hover:text-destructive transition-colors" onclick={() => { if (fwdInfo) doStopForward(fwdInfo.id); }}>×</button>
+                        {/if}
                       {:else}
                         <button
                           class="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
@@ -1150,10 +1170,14 @@
               <!-- Non-service port forwards -->
               {#each portForwards.filter(f => !Object.values(INFRA_PORTS).includes(f.remotePort)) as fwd}
                 <span class="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono">
-                  <a href="http://localhost:{fwd.localPort}" target="_blank" rel="noopener" class="text-primary hover:underline">localhost:{fwd.localPort}</a>
-                  <span class="text-muted-foreground">→</span>
-                  <span class="text-muted-foreground">{fwd.remotePort}</span>
-                  <button class="ml-0.5 text-muted-foreground hover:text-destructive transition-colors" onclick={() => doStopForward(fwd.id)}>×</button>
+                  {#if stoppingForwards.has(fwd.id)}
+                    <span class="text-muted-foreground">stopping...</span>
+                  {:else}
+                    <a href="http://localhost:{fwd.localPort}" target="_blank" rel="noopener" class="text-primary hover:underline">localhost:{fwd.localPort}</a>
+                    <span class="text-muted-foreground">→</span>
+                    <span class="text-muted-foreground">{fwd.remotePort}</span>
+                    <button class="ml-0.5 text-muted-foreground hover:text-destructive transition-colors" onclick={() => doStopForward(fwd.id)}>×</button>
+                  {/if}
                 </span>
               {/each}
 

@@ -179,8 +179,11 @@ func nomadAPIGet(ctx context.Context, client *http.Client, token, path string) (
 }
 
 // getAllocPorts queries the allocations for a job and returns ports from the
-// first running allocation. Returns nil if no running allocation or no ports.
+// first running allocation. The list endpoint (/v1/job/{id}/allocations) does
+// NOT include AllocatedResources, so we must fetch the full allocation detail
+// via /v1/allocation/{id} for port data.
 func getAllocPorts(ctx context.Context, client *http.Client, token, jobID string) []nomadPort {
+	// Step 1: Get allocation IDs from list endpoint (minimal fields).
 	resp, err := nomadAPIGet(ctx, client, token, "/v1/job/"+jobID+"/allocations")
 	if err != nil {
 		return nil
@@ -190,29 +193,43 @@ func getAllocPorts(ctx context.Context, client *http.Client, token, jobID string
 		return nil
 	}
 
-	var allocs []struct {
-		ClientStatus       string `json:"ClientStatus"`
-		AllocatedResources struct {
-			Shared struct {
-				Ports []struct {
-					Label  string `json:"Label"`
-					Value  int    `json:"Value"`
-					To     int    `json:"To"`
-					HostIP string `json:"HostIP"`
-				} `json:"Ports"`
-			} `json:"Shared"`
-		} `json:"AllocatedResources"`
+	var allocList []struct {
+		ID           string `json:"ID"`
+		ClientStatus string `json:"ClientStatus"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&allocs); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&allocList); err != nil {
 		return nil
 	}
 
-	// Find the first running allocation with ports.
-	for _, a := range allocs {
+	// Step 2: For the first running allocation, fetch full details with ports.
+	for _, a := range allocList {
 		if a.ClientStatus != "running" {
 			continue
 		}
-		ports := a.AllocatedResources.Shared.Ports
+
+		detailResp, err := nomadAPIGet(ctx, client, token, "/v1/allocation/"+a.ID)
+		if err != nil {
+			continue
+		}
+
+		var detail struct {
+			AllocatedResources struct {
+				Shared struct {
+					Ports []struct {
+						Label string `json:"Label"`
+						Value int    `json:"Value"`
+						To    int    `json:"To"`
+					} `json:"Ports"`
+				} `json:"Shared"`
+			} `json:"AllocatedResources"`
+		}
+		err = json.NewDecoder(detailResp.Body).Decode(&detail)
+		detailResp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		ports := detail.AllocatedResources.Shared.Ports
 		if len(ports) == 0 {
 			continue
 		}

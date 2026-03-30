@@ -109,7 +109,9 @@ func (fm *ForwardManager) Start(stackName string, nodeIndex, remotePort, localPo
 	return pf, nil
 }
 
-// Stop closes a port forward by ID.
+// Stop closes a port forward by ID. Active connections are given 3 seconds
+// to drain before being force-closed. This prevents the DELETE request from
+// hanging indefinitely when browsers keep connections alive (e.g., Nomad UI).
 func (fm *ForwardManager) Stop(id string) error {
 	fm.mu.Lock()
 	pf, ok := fm.forwards[id]
@@ -122,7 +124,19 @@ func (fm *ForwardManager) Stop(id string) error {
 
 	pf.cancel()
 	pf.listener.Close()
-	pf.connWg.Wait()
+
+	// Wait for active connections to drain with a timeout.
+	done := make(chan struct{})
+	go func() {
+		pf.connWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Clean drain
+	case <-time.After(3 * time.Second):
+		log.Printf("[forward] %s: force-closed after drain timeout (%d active connections)", id, pf.ActiveConns())
+	}
 
 	log.Printf("[forward] %s stopped", id)
 	return nil

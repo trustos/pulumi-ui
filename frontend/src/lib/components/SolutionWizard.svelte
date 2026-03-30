@@ -96,15 +96,16 @@
     try {
       const derived = solution.deriveConfig(userInput);
 
-      // Merge infra config with defaults + overrides + advanced selections
+      // Merge infra config with defaults + overrides + advanced selections.
+      // String() ensures number inputs are serialized as strings (Go expects map[string]string).
       const config: Record<string, string> = {
         ...derived.config,
         ...(solution.configOverrides ?? {}),
-        nodeCount,
+        nodeCount: String(nodeCount),
         compartmentName,
-        ocpusPerNode,
-        memoryGbPerNode,
-        bootVolSizeGb,
+        ocpusPerNode: String(ocpusPerNode),
+        memoryGbPerNode: String(memoryGbPerNode),
+        bootVolSizeGb: String(bootVolSizeGb),
       };
       if (selectedImageId) config.imageId = selectedImageId;
 
@@ -142,7 +143,7 @@
 </script>
 
 <Dialog.Root bind:open>
-  <Dialog.Content class="max-w-lg">
+  <Dialog.Content class="max-w-lg max-h-[85vh] overflow-y-auto">
     <Dialog.Header>
       <Dialog.Title>Deploy {solution.name}</Dialog.Title>
       <Dialog.Description>{solution.description}</Dialog.Description>

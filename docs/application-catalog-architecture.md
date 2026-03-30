@@ -400,6 +400,8 @@ For accessing private services (Nomad UI, Consul UI, application UIs) without pu
 
 **Implementation:** `internal/mesh/forward.go` (`ForwardManager`) manages listeners and proxied connections. `Tunnel.DialPort(ctx, port)` dials arbitrary ports through the Nebula overlay (not just the agent port). The UI shows active forwards with local address, connection count, and a stop button.
 
+**Drain timeout:** `Stop()` gives active connections 3 seconds to drain before returning. This prevents the `DELETE /forward/{id}` request from hanging indefinitely when browsers keep connections alive (e.g., Nomad UI long-polling or WebSocket upgrades). After the timeout, the forward is considered stopped even if connections remain — the closed listener ensures no new connections are accepted.
+
 ### Tunnel Reliability
 
 **Handshake probe + retry** (`GetTunnelForNode`): When the server restarts, the agent's Nebula may still have a cached session for the server's VPN IP from the previous process. It ignores new handshakes until the old session becomes stale (~30-90s). `GetTunnelForNode` handles this with a probe-and-retry loop:

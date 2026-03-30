@@ -44,7 +44,7 @@ internal/api/        HTTP handlers (one file per domain)
   mesh_config.go     Nebula mesh config download for user local machine access (GET /api/stacks/{name}/mesh/config)
   port_forward.go    kubectl-style TCP port forwarding through Nebula mesh (start/stop/list)
 
-cmd/agent/           Standalone agent binary (Nebula mesh + management HTTP API + /shell WebSocket PTY)
+cmd/agent/           Standalone agent binary (Nebula mesh + management HTTP API + /shell WebSocket PTY + /nomad-jobs with two-step alloc port lookup)
 
 internal/engine/     Pulumi Automation API wrapper
   engine.go          Up / Destroy / Refresh / Preview / Cancel / Unlock
@@ -80,7 +80,7 @@ internal/nebula/     Nebula PKI generation (per-stack CA + host certificates)
 
 internal/mesh/       Nebula tunnel manager (userspace, on-demand per stack + per node)
   mesh.go            Manager + Tunnel types, gvisor-based service, 5-min idle reaper, HTTP client + WebSocket dial, per-node tunnel support (GetTunnelForNode), DialPort for arbitrary port forwarding
-  forward.go         ForwardManager — kubectl-style TCP port forwarding through Nebula tunnels
+  forward.go         ForwardManager — kubectl-style TCP port forwarding through Nebula tunnels (Stop has 3s drain timeout)
 
 internal/db/         SQLite stores (one file per domain)
   db.go              Open + Migrate (runs SQL migration files)
