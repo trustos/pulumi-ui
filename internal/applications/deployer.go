@@ -15,11 +15,11 @@ import (
 	"text/template"
 	"time"
 
-	builtins "github.com/trustos/pulumi-ui/programs"
+	builtins "github.com/trustos/pulumi-ui/blueprints"
 
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/mesh"
-	"github.com/trustos/pulumi-ui/internal/programs"
+	"github.com/trustos/pulumi-ui/internal/blueprints"
 )
 
 // LogFunc is a callback for streaming deploy output. The engine adapter
@@ -52,7 +52,7 @@ func (d *Deployer) DeployApps(
 	stackName string,
 	selectedApps map[string]bool,
 	appConfig map[string]string,
-	catalog []programs.ApplicationDef,
+	catalog []blueprints.ApplicationDef,
 	send LogFunc,
 ) error {
 	send("output", "=== Establishing mesh connectivity ===")
@@ -167,7 +167,7 @@ func (d *Deployer) waitForAgent(
 func (d *Deployer) uploadJobFile(
 	ctx context.Context,
 	tunnel *mesh.Tunnel,
-	app programs.ApplicationDef,
+	app blueprints.ApplicationDef,
 	appConfig map[string]string,
 	send LogFunc,
 ) error {
@@ -284,7 +284,7 @@ func (d *Deployer) deployWorkload(
 	ctx context.Context,
 	stackName string,
 	tunnel *mesh.Tunnel,
-	app programs.ApplicationDef,
+	app blueprints.ApplicationDef,
 	send LogFunc,
 ) error {
 	jobFile := fmt.Sprintf("/opt/nomad-jobs/%s.nomad.hcl", app.Key)
@@ -473,10 +473,10 @@ func (d *Deployer) buildEnvExports(consulEnv map[string]string) string {
 }
 
 // filterWorkloads returns only workload-tier apps that the user selected.
-func filterWorkloads(catalog []programs.ApplicationDef, selected map[string]bool) []programs.ApplicationDef {
-	var result []programs.ApplicationDef
+func filterWorkloads(catalog []blueprints.ApplicationDef, selected map[string]bool) []blueprints.ApplicationDef {
+	var result []blueprints.ApplicationDef
 	for _, app := range catalog {
-		if app.Tier != programs.TierWorkload {
+		if app.Tier != blueprints.TierWorkload {
 			continue
 		}
 		if selected[app.Key] {
@@ -490,7 +490,7 @@ func filterWorkloads(catalog []programs.ApplicationDef, selected map[string]bool
 // Existing hooks for each app source are replaced (idempotent re-deploy).
 func (d *Deployer) registerAppHooks(
 	stackName string,
-	apps []programs.ApplicationDef,
+	apps []blueprints.ApplicationDef,
 	failed []string,
 	appConfig map[string]string,
 	send LogFunc,

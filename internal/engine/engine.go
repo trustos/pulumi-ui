@@ -26,7 +26,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/mesh"
 	nebulaPKI "github.com/trustos/pulumi-ui/internal/nebula"
-	"github.com/trustos/pulumi-ui/internal/programs"
+	"github.com/trustos/pulumi-ui/internal/blueprints"
 )
 
 // Credentials bundles all runtime secrets needed to run a Pulumi operation.
@@ -37,7 +37,7 @@ type Credentials struct {
 
 type Engine struct {
 	stateDir       string
-	registry       *programs.ProgramRegistry
+	registry       *blueprints.BlueprintRegistry
 	deployer       *applications.Deployer
 	connStore      *db.StackConnectionStore
 	nodeCertStore  *db.NodeCertStore
@@ -50,7 +50,7 @@ type Engine struct {
 	computeCounts  map[string]int // stackName → injected compute count (from last Up)
 }
 
-func New(stateDir string, registry *programs.ProgramRegistry, deployer *applications.Deployer, connStore *db.StackConnectionStore) *Engine {
+func New(stateDir string, registry *blueprints.BlueprintRegistry, deployer *applications.Deployer, connStore *db.StackConnectionStore) *Engine {
 	return &Engine{
 		stateDir:  stateDir,
 		registry:  registry,
@@ -119,7 +119,7 @@ func (e *Engine) backendURL() string {
 	return "file://" + e.stateDir
 }
 
-func (e *Engine) getOrCreateStack(ctx context.Context, stackName, projectName string, prog programs.Program, cfg map[string]string, envVars map[string]string) (auto.Stack, error) {
+func (e *Engine) getOrCreateStack(ctx context.Context, stackName, projectName string, prog blueprints.Blueprint, cfg map[string]string, envVars map[string]string) (auto.Stack, error) {
 	return auto.UpsertStackInlineSource(ctx, stackName, projectName, prog.Run(cfg),
 		auto.WorkDir(os.TempDir()),
 		auto.EnvVars(envVars),
@@ -175,27 +175,27 @@ func injectPluginsSection(yaml string) string {
 // writes the result to a temp directory, and creates a stack via
 // UpsertStackLocalSource. OCI credentials are injected as Pulumi provider
 // config (YAML programs cannot read environment variables directly).
-func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, prog programs.Program, yamlProg programs.YAMLProgramProvider, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
+func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, prog blueprints.Blueprint, yamlProg blueprints.YAMLBlueprintProvider, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
 	// Merge program defaults into cfg so that fields with a default: value in
 	// the config: section are never absent from the template context.
-	cfg = programs.ApplyConfigDefaults(yamlProg.YAMLBody(), cfg)
+	cfg = blueprints.ApplyConfigDefaults(yamlProg.YAMLBody(), cfg)
 
 	// Render the Go template.
-	rendered, err := programs.RenderTemplate(yamlProg.YAMLBody(), cfg)
+	rendered, err := blueprints.RenderTemplate(yamlProg.YAMLBody(), cfg)
 	if err != nil {
 		return auto.Stack{}, nil, fmt.Errorf("template render: %w", err)
 	}
 
 	// Strip potentially dangerous fn::readFile directives.
-	sanitized := programs.SanitizeYAML(rendered)
+	sanitized := blueprints.SanitizeYAML(rendered)
 
 	// For YAML programs with ApplicationProvider or AgentAccessProvider,
 	// automatically inject the agent bootstrap into compute user_data.
 	shouldInjectAgent := false
-	if _, ok := prog.(programs.ApplicationProvider); ok {
+	if _, ok := prog.(blueprints.ApplicationProvider); ok {
 		shouldInjectAgent = true
 	}
-	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
+	if aap, ok := prog.(blueprints.AgentAccessProvider); ok && aap.AgentAccess() {
 		shouldInjectAgent = true
 	}
 	if shouldInjectAgent {
@@ -218,7 +218,7 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 
 	// For programs with AgentAccessProvider, inject networking resources
 	// (NSG rules, NLB backend sets/listeners) for agent connectivity.
-	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
+	if aap, ok := prog.(blueprints.AgentAccessProvider); ok && aap.AgentAccess() {
 		netInjected, netErr := agentinject.InjectNetworkingIntoYAML(sanitized)
 		if netErr != nil {
 			log.Printf("[agent-inject] networking injection error for stack %s: %v", stackName, netErr)
@@ -303,8 +303,8 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 // resolveStack returns the correct auto.Stack for the given program, using
 // either the inline Go path or the YAML local-source path depending on the
 // program type. The returned cleanup func must be called after the operation.
-func (e *Engine) resolveStack(ctx context.Context, stackName, programName string, prog programs.Program, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
-	if yp, ok := prog.(programs.YAMLProgramProvider); ok {
+func (e *Engine) resolveStack(ctx context.Context, stackName, blueprintName string, prog blueprints.Blueprint, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
+	if yp, ok := prog.(blueprints.YAMLBlueprintProvider); ok {
 		return e.getOrCreateYAMLStack(ctx, stackName, prog, yp, cfg, envVars, creds)
 	}
 	// For inline Go programs, the Pulumi Automation API passes EnvVars only to
@@ -326,13 +326,13 @@ func (e *Engine) resolveStack(ctx context.Context, stackName, programName string
 
 	// For Go programs with an ApplicationProvider, render the agent bootstrap
 	// and inject it into cfg so buildCloudInit() can compose it.
-	if _, ok := prog.(programs.ApplicationProvider); ok {
+	if _, ok := prog.(blueprints.ApplicationProvider); ok {
 		if vars := e.agentVarsForStack(stackName); vars != nil {
 			goCfg[agentinject.CfgKeyAgentBootstrap] = string(agentinject.RenderAgentBootstrap(*vars))
 		}
 	}
 
-	stack, err := e.getOrCreateStack(ctx, stackName, programName, prog, goCfg, envVars)
+	stack, err := e.getOrCreateStack(ctx, stackName, blueprintName, prog, goCfg, envVars)
 	return stack, func() {}, err
 }
 
@@ -559,12 +559,12 @@ func (e *Engine) agentVarListForStack(stackName string) []agentinject.AgentVars 
 
 // discoverAgentAddress extracts the agent's real IP from Pulumi outputs
 // after a successful deploy and stores it for Nebula static_host_map.
-func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, prog programs.Program, stack auto.Stack, send SSESender) {
+func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, prog blueprints.Blueprint, stack auto.Stack, send SSESender) {
 	hasAgent := false
-	if _, ok := prog.(programs.ApplicationProvider); ok {
+	if _, ok := prog.(blueprints.ApplicationProvider); ok {
 		hasAgent = true
 	}
-	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
+	if aap, ok := prog.(blueprints.AgentAccessProvider); ok && aap.AgentAccess() {
 		hasAgent = true
 	}
 	if !hasAgent || e.connStore == nil {
@@ -582,7 +582,7 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 	// Manager can open a dedicated Nebula tunnel per node via NLB port forwarding.
 	// Go programs (ApplicationProvider) are excluded — they use a shared NLB
 	// listener on port 41820 and store only a plain IP via the legacy scan below.
-	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() && e.nodeCertStore != nil {
+	if aap, ok := prog.(blueprints.AgentAccessProvider); ok && aap.AgentAccess() && e.nodeCertStore != nil {
 		for _, key := range []string{"nlbPublicIp", "nlbPublicIP"} {
 			v, ok := outputs[key]
 			if !ok {
@@ -723,16 +723,16 @@ func looksLikeIP(s string) bool {
 }
 
 // Up runs pulumi up for the given stack.
-func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
+func (e *Engine) Up(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
 	if !e.tryLock(stackName) {
 		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
 		return "conflict"
 	}
 	defer e.unlock(stackName)
 
-	prog, ok := e.registry.Get(programName)
+	prog, ok := e.registry.Get(blueprintName)
 	if !ok {
-		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
+		send(SSEEvent{Type: "error", Data: "unknown blueprint: " + blueprintName})
 		return "failed"
 	}
 
@@ -754,7 +754,7 @@ func (e *Engine) Up(ctx context.Context, stackName, programName string, cfg map[
 		cancel()
 	}()
 
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, programName, prog, cfg, envVars, creds)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, blueprintName, prog, cfg, envVars, creds)
 	if stackCleanup != nil {
 		defer stackCleanup()
 	}
@@ -798,16 +798,16 @@ func isTransientConflict(err error) bool {
 }
 
 // Destroy runs pulumi destroy for the given stack.
-func (e *Engine) Destroy(ctx context.Context, stackName, programName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
+func (e *Engine) Destroy(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
 	if !e.tryLock(stackName) {
 		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
 		return "conflict"
 	}
 	defer e.unlock(stackName)
 
-	prog, ok := e.registry.Get(programName)
+	prog, ok := e.registry.Get(blueprintName)
 	if !ok {
-		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
+		send(SSEEvent{Type: "error", Data: "unknown blueprint: " + blueprintName})
 		return "failed"
 	}
 
@@ -829,7 +829,7 @@ func (e *Engine) Destroy(ctx context.Context, stackName, programName string, cfg
 		cancel()
 	}()
 
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, programName, prog, cfg, envVars, creds)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, blueprintName, prog, cfg, envVars, creds)
 	if stackCleanup != nil {
 		defer stackCleanup()
 	}
@@ -854,16 +854,16 @@ func (e *Engine) Destroy(ctx context.Context, stackName, programName string, cfg
 }
 
 // Refresh runs pulumi refresh for the given stack.
-func (e *Engine) Refresh(ctx context.Context, stackName, programName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
+func (e *Engine) Refresh(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
 	if !e.tryLock(stackName) {
 		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
 		return "conflict"
 	}
 	defer e.unlock(stackName)
 
-	prog, ok := e.registry.Get(programName)
+	prog, ok := e.registry.Get(blueprintName)
 	if !ok {
-		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
+		send(SSEEvent{Type: "error", Data: "unknown blueprint: " + blueprintName})
 		return "failed"
 	}
 
@@ -885,7 +885,7 @@ func (e *Engine) Refresh(ctx context.Context, stackName, programName string, cfg
 		cancel()
 	}()
 
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, programName, prog, cfg, envVars, creds)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, blueprintName, prog, cfg, envVars, creds)
 	if stackCleanup != nil {
 		defer stackCleanup()
 	}
@@ -914,16 +914,16 @@ func (e *Engine) Refresh(ctx context.Context, stackName, programName string, cfg
 }
 
 // Preview runs pulumi preview for the given stack (dry-run, no changes applied).
-func (e *Engine) Preview(ctx context.Context, stackName, programName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
+func (e *Engine) Preview(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
 	if !e.tryLock(stackName) {
 		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
 		return "conflict"
 	}
 	defer e.unlock(stackName)
 
-	prog, ok := e.registry.Get(programName)
+	prog, ok := e.registry.Get(blueprintName)
 	if !ok {
-		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
+		send(SSEEvent{Type: "error", Data: "unknown blueprint: " + blueprintName})
 		return "failed"
 	}
 
@@ -945,7 +945,7 @@ func (e *Engine) Preview(ctx context.Context, stackName, programName string, cfg
 		cancel()
 	}()
 
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, programName, prog, cfg, envVars, creds)
+	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, blueprintName, prog, cfg, envVars, creds)
 	if stackCleanup != nil {
 		defer stackCleanup()
 	}
@@ -1079,9 +1079,9 @@ func (e *Engine) Unlock(stackName string) error {
 // RemoveStackState deletes all Pulumi backend state for the given stack,
 // including the state file, history, and backups. This ensures that
 // re-creating a stack with the same name starts completely fresh.
-func (e *Engine) RemoveStackState(stackName, programName string) error {
+func (e *Engine) RemoveStackState(stackName, blueprintName string) error {
 	base := filepath.Join(e.stateDir, ".pulumi")
-	projects := []string{programName}
+	projects := []string{blueprintName}
 
 	for _, proj := range projects {
 		paths := []string{
@@ -1107,19 +1107,19 @@ func (e *Engine) RemoveStackState(stackName, programName string) error {
 }
 
 // GetStackOutputs returns the outputs for a deployed stack.
-func (e *Engine) GetStackOutputs(ctx context.Context, stackName, programName string, cfg map[string]string, creds Credentials) (auto.OutputMap, error) {
+func (e *Engine) GetStackOutputs(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials) (auto.OutputMap, error) {
 	envVars, cleanup, err := e.buildEnvVars(creds)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
 
-	prog, ok := e.registry.Get(programName)
+	prog, ok := e.registry.Get(blueprintName)
 	if !ok {
-		return nil, fmt.Errorf("unknown program: %s", programName)
+		return nil, fmt.Errorf("unknown blueprint: %s", blueprintName)
 	}
 
-	stack, stackCleanup, err := e.resolveStack(ctx, stackName, programName, prog, cfg, envVars, creds)
+	stack, stackCleanup, err := e.resolveStack(ctx, stackName, blueprintName, prog, cfg, envVars, creds)
 	if stackCleanup != nil {
 		defer stackCleanup()
 	}
@@ -1143,27 +1143,27 @@ func (w *sseWriter) Write(p []byte) (n int, err error) {
 }
 
 // DeployApps runs Phase 2 + Phase 3 (mesh connectivity + workload deployment).
-func (e *Engine) DeployApps(ctx context.Context, stackName, programName string, selectedApps map[string]bool, appConfig map[string]string, send SSESender) (status string) {
+func (e *Engine) DeployApps(ctx context.Context, stackName, blueprintName string, selectedApps map[string]bool, appConfig map[string]string, send SSESender) (status string) {
 	if !e.tryLock(stackName) {
 		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
 		return "conflict"
 	}
 	defer e.unlock(stackName)
 
-	prog, ok := e.registry.Get(programName)
+	prog, ok := e.registry.Get(blueprintName)
 	if !ok {
-		send(SSEEvent{Type: "error", Data: "unknown program: " + programName})
+		send(SSEEvent{Type: "error", Data: "unknown blueprint: " + blueprintName})
 		return "failed"
 	}
 
-	provider, isAppProvider := prog.(programs.ApplicationProvider)
+	provider, isAppProvider := prog.(blueprints.ApplicationProvider)
 	isAgentAccess := false
-	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
+	if aap, ok := prog.(blueprints.AgentAccessProvider); ok && aap.AgentAccess() {
 		isAgentAccess = true
 	}
 
 	if !isAppProvider && !isAgentAccess {
-		send(SSEEvent{Type: "error", Data: "program does not support application deployment"})
+		send(SSEEvent{Type: "error", Data: "blueprint does not support application deployment"})
 		return "failed"
 	}
 

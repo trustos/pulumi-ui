@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { ConditionalItem, ResourceItem, LoopItem } from '$lib/types/program-graph';
-  import type { ConfigFieldDef } from '$lib/types/program-graph';
+  import type { ConditionalItem, ResourceItem, LoopItem } from '$lib/types/blueprint-graph';
+  import type { ConfigFieldDef } from '$lib/types/blueprint-graph';
   import ResourceCard from './ResourceCard.svelte';
   import ResourceCatalog from './ResourceCatalog.svelte';
   import { Input } from '$lib/components/ui/input';

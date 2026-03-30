@@ -9,7 +9,7 @@
 | Auth | Session-based: `users` + `sessions` tables in SQLite |
 | Credentials | SQLite (embedded, in-process), AES-256-GCM encrypted |
 | Pulumi runtime | Automation API for Go |
-| Pulumi programs | Go inline functions + user-defined Go-templated Pulumi YAML |
+| Pulumi blueprints | Go inline functions + user-defined Go-templated Pulumi YAML |
 | Deployment unit | Single Go binary + Pulumi plugins |
 
 ### Why Go
@@ -17,7 +17,7 @@
 - **Single binary**: `go build` produces a self-contained executable. The Svelte frontend is embedded via `go:embed`. No Node.js runtime needed at all.
 - **No external dependency for secrets**: SQLite needs nothing — it's a file on disk. The UI can bootstrap the cluster from scratch without any external services.
 - **Stronger concurrency for SSE**: Pulumi `stack.Up()` with streaming output maps naturally to a Go goroutine writing to an `http.Flusher`. Each stack operation gets an OS thread with clean cancellation via `context.Context`.
-- **Go Automation API is first-class**: Pulumi's Go Automation API supports inline programs (program runs as a Go function, not a subprocess). This eliminates the `pulumi` CLI subprocess chain entirely.
+- **Go Automation API is first-class**: Pulumi's Go Automation API supports inline programs (blueprint runs as a Go function, not a subprocess). This eliminates the `pulumi` CLI subprocess chain entirely.
 
 ### Why SQLite
 
@@ -32,18 +32,18 @@
 
 ## Two Execution Paths
 
-Programs fall into two types with different execution paths:
+Blueprints fall into two types with different execution paths:
 
 | Type | Stored as | Executed via | Examples |
 |---|---|---|---|
 | Built-in | Go source (compiled) | `UpsertStackInlineSource` | `nomad-cluster`, `test-vcn` |
-| User-defined YAML | Go-templated Pulumi YAML in `custom_programs` DB table | `UpsertStackLocalSource` | VCN, bucket, single instance, DNS zone |
+| User-defined YAML | Go-templated Pulumi YAML in `custom_blueprints` DB table | `UpsertStackLocalSource` | VCN, bucket, single instance, DNS zone |
 
-The engine checks whether a program implements `YAMLProgramProvider` via type assertion:
+The engine checks whether a blueprint implements `YAMLBlueprintProvider` via type assertion:
 
 ```go
-func (e *Engine) resolveStack(ctx, stackName string, prog Program, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
-    if yp, ok := prog.(YAMLProgramProvider); ok {
+func (e *Engine) resolveStack(ctx, stackName string, prog Blueprint, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
+    if yp, ok := prog.(YAMLBlueprintProvider); ok {
         return e.getOrCreateYAMLStack(ctx, stackName, yp, cfg, envVars, creds)
     }
     stack, err := e.getOrCreateStack(ctx, stackName, prog, cfg, envVars)
@@ -51,9 +51,9 @@ func (e *Engine) resolveStack(ctx, stackName string, prog Program, cfg map[strin
 }
 ```
 
-All four operations (Up, Destroy, Refresh, Preview) automatically use the correct path for any program type.
+All four operations (Up, Destroy, Refresh, Preview) automatically use the correct path for any blueprint type.
 
-**Why YAML for user programs:** Pulumi has a first-class YAML runtime (`runtime: yaml`) executed by `pulumi-language-yaml`, which ships inside the Pulumi CLI tarball installed in the Docker image. Pure Pulumi YAML has limitations (no loops, no conditionals), so programs are stored as **Go-templated YAML** — exactly like Helm templates for Kubernetes YAML. The Go `text/template` engine renders structural decisions before Pulumi runs; Pulumi then resolves cross-resource references (`${resource.property}`) at apply time.
+**Why YAML for user blueprints:** Pulumi has a first-class YAML runtime (`runtime: yaml`) executed by `pulumi-language-yaml`, which ships inside the Pulumi CLI tarball installed in the Docker image. Pure Pulumi YAML has limitations (no loops, no conditionals), so blueprints are stored as **Go-templated YAML** — exactly like Helm templates for Kubernetes YAML. The Go `text/template` engine renders structural decisions before Pulumi runs; Pulumi then resolves cross-resource references (`${resource.property}`) at apply time.
 
 ---
 
@@ -93,7 +93,7 @@ Svelte SPA ◄────── JSON ──── Go HTTP handlers             
                  └──── OCI env ────────┤                              │
                        vars injected   │                              │
                                        ▼                              │
-                               internal/programs/                     │
+                               internal/blueprints/                     │
                                nomad_cluster.go                       │
                                (inline PulumiFn)                      │
                                        │                              │
@@ -117,10 +117,10 @@ internal/engine/engine.go                                             │
   │                                                                    │
   ▼                                                                    │
 getOrCreateYAMLStack()                                                │
-  ├─ programs.RenderTemplate(yamlBody, config)                         │
+  ├─ blueprints.RenderTemplate(yamlBody, config)                         │
   │   text/template + Sprig + custom OCI helpers                       │
   │   {{ range $i := until nodeCount }} → static YAML                 │
-  ├─ programs.SanitizeYAML()  — strips fn::readFile                    │
+  ├─ blueprints.SanitizeYAML()  — strips fn::readFile                    │
   ├─ agentinject.InjectIntoYAML()  — if ApplicationProvider or          │
   │   AgentAccessProvider: walks resources, composes user_data          │
   │   with agent bootstrap via multipart MIME (creates missing          │
@@ -155,8 +155,8 @@ Key difference from built-in programs: OCI credentials are passed as Pulumi prov
 | `mesh` | `internal/mesh/` | Nebula tunnel manager: on-demand userspace tunnels per stack, cached with 5-minute idle timeout, HTTP client + WebSocket dial through mesh |
 | `auth` | `internal/auth/` | Session middleware, user context extraction |
 | `engine` | `internal/engine/` | Pulumi Automation API: up/destroy/refresh/preview/cancel/unlock; agent bootstrap injection orchestration |
-| `programs` | `internal/programs/` | Program interface, registry, built-in Go `PulumiFn` implementations, YAML program type, Go template renderer (Sprig + custom OCI helpers), YAML config field parser, application catalog types |
-| `agentinject` | `internal/agentinject/` | Universal agent bootstrap injection: compute resource map, multipart MIME composition, YAML post-render transformation (user_data + networking), Go program config key |
+| `blueprints` | `internal/blueprints/` | Blueprint interface, registry, built-in Go `PulumiFn` implementations, YAML blueprint type, Go template renderer (Sprig + custom OCI helpers), YAML config field parser, application catalog types |
+| `agentinject` | `internal/agentinject/` | Universal agent bootstrap injection: compute resource map, multipart MIME composition, YAML post-render transformation (user_data + networking), Go blueprint config key |
 | `applications` | `internal/applications/` | Application catalog deployment orchestration via agent |
 | `nebula` | `internal/nebula/` | Nebula PKI generation (per-stack CA + host certificates: UI cert at .1, agent cert at .2) |
 | `stacks` | `internal/stacks/` | YAML `StackConfig` schema, validation, config field metadata |
@@ -167,13 +167,13 @@ Key difference from built-in programs: OCI credentials are passed as Pulumi prov
 | `keystore` | `internal/keystore/` | Encryption key resolution: env override → load from store → auto-generate; `file` and `consul` backends |
 
 **Import rules:**
-- `api` imports `engine`, `db`, `auth`, `stacks`, `programs`, `mesh` — but not `crypto` directly
+- `api` imports `engine`, `db`, `auth`, `stacks`, `blueprints`, `mesh` — but not `crypto` directly
 - `mesh` imports `db`, `nebula`, `github.com/slackhq/nebula/service` — no other internal packages
 - `auth` imports `db` only (reads users/sessions)
-- `engine` imports `programs`, `db`, `agentinject`, `applications`, `nebula` — but not `api`
+- `engine` imports `blueprints`, `db`, `agentinject`, `applications`, `nebula` — but not `api`
 - `agentinject` imports `gopkg.in/yaml.v3` — no other internal packages
 - `applications` does not import `engine` (uses a `LogFunc` callback to avoid cycles)
-- `programs` imports `agentinject` (for `ComposeAndEncode`, `GzipBase64`, `CfgKeyAgentBootstrap`), `github.com/Masterminds/sprig/v3` (template functions), `gopkg.in/yaml.v3` (config parser) — no other internal packages
+- `blueprints` imports `agentinject` (for `ComposeAndEncode`, `GzipBase64`, `CfgKeyAgentBootstrap`), `github.com/Masterminds/sprig/v3` (template functions), `gopkg.in/yaml.v3` (config parser) — no other internal packages
 - `nebula` imports `github.com/slackhq/nebula` — no internal packages
 - `oci` has no internal imports (standalone HTTP client used by `api/accounts.go`)
 - `crypto` has no internal imports (pure stdlib crypto)
@@ -198,7 +198,7 @@ require (
     modernc.org/sqlite                    v1.x      // Pure Go SQLite (no CGO)
     golang.org/x/crypto                   v0.x      // bcrypt for password hashing + SSH key marshalling
     gopkg.in/yaml.v3                      v3.x      // YAML config parsing
-    github.com/Masterminds/sprig/v3       v3.x      // Go template function library (same as Helm) — used by YAML program renderer
+    github.com/Masterminds/sprig/v3       v3.x      // Go template function library (same as Helm) — used by YAML blueprint renderer
     github.com/google/uuid                v1.x      // Operation + account + passphrase + SSH key IDs
     github.com/slackhq/nebula             v1.x      // Nebula mesh: PKI generation + userspace tunnel service (gvisor)
     github.com/gorilla/websocket          v1.x      // WebSocket support for agent shell proxy
@@ -221,7 +221,7 @@ The Go binary itself is fully self-contained. However, **Pulumi resource provide
 RUN pulumi plugin install resource oci 4.3.1
 ```
 
-The OCI provider is pinned to **v4.3.1** throughout the codebase — `engine.go` injects a `plugins:` section into every YAML program to force this exact version, and the engine calls `InstallPlugin` with the same pin. Do not change this version without auditing all resource type tokens (v4 uses the canonical `oci:Module/subtype:Resource` format).
+The OCI provider is pinned to **v4.3.1** throughout the codebase — `engine.go` injects a `plugins:` section into every YAML blueprint to force this exact version, and the engine calls `InstallPlugin` with the same pin. Do not change this version without auditing all resource type tokens (v4 uses the canonical `oci:Module/subtype:Resource` format).
 
 The engine also unconditionally sets `PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING=true` in every workspace. This is required because the OCI v4 provider schema contains `ArrayType`/`MapType` objects with nil `ElementType`, which causes a SIGSEGV in `pulumi-yaml`. The engine's own Level 5 (resource structure / schema), Level 6 (variable reference integrity), and Level 7 (agent access context) validations cover these concerns safely.
 

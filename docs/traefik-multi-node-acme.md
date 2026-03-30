@@ -126,11 +126,11 @@ consul watch -type=key -key=traefik/acme-json \
 
 ## Adaptive Template Design
 
-The Traefik HCL template (`programs/jobs/traefik.nomad.hcl`) renders differently based on an `instances` config field — not `nodeCount`. This is a Traefik-level concern, not program-specific.
+The Traefik HCL template (`blueprints/jobs/traefik.nomad.hcl`) renders differently based on an `instances` config field — not `nodeCount`. This is a Traefik-level concern, not blueprint-specific.
 
 ### Config Field
 
-New field on the Traefik app definition (in any program's `meta.applications`):
+New field on the Traefik app definition (in any blueprint's `meta.applications`):
 
 ```yaml
 - key: traefik
@@ -202,14 +202,14 @@ job "traefik" {
 
 ---
 
-## Why This Is Program-Agnostic
+## Why This Is Blueprint-Agnostic
 
 - The Traefik HCL template is a standalone file (`programs/jobs/traefik.nomad.hcl`)
 - The deployer renders it with `[[ ]]` delimiters using appConfig values
-- Any program that declares `key: traefik` in its catalog uses the same template
+- Any blueprint that declares `key: traefik` in its catalog uses the same template
 - The `instances` field flows through the same config pipeline as `acmeEmail`
 - Consul is a dependency of any Nomad cluster (installed by cloud-init)
-- No program-specific assumptions in the template (no hardcoded namespaces, paths, or node counts)
+- No blueprint-specific assumptions in the template (no hardcoded namespaces, paths, or node counts)
 
 ---
 
@@ -217,8 +217,8 @@ job "traefik" {
 
 | File | Change |
 |------|--------|
-| `programs/jobs/traefik.nomad.hcl` | Rewrite as adaptive template: single vs leader/follower based on `instances` |
-| `programs/nomad-cluster.yaml` | Add `instances` config field to Traefik app definition |
+| `blueprints/jobs/traefik.nomad.hcl` | Rewrite as adaptive template: single vs leader/follower based on `instances` |
+| `blueprints/nomad-cluster.yaml` | Add `instances` config field to Traefik app definition |
 
 No backend code changes — the deployer already passes all `appConfig` fields to templates.
 

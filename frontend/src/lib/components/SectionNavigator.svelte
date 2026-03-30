@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ProgramSection } from '$lib/types/program-graph';
+  import type { BlueprintSection } from '$lib/types/blueprint-graph';
   import { Input } from '$lib/components/ui/input';
   import * as Tooltip from '$lib/components/ui/tooltip';
 
@@ -10,7 +10,7 @@
     onRenameSection,
     onRemoveSection,
   }: {
-    sections: ProgramSection[];
+    sections: BlueprintSection[];
     activeSectionId?: string;
     onAddSection?: () => void;
     onRenameSection?: (id: string, label: string) => void;
@@ -20,7 +20,7 @@
   let editingId = $state<string | null>(null);
   let editLabel = $state('');
 
-  function startRename(section: ProgramSection) {
+  function startRename(section: BlueprintSection) {
     editingId = section.id;
     editLabel = section.label || section.id;
   }
@@ -36,7 +36,7 @@
     if (e.key === 'Escape') { editingId = null; }
   }
 
-  function handleRemove(section: ProgramSection) {
+  function handleRemove(section: BlueprintSection) {
     if (section.items.length > 0) {
       const confirmed = confirm(
         `Remove section "${section.label || section.id}"? It contains ${section.items.length} item(s). This cannot be undone.`

@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import type { ValidationError } from '$lib/types';
   import { getOciSchema, getResourceTypes } from '$lib/schema';
-  import { propagateRenameYaml } from '$lib/program-graph/rename-resource';
+  import { propagateRenameYaml } from '$lib/blueprint-graph/rename-resource';
 
   let {
     value = $bindable(''),

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { OutputDef } from '$lib/types/program-graph';
+  import type { OutputDef } from '$lib/types/blueprint-graph';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import * as Tooltip from '$lib/components/ui/tooltip';

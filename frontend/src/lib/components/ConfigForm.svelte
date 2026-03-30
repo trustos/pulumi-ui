@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import type { ConfigField, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, SshKey } from '$lib/types';
-  import { buildInitialValues } from '$lib/program-graph/config-form-init';
+  import { buildInitialValues } from '$lib/blueprint-graph/config-form-init';
   import { listShapes, listImages, listCompartments, listAvailabilityDomains, listSSHKeys } from '$lib/api';
   import { Input } from '$lib/components/ui/input';
   import { Textarea } from '$lib/components/ui/textarea';

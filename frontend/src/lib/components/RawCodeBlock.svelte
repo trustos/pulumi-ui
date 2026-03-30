@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { RawCodeItem } from '$lib/types/program-graph';
+  import type { RawCodeItem } from '$lib/types/blueprint-graph';
   import MonacoEditor from './MonacoEditor.svelte';
 
   let {

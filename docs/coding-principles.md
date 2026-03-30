@@ -73,7 +73,7 @@ Each DB store implements an interface defined in `internal/ports/`. Example:
 ```go
 // internal/ports/repositories.go
 type StackRepository interface {
-    Upsert(name, program, configYAML string, ociAccountID, passphraseID, sshKeyID *string) error
+    Upsert(name, blueprint, configYAML string, ociAccountID, passphraseID, sshKeyID *string) error
     Get(name string) (*StackRow, error)
     List() ([]StackRow, error)
     Delete(name string) error
@@ -99,9 +99,9 @@ Every `ConfigField` must carry a `ConfigLayer` value:
 | `bootstrap` | Controls software installed inside VMs | Shown third, editable |
 | `derived` | Calculated from other fields, never user-supplied | Read-only, tooltip shows formula |
 
-When adding a new config field to any program, assign the correct layer.
+When adding a new config field to any blueprint, assign the correct layer.
 
-For the nomad-cluster program:
+For the nomad-cluster blueprint:
 - `nodeCount`, `compartmentName`, `vcnCidr`, `publicSubnetCidr`, `privateSubnetCidr`, `sshSourceCidr` → `infrastructure`
 - `shape`, `imageId`, `bootVolSizeGb` → `compute`
 - `nomadVersion`, `consulVersion` → `bootstrap`
@@ -109,34 +109,34 @@ For the nomad-cluster program:
 
 ---
 
-## 5. Program Registration
+## 5. Blueprint Registration
 
-Built-in programs register via an explicit function in `main.go`, not via `init()`:
+Built-in blueprints register via an explicit function in `main.go`, not via `init()`:
 
 ```go
 // main.go
-registry := programs.NewProgramRegistry()
-programs.RegisterBuiltins(registry)
-// ... load custom programs from DB ...
+registry := blueprints.NewBlueprintRegistry()
+blueprints.RegisterBuiltins(registry)
+// ... load custom blueprints from DB ...
 deployer := applications.NewDeployer(connStore)
 eng := engine.New(stateDir, registry, deployer, connStore)
 ```
 
 ```go
-// internal/programs/registry.go
-func RegisterBuiltins(r *ProgramRegistry) {
-    r.Register(&NomadClusterProgram{})
-    r.Register(&TestVcnProgram{})
+// internal/blueprints/registry.go
+func RegisterBuiltins(r *BlueprintRegistry) {
+    r.Register(&NomadClusterBlueprint{})
+    r.Register(&TestVcnBlueprint{})
 }
 ```
 
 **Never use `init()` for registration.** It creates hidden coupling and makes the
 dependency graph invisible in `main.go`.
 
-When adding a new built-in program:
-1. Create `internal/programs/<name>.go`
-2. Implement the `Program` interface
-3. Add `r.Register(&XxxProgram{})` to `RegisterBuiltins()`
+When adding a new built-in blueprint:
+1. Create `internal/blueprints/<name>.go`
+2. Implement the `Blueprint` interface
+3. Add `r.Register(&XxxBlueprint{})` to `RegisterBuiltins()`
 4. Annotate all `ConfigField` entries with `ConfigLayer`
 
 ---
@@ -194,7 +194,7 @@ func (e *Engine) Up(ctx context.Context, ...) string {
 
 ---
 
-## 8. YAML Program Templates
+## 8. YAML Blueprint Templates
 
 ### Pulumi interpolation with Go template variables
 
@@ -324,7 +324,7 @@ and every agent session.
 | **Services** | Unit test | Mock repositories (interfaces) | `internal/services/*_test.go` |
 | **Stores** | Integration test | Real in-memory SQLite | `internal/db/*_test.go` |
 | **Engine** | Integration test | Real Pulumi workspace (CI only) | `internal/engine/*_test.go` |
-| **Programs / validation** | Unit test | Known good/bad YAML inputs | `internal/programs/*_test.go` |
+| **Blueprints / validation** | Unit test | Known good/bad YAML inputs | `internal/blueprints/*_test.go` |
 | **Agent injection** | Unit test | Inline YAML fixtures | `internal/agentinject/*_test.go` |
 | **Schema parsing** | Unit test | JSON fixtures in `testdata/` | `internal/oci/*_test.go` |
 | **Crypto** | Round-trip test | `testing` | `internal/crypto/*_test.go` |
@@ -341,7 +341,7 @@ and every agent session.
    must have a corresponding `_test.go` file. Use `testify/assert` for
    assertions. Pure functions get unit tests; handlers get `httptest` tests.
 
-3. **Frontend TypeScript utilities**: every new file in `src/lib/program-graph/`
+3. **Frontend TypeScript utilities**: every new file in `src/lib/blueprint-graph/`
    or `src/lib/` that exports pure functions must have a co-located `.test.ts`
    file using Vitest. Component logic extracted into utilities is testable;
    component rendering is not (no component test framework in this project).
@@ -374,7 +374,7 @@ and every agent session.
 | Agent injection | `yaml_test.go`, `network_test.go`, `bootstrap_test.go`, `compose_test.go` | 66 | YAML injection, networking injection (35 tests), bootstrap rendering, multipart MIME |
 | Engine | `engine_test.go`, `agent_vars_test.go`, `discovery_test.go` | 22 | Stack state cleanup, agent vars, IP discovery |
 | Nebula PKI | `pki_test.go` | 15 | CA generation, cert issuance, node certs, subnet allocation |
-| Programs/validation | `validate_test.go`, `pipeline_test.go`, `template_test.go`, `yaml_config_test.go` | 50 | 7-level validator (including Level 7a/7b topologies), full pipeline, template rendering, config parsing |
+| Blueprints/validation | `validate_test.go`, `pipeline_test.go`, `template_test.go`, `yaml_config_test.go` | 50 | 7-level validator (including Level 7a/7b topologies), full pipeline, template rendering, config parsing |
 | API handlers | `programs_test.go`, `stacks_test.go` | 11 | `hasBlockingErrors`, deployed state computation, PKI generation |
 | DB stores | `stack_connections_test.go`, `node_certs_test.go` | 16 | Round-trip, encryption, subnet allocation, multi-stack isolation |
 | OCI schema | `schema_test.go`, `endpoints_test.go` | 18 | `$ref` resolution, nested refs, array items, fallback sub-fields, endpoint URLs |
@@ -387,7 +387,7 @@ and every agent session.
 
 | Area | Files | Coverage |
 |------|-------|----------|
-| Program graph | `parser.test.ts`, `rename-resource.test.ts`, `scaffold-networking.test.ts`, `object-value.test.ts`, `agent-access.test.ts`, `auto-ad.test.ts`, `collect-resources.test.ts`, `schema-utils.test.ts`, `typed-value.test.ts`, `config-form-init.test.ts`, `resource-defaults.test.ts` | Parser round-trips, rename propagation (23 tests), networking scaffold (16 tests), object value parse/serialize (32 tests), agent access toggle (12 tests), AD assignment, resource collection |
+| Blueprint graph | `parser.test.ts`, `rename-resource.test.ts`, `scaffold-networking.test.ts`, `object-value.test.ts`, `agent-access.test.ts`, `auto-ad.test.ts`, `collect-resources.test.ts`, `schema-utils.test.ts`, `typed-value.test.ts`, `config-form-init.test.ts`, `resource-defaults.test.ts` | Parser round-trips, rename propagation (23 tests), networking scaffold (16 tests), object value parse/serialize (32 tests), agent access toggle (12 tests), AD assignment, resource collection |
 | Templates | `templates.test.ts` | All 11 built-in templates parse without errors |
 | API client | `api.test.ts` | Agent health, services, shell URL |
 | UI components | `combobox-input-sync.test.ts` | Combobox input synchronization |
@@ -464,7 +464,7 @@ OCI instance metadata has a 32 KB total limit. The uncompressed cloud-init scrip
 gzip via magic bytes and decompresses transparently.
 
 When agent bootstrap injection is active, the engine produces a multipart MIME message
-composing the program's cloud-init with the agent bootstrap script, then gzip+base64
+composing the blueprint's cloud-init with the agent bootstrap script, then gzip+base64
 encodes the combined payload.
 
 ### 13.2 Always disable Pulumi YAML type checking
@@ -493,12 +493,12 @@ templates and built-in programs must include this property.
 
 ### 14.1 Injection gating
 
-Two interfaces gate agent injection. Programs implementing neither are unaffected:
+Two interfaces gate agent injection. Blueprints implementing neither are unaffected:
 
 | Interface | Who | user_data injection | Networking injection |
 |-----------|-----|--------------------|--------------------|
-| `ApplicationProvider` | Built-in Go programs | Automatic | Manual (program manages its own NSG/NLB) |
-| `AgentAccessProvider` | YAML programs with `meta.agentAccess: true` | Automatic | Automatic (NSG rules + NLB resources auto-added) |
+| `ApplicationProvider` | Built-in Go blueprints | Automatic | Manual (blueprint manages its own NSG/NLB) |
+| `AgentAccessProvider` | YAML blueprints with `meta.agentAccess: true` | Automatic | Automatic (NSG rules + NLB resources auto-added) |
 
 ### 14.2 Resource naming
 
@@ -540,7 +540,7 @@ diverge only in a parameter, unify them.
 | OCI resource sizing | `instanceOcpus()`, `instanceMemoryGb()` in `template.go` | All programs (Go and YAML) via template function |
 | Cloud-init rendering | `buildCloudInit()` in `cloudinit.go` | Built-in Go programs + `cloudInit` template function |
 | IAM policy format | `groupRef()` in `template.go` | All programs needing identity-domain-aware policy statements |
-| Program lookup | `ProgramRegistry` struct | Engine, handlers, API — single registry, single `Get()` |
+| Blueprint lookup | `BlueprintRegistry` struct | Engine, handlers, API — single registry, single `Get()` |
 | Config field parsing | `ParseConfigFields()` in `yaml_config.go` | All YAML programs — type mapping, meta groups, conventions |
 | Agent bootstrap | `agent_bootstrap.sh` embedded once | Injected into all compute resources via `ComposeAndEncode()` |
 | Validation pipeline | `ValidateProgram()` in `validate.go` | Backend save + frontend live validation share the same 7 levels |
@@ -563,15 +563,15 @@ diverge only in a parameter, unify them.
 2. **Template functions over copy-paste YAML.** OCI sizing logic, cloud-init
    rendering, and IAM policy formatting are all template functions. When a new
    cross-cutting concern appears in YAML programs, add a template function in
-   `template.go` rather than duplicating the logic in each program.
+   `template.go` rather than duplicating the logic in each blueprint.
 
 3. **One injection path.** Agent bootstrap injection goes through `InjectIntoYAML()`
    for YAML programs and `CfgKeyAgentBootstrap` for Go programs. Do not add a third
-   path. If a new program type needs injection, route it through an existing path.
+   path. If a new blueprint type needs injection, route it through an existing path.
 
 4. **Config conventions are DRY by design.** `imageId` → OCI image picker is defined
    once in `yaml_config.go`. Adding a new convention means adding one `case` statement,
-   not updating every program.
+   not updating every blueprint.
 
 ---
 
@@ -640,7 +640,7 @@ what already works.
    for new fields so older responses don't break.
 
 3. **New interfaces are opt-in.** `ApplicationProvider` and `AgentAccessProvider` are
-   discovered via type assertion. Programs that don't implement them behave exactly as
+   discovered via type assertion. Blueprints that don't implement them behave exactly as
    before — no injection, no networking changes, no new behavior.
 
 4. **Fallback chains, not hard requirements.** IP discovery accepts multiple output
@@ -664,10 +664,10 @@ the cost of debugging a silent corruption hours later.
 
 | Layer | Mechanism | Example |
 |-------|-----------|---------|
-| YAML validation | 7-level sequential pipeline | Level 1 (template syntax) blocks Level 2 (render). A program with a syntax error never reaches resource validation. |
+| YAML validation | 7-level sequential pipeline | Level 1 (template syntax) blocks Level 2 (render). A blueprint with a syntax error never reaches resource validation. |
 | Engine operations | Per-stack mutex | `tryLock` returns `conflict` immediately if another operation is running. No queuing, no silent wait. |
 | Credential resolution | Required passphrase | `passphraseID` must not be nil. Returns 400 immediately, not a cryptic Pulumi error 5 minutes later. |
-| Stack creation | Program must exist | `PUT /stacks/{name}` validates the program name against the registry before persisting. |
+| Stack creation | Blueprint must exist | `PUT /stacks/{name}` validates the blueprint name against the registry before persisting. |
 | Agent injection | Compute type check | `IsComputeResource()` returns false for unknown types. Unknown resources are skipped, not mutated. |
 | Frontend save | `collectVisualErrors()` | Client-side validation blocks save before the request even reaches the backend. Missing required properties, undefined variable refs, and missing agent outputs are caught instantly. |
 | Config field types | Convention-based type mapping | `atoi` on a field without a `default:` fails at Level 2 (template render), not at Pulumi runtime. |
@@ -675,7 +675,7 @@ the cost of debugging a silent corruption hours later.
 ### 18.2 Rules
 
 1. **Validate at the boundary, not in the middle.** The 7-level validation pipeline
-   runs once, at save time. It does not run during deploy — by then the program is
+   runs once, at save time. It does not run during deploy — by then the blueprint is
    known-good. This is cheaper and more predictable than scattering checks throughout
    the engine.
 
@@ -690,6 +690,6 @@ the cost of debugging a silent corruption hours later.
    unknown type, private NLB), log the reason. Silent skips are invisible failures.
 
 5. **Prefer denial over degraded behavior.** A stack operation without a passphrase
-   returns 400, not a deploy that silently uses a default passphrase. A program with
+   returns 400, not a deploy that silently uses a default passphrase. A blueprint with
    an undefined `${varName}` fails validation, not a deploy that creates resources
    with empty strings.

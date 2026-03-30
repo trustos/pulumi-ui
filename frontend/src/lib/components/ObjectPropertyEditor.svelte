@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { PropertySchema } from '$lib/schema';
-  import type { ConfigFieldDef } from '$lib/types/program-graph';
+  import type { ConfigFieldDef } from '$lib/types/blueprint-graph';
   import { Input } from '$lib/components/ui/input';
   import * as Tooltip from '$lib/components/ui/tooltip';
   import {
@@ -8,8 +8,8 @@
     serializeObjectValue,
     parseArrayValue,
     serializeArrayValue,
-  } from '$lib/program-graph/object-value';
-  import { stripHtml, cleanValue as stripQuotes } from '$lib/program-graph/typed-value';
+  } from '$lib/blueprint-graph/object-value';
+  import { stripHtml, cleanValue as stripQuotes } from '$lib/blueprint-graph/typed-value';
 
   type ResourceRefItem = { name: string; attrs: string[] };
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ConfigFieldDef } from '$lib/types/program-graph';
+  import type { ConfigFieldDef } from '$lib/types/blueprint-graph';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import * as Select from '$lib/components/ui/select';

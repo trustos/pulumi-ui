@@ -4,8 +4,8 @@
   import { rankSearch, type RankedResult } from '$lib/search-ranking';
   import { Input } from '$lib/components/ui/input';
   import { Button } from '$lib/components/ui/button';
-  import type { ResourceItem } from '$lib/types/program-graph';
-  import { getResourceDefaults, getGraphExtras } from '$lib/program-graph/resource-defaults';
+  import type { ResourceItem } from '$lib/types/blueprint-graph';
+  import { getResourceDefaults, getGraphExtras } from '$lib/blueprint-graph/resource-defaults';
 
   let {
     onSelect,

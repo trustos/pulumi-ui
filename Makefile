@@ -22,7 +22,7 @@ frontend:
 ## backend: Compile the Go binary (requires frontend/dist to exist)
 backend:
 	@# Touch the embed package so go build detects changes to embedded YAML files
-	@touch programs/builtins.go
+	@touch blueprints/builtins.go
 	go build -ldflags="-s -w" -o $(BINARY) ./cmd/server
 
 ## backend-static: Compile a fully static binary (CGO_ENABLED=0, for Linux)

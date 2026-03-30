@@ -63,11 +63,11 @@ type AccountRepository interface {
 	Delete(id string) error
 }
 
-// CustomProgramRepository is the persistence boundary for user-defined programs.
-type CustomProgramRepository interface {
-	Create(p db.CustomProgram) error
-	Get(name string) (db.CustomProgram, error)
-	List() ([]db.CustomProgram, error)
+// CustomBlueprintRepository is the persistence boundary for user-defined blueprints.
+type CustomBlueprintRepository interface {
+	Create(p db.CustomBlueprint) error
+	Get(name string) (db.CustomBlueprint, error)
+	List() ([]db.CustomBlueprint, error)
 	Update(name, displayName, description, programYAML string) error
 	Delete(name string) error
 }

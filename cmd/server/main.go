@@ -16,6 +16,7 @@ import (
 
 	"github.com/trustos/pulumi-ui/internal/api"
 	"github.com/trustos/pulumi-ui/internal/applications"
+	"github.com/trustos/pulumi-ui/internal/blueprints"
 	"github.com/trustos/pulumi-ui/internal/crypto"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
@@ -23,7 +24,6 @@ import (
 	"github.com/trustos/pulumi-ui/internal/logbuffer"
 	"github.com/trustos/pulumi-ui/internal/mesh"
 	"github.com/trustos/pulumi-ui/internal/oci"
-	"github.com/trustos/pulumi-ui/internal/programs"
 )
 
 // The frontend/dist/ directory is built by `cd frontend && npm run build`
@@ -112,22 +112,22 @@ func main() {
 	accounts := db.NewAccountStore(database, enc)
 	passphrases := db.NewPassphraseStore(database, enc)
 	sshKeys := db.NewSSHKeyStore(database, enc)
-	customPrograms := db.NewCustomProgramStore(database)
+	customBlueprints := db.NewCustomBlueprintStore(database)
 
 	// Prune expired sessions on startup
 	sessions.DeleteExpired()
 
-	// Program registry — built-ins registered explicitly, no init() self-registration.
-	registry := programs.NewProgramRegistry()
-	programs.RegisterBuiltins(registry)
+	// Blueprint registry — built-ins registered explicitly, no init() self-registration.
+	registry := blueprints.NewBlueprintRegistry()
+	blueprints.RegisterBuiltins(registry)
 
-	// Load user-defined YAML programs from the database into the registry.
-	if rows, err := customPrograms.List(); err != nil {
-		log.Printf("Warning: could not load custom programs: %v", err)
+	// Load user-defined YAML blueprints from the database into the registry.
+	if rows, err := customBlueprints.List(); err != nil {
+		log.Printf("Warning: could not load custom blueprints: %v", err)
 	} else {
 		for _, cp := range rows {
-			programs.RegisterYAML(registry, cp.Name, cp.DisplayName, cp.Description, cp.ProgramYAML)
-			log.Printf("[programs] loaded custom program %q", cp.Name)
+			blueprints.RegisterYAML(registry, cp.Name, cp.DisplayName, cp.Description, cp.BlueprintYAML)
+			log.Printf("[blueprints] loaded custom blueprint %q", cp.Name)
 		}
 	}
 
@@ -164,7 +164,7 @@ func main() {
 	eng.WithMeshManager(meshMgr)
 
 	// HTTP handler
-	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customPrograms, eng, registry, connStore)
+	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customBlueprints, eng, registry, connStore)
 	h.Hooks = hookStore
 	h.MeshManager = meshMgr
 	h.ForwardManager = mesh.NewForwardManager(meshMgr)

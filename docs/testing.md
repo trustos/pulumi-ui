@@ -18,7 +18,7 @@ The project uses a three-tier testing pyramid plus automated API surface coverag
 | Layer | Framework | Files | Tests | What |
 |-------|-----------|-------|-------|------|
 | Go unit tests | `go test` | 10 packages | ~100 | Deployer, mesh, YAML parsing, crypto, DB |
-| Frontend unit tests | Vitest | 17 files | 483 | API client, serializer, roundtrip, solutions |
+| Frontend unit tests | Vitest | 17 files | 483 | API client, serializer, roundtrip, starters |
 | Integration tests | — | 0 | 0 | **Not implemented yet** |
 | Deploy tests | — | 0 | 0 | **Not implemented yet** |
 
@@ -107,7 +107,7 @@ export async function setup() {
 | `auth.test.ts` | Register, login, session persistence, logout, unauthorized access |
 | `stacks-crud.test.ts` | Create stack, list, get info, update config, delete |
 | `stacks-guard.test.ts` | Delete blocked while running, passphrase required for operations |
-| `programs.test.ts` | List programs (includes catalog apps), validate YAML, fork |
+| `blueprints.test.ts` | List blueprints (includes catalog apps), validate YAML, fork |
 | `applications.test.ts` | App selections saved via putStack, appConfig persisted, deploy-apps SSE format |
 | `app-domains.test.ts` | Set domain → Traefik YAML generated, remove domain, list domains |
 | `port-forward.test.ts` | Start/stop/list (mesh tunnel will fail — tests HTTP layer only) |
@@ -161,7 +161,7 @@ class TestApiClient {
 ### Test Flow (NocoBase Full Stack)
 
 ```
-1. Create stack (solution card config)     →  verify config saved
+1. Create stack (starter card config)      →  verify config saved
 2. Deploy infrastructure (pulumi up)       →  verify outputs (NLB IP)
 3. Wait for agent health                   →  verify mesh connectivity
 4. Deploy applications (deploy-apps)       →  verify Traefik + Postgres + NocoBase

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ProgramSection, ProgramItem, ResourceItem, LoopItem, ConditionalItem, ConfigFieldDef } from '$lib/types/program-graph';
+  import type { BlueprintSection, BlueprintItem, ResourceItem, LoopItem, ConditionalItem, ConfigFieldDef } from '$lib/types/blueprint-graph';
   import ResourceCard from './ResourceCard.svelte';
   import ResourceCatalog from './ResourceCatalog.svelte';
   import LoopBlock from './LoopBlock.svelte';
@@ -7,7 +7,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
 
   let {
-    section = $bindable<ProgramSection>({
+    section = $bindable<BlueprintSection>({
       id: 'main',
       label: 'Resources',
       items: [],
@@ -19,7 +19,7 @@
     onSwitchToYaml,                           // P2-1: raw block "edit in YAML" callback
     onRenameResource,
   }: {
-    section?: ProgramSection;
+    section?: BlueprintSection;
     configFields?: ConfigFieldDef[];
     allProgramResourceNames?: string[];
     allProgramResourceRefs?: { name: string; attrs: string[] }[];
@@ -31,7 +31,7 @@
   let showCatalog = $state(false);
 
   // G1-5: collect names recursively from all items in this section
-  function collectNames(items: ProgramItem[]): string[] {
+  function collectNames(items: BlueprintItem[]): string[] {
     const names: string[] = [];
     for (const item of items) {
       if (item.kind === 'resource') names.push(item.name);

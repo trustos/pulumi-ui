@@ -5,18 +5,18 @@
   import ConfigForm from './ConfigForm.svelte';
   import ApplicationSelector from './ApplicationSelector.svelte';
   import { putStack } from '$lib/api';
-  import type { StackInfo, ProgramMeta, OciAccount } from '$lib/types';
+  import type { StackInfo, BlueprintMeta, OciAccount } from '$lib/types';
 
   let {
     open = $bindable(false),
     info,
-    program,
+    blueprint,
     accounts = [],
     onSaved,
   }: {
     open: boolean;
     info: StackInfo;
-    program: ProgramMeta | null;
+    blueprint: BlueprintMeta | null;
     accounts: OciAccount[];
     onSaved?: () => void;
   } = $props();
@@ -30,7 +30,7 @@
   /** Bumped each time the dialog opens so ConfigForm re-syncs from initialValues. */
   let editFormKey = $state(0);
 
-  const hasCatalog = $derived((program?.applications?.length ?? 0) > 0);
+  const hasCatalog = $derived((blueprint?.applications?.length ?? 0) > 0);
 
   const accountTrigger = $derived(
     accounts.find(a => a.id === selectedAccountId)?.name ?? 'Select an account...'
@@ -61,7 +61,7 @@
     try {
       await putStack(
         info.name,
-        info.program,
+        info.blueprint,
         config,
         '',
         selectedAccountId,
@@ -118,10 +118,10 @@
           </Select.Root>
         </div>
 
-        {#if program}
+        {#if blueprint}
           {#key info.name}
           <ConfigForm
-            fields={program.configFields}
+            fields={blueprint.configFields}
             accountId={selectedAccountId}
             initialValues={info.config}
             resetVersion={editFormKey}
@@ -130,20 +130,20 @@
           />
           {/key}
         {:else}
-          <p class="text-sm text-muted-foreground">Loading program config...</p>
+          <p class="text-sm text-muted-foreground">Loading blueprint config...</p>
         {/if}
       </div>
 
       <Dialog.Footer>
         <Button variant="outline" onclick={() => { open = false; }}>Cancel</Button>
       </Dialog.Footer>
-    {:else if step === 2 && program?.applications}
+    {:else if step === 2 && blueprint?.applications}
       <div class="max-h-[60vh] overflow-y-auto py-4 pr-1">
         {#if saveError}
           <div class="mb-4 p-3 bg-destructive/10 text-destructive text-sm rounded">{saveError}</div>
         {/if}
         <ApplicationSelector
-          applications={program.applications}
+          applications={blueprint.applications}
           bind:selected={selectedApps}
         />
       </div>

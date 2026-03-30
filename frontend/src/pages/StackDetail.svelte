@@ -10,8 +10,8 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward, putStack, setAppDomain, removeAppDomain, listHooks, createHook, deleteHook } from '$lib/api';
-  import type { StackInfo, OciAccount, ProgramMeta, ApplicationDef, AgentHealth, AgentService, NomadJob, PortForward, Hook } from '$lib/types';
+  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listBlueprints, streamDeployApps, getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward, putStack, setAppDomain, removeAppDomain, listHooks, createHook, deleteHook } from '$lib/api';
+  import type { StackInfo, OciAccount, BlueprintMeta, ApplicationDef, AgentHealth, AgentService, NomadJob, PortForward, Hook } from '$lib/types';
   import * as Select from '$lib/components/ui/select';
   import EditStackDialog from '$lib/components/EditStackDialog.svelte';
   import WebTerminal from '$lib/components/WebTerminal.svelte';
@@ -27,7 +27,7 @@
   let unlockError = $state('');
   let unlockState = $state<'idle' | 'loading' | 'done'>('idle');
   let accounts = $state<OciAccount[]>([]);
-  let programs = $state<ProgramMeta[]>([]);
+  let blueprints = $state<BlueprintMeta[]>([]);
   let editOpen = $state(false);
   let copyState = $state<'idle' | 'copied'>('idle');
   let currentOp = $state<'up' | 'refresh' | 'destroy' | 'preview' | ''>('');
@@ -58,7 +58,7 @@
   });
 
   function toggleApp(key: string) {
-    const catalog = currentProgram?.applications ?? [];
+    const catalog = currentBlueprint?.applications ?? [];
     const app = catalog.find(a => a.key === key);
     if (!app || app.required) return;
 
@@ -83,7 +83,7 @@
     isSavingApps = true;
     appSaveError = '';
     try {
-      await putStack(info.name, info.program, info.config, '', info.ociAccountId ?? undefined, info.passphraseId ?? undefined, undefined, editApps, editAppConfig);
+      await putStack(info.name, info.blueprint, info.config, '', info.ociAccountId ?? undefined, info.passphraseId ?? undefined, undefined, editApps, editAppConfig);
       appConfigDirty = false;
       await loadInfo();
     } catch (err) {
@@ -105,12 +105,12 @@
     info?.ociAccountId ? accounts.find((a) => a.id === info!.ociAccountId) ?? null : null
   );
 
-  const currentProgram = $derived(info ? programs.find(p => p.name === info!.program) ?? null : null);
+  const currentBlueprint = $derived(info ? blueprints.find(p => p.name === info!.blueprint) ?? null : null);
 
   let passphraseOk = $derived(info === null ? null : info.passphraseId != null);
   let notDeployed = $derived(info?.status === 'not deployed');
 
-  const appCatalog = $derived<ApplicationDef[]>(currentProgram?.applications ?? []);
+  const appCatalog = $derived<ApplicationDef[]>(currentBlueprint?.applications ?? []);
   const hasApps = $derived(appCatalog.length > 0);
   const hasAgent = $derived(info?.agentAccess === true);
   const isInfraDeployed = $derived(info?.deployed === true);
@@ -447,7 +447,7 @@
     loadForwards();
     loadHooks();
     listAccounts().then((a) => { accounts = a; }).catch(() => {});
-    listPrograms().then((p) => { programs = p; }).catch(() => {});
+    listBlueprints().then((p) => { blueprints = p; }).catch(() => {});
   });
 
   // Auto-load agent status when stack has agent access and infra is deployed.
@@ -707,7 +707,7 @@
     <div class="flex items-center gap-3 flex-wrap">
       <h1 class="text-2xl font-bold">{name}</h1>
       {#if info}
-        <Badge variant="secondary">{info.program}</Badge>
+        <Badge variant="secondary">{info.blueprint}</Badge>
         <Badge variant={statusVariant(info.status, info.deployed)} class={info.status === 'succeeded' && info.deployed ? 'bg-green-600 text-white border-green-600' : ''}>
           {statusLabel(info.status, info.deployed, info.wasDeployed)}
         </Badge>
@@ -793,7 +793,7 @@
     <Tabs.List class="shrink-0">
       <Tabs.Trigger value="logs">Logs</Tabs.Trigger>
       {#if hasApps}
-        <Tabs.Trigger value="applications">Applications</Tabs.Trigger>
+        <Tabs.Trigger value="applications">Apps</Tabs.Trigger>
       {/if}
       {#if hasAgent}
         <Tabs.Trigger value="nodes">Nodes</Tabs.Trigger>
@@ -896,10 +896,10 @@
           {/if}
 
           <!-- Application catalog with live Nomad status -->
-          {#if currentProgram?.applications}
-            {@const catalog = currentProgram.applications}
+          {#if currentBlueprint?.applications}
+            {@const catalog = currentBlueprint.applications}
             <div class="space-y-2">
-              <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Applications</p>
+              <p class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Apps</p>
               {#each catalog.filter(a => a.tier === 'workload') as app}
                 {@const isSelected = editApps[app.key] ?? false}
                 {@const isDep = catalog.some(other => editApps[other.key] && other.dependsOn?.includes(app.key))}
@@ -1077,7 +1077,7 @@
                 onclick={() => startDeployApps()}
                 disabled={isDeployingApps || isRunning || notDeployed || isSavingApps}
               >
-                {isDeployingApps ? 'Deploying...' : 'Deploy Applications'}
+                {isDeployingApps ? 'Deploying...' : 'Deploy Apps'}
               </Button>
             {/if}
             {#if isDeployingApps}
@@ -1589,8 +1589,8 @@
                 </Badge>
               </div>
               <div class="flex justify-between">
-                <span class="text-muted-foreground">Program</span>
-                <span>{info.program}</span>
+                <span class="text-muted-foreground">Blueprint</span>
+                <span>{info.blueprint}</span>
               </div>
               <div class="flex justify-between">
                 <span class="text-muted-foreground">Last Updated</span>
@@ -1679,7 +1679,7 @@
             {#if notDeployed}
               No outputs available. Deploy the stack to see outputs.
             {:else}
-              No outputs defined by this program.
+              No outputs defined by this blueprint.
             {/if}
           </div>
         {:else}
@@ -1739,7 +1739,7 @@
   <EditStackDialog
     bind:open={editOpen}
     {info}
-    program={currentProgram}
+    blueprint={currentBlueprint}
     {accounts}
     onSaved={loadInfo}
   />

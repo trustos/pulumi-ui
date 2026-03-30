@@ -8,35 +8,35 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/trustos/pulumi-ui/internal/auth"
+	"github.com/trustos/pulumi-ui/internal/blueprints"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
 	"github.com/trustos/pulumi-ui/internal/logbuffer"
 	"github.com/trustos/pulumi-ui/internal/mesh"
 	"github.com/trustos/pulumi-ui/internal/oci"
-	"github.com/trustos/pulumi-ui/internal/programs"
 )
 
 // Handler holds all dependencies wired in main.go.
 type Handler struct {
-	DB             *sql.DB
-	Creds          *db.CredentialStore
-	Ops            *db.OperationStore
-	Stacks         *db.StackStore
-	Users          *db.UserStore
-	Sessions       *db.SessionStore
-	Accounts       *db.AccountStore
-	Passphrases    *db.PassphraseStore
-	SSHKeys        *db.SSHKeyStore
-	CustomPrograms *db.CustomProgramStore
-	Engine         *engine.Engine
-	Registry       *programs.ProgramRegistry
-	ConnStore      *db.StackConnectionStore
-	NodeCertStore  *db.NodeCertStore
-	MeshManager    *mesh.Manager
-	Hooks          *db.HookStore
-	ForwardManager *mesh.ForwardManager
-	LogBuffer      *logbuffer.Buffer
-	AgentBinaries  embed.FS // embedded agent_linux_{arm64,amd64} binaries
+	DB               *sql.DB
+	Creds            *db.CredentialStore
+	Ops              *db.OperationStore
+	Stacks           *db.StackStore
+	Users            *db.UserStore
+	Sessions         *db.SessionStore
+	Accounts         *db.AccountStore
+	Passphrases      *db.PassphraseStore
+	SSHKeys          *db.SSHKeyStore
+	CustomBlueprints *db.CustomBlueprintStore
+	Engine           *engine.Engine
+	Registry         *blueprints.BlueprintRegistry
+	ConnStore        *db.StackConnectionStore
+	NodeCertStore    *db.NodeCertStore
+	MeshManager      *mesh.Manager
+	Hooks            *db.HookStore
+	ForwardManager   *mesh.ForwardManager
+	LogBuffer        *logbuffer.Buffer
+	AgentBinaries    embed.FS // embedded agent_linux_{arm64,amd64} binaries
 }
 
 func NewHandler(
@@ -49,25 +49,25 @@ func NewHandler(
 	accounts *db.AccountStore,
 	passphrases *db.PassphraseStore,
 	sshKeys *db.SSHKeyStore,
-	customPrograms *db.CustomProgramStore,
+	customBlueprints *db.CustomBlueprintStore,
 	eng *engine.Engine,
-	registry *programs.ProgramRegistry,
+	registry *blueprints.BlueprintRegistry,
 	connStore *db.StackConnectionStore,
 ) *Handler {
 	return &Handler{
-		DB:             sqlDB,
-		Creds:          creds,
-		Ops:            ops,
-		Stacks:         stacks,
-		Users:          users,
-		Sessions:       sessions,
-		Accounts:       accounts,
-		Passphrases:    passphrases,
-		SSHKeys:        sshKeys,
-		CustomPrograms: customPrograms,
-		Engine:         eng,
-		Registry:       registry,
-		ConnStore:      connStore,
+		DB:               sqlDB,
+		Creds:            creds,
+		Ops:              ops,
+		Stacks:           stacks,
+		Users:            users,
+		Sessions:         sessions,
+		Accounts:         accounts,
+		Passphrases:      passphrases,
+		SSHKeys:          sshKeys,
+		CustomBlueprints: customBlueprints,
+		Engine:           eng,
+		Registry:         registry,
+		ConnStore:        connStore,
 	}
 }
 
@@ -117,14 +117,24 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Get("/accounts/{id}/compartments", h.ListCompartments)
 			r.Get("/accounts/{id}/availability-domains", h.ListAvailabilityDomains)
 
-			// Programs (built-in + custom YAML)
-			r.Get("/programs", h.ListPrograms)
-			r.Post("/programs", h.CreateProgram)
-			r.Post("/programs/validate", h.ValidateProgramHandler)
-			r.Get("/programs/{name}", h.GetProgram)
-			r.Put("/programs/{name}", h.UpdateProgram)
-			r.Delete("/programs/{name}", h.DeleteProgram)
-			r.Post("/programs/{name}/fork", h.ForkProgram)
+			// Blueprints (built-in + custom YAML)
+			r.Get("/blueprints", h.ListBlueprints)
+			r.Post("/blueprints", h.CreateBlueprint)
+			r.Post("/blueprints/validate", h.ValidateBlueprintHandler)
+			r.Get("/blueprints/{name}", h.GetBlueprint)
+			r.Put("/blueprints/{name}", h.UpdateBlueprint)
+			r.Delete("/blueprints/{name}", h.DeleteBlueprint)
+			r.Post("/blueprints/{name}/fork", h.ForkBlueprint)
+
+			// Programs — backwards compatibility aliases
+			r.Get("/programs", h.ListBlueprints)
+			r.Post("/programs", h.CreateBlueprint)
+			r.Post("/programs/validate", h.ValidateBlueprintHandler)
+			r.Get("/programs/{name}", h.GetBlueprint)
+			r.Put("/programs/{name}", h.UpdateBlueprint)
+			r.Delete("/programs/{name}", h.DeleteBlueprint)
+			r.Post("/programs/{name}/fork", h.ForkBlueprint)
+
 			r.Get("/stacks", h.ListStacks)
 			r.Put("/stacks/{name}", h.PutStack)
 			r.Delete("/stacks/{name}", h.DeleteStack)

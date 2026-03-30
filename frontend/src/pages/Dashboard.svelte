@@ -4,23 +4,23 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import StackCard from '$lib/components/StackCard.svelte';
   import NewStackDialog from '$lib/components/NewStackDialog.svelte';
-  import SolutionWizard from '$lib/components/SolutionWizard.svelte';
-  import { listStacks, listPrograms, listAccounts, listPassphrases } from '$lib/api';
+  import StarterWizard from '$lib/components/StarterWizard.svelte';
+  import { listStacks, listBlueprints, listAccounts, listPassphrases } from '$lib/api';
   import { navigate } from '$lib/router';
-  import { solutions } from '$lib/solutions';
-  import type { SolutionCard } from '$lib/solutions';
-  import type { ProgramMeta, StackSummary, OciAccount, Passphrase } from '$lib/types';
+  import { starters } from '$lib/starters';
+  import type { StarterCard } from '$lib/starters';
+  import type { BlueprintMeta, StackSummary, OciAccount, Passphrase } from '$lib/types';
 
   let stacks = $state<StackSummary[]>([]);
-  let programs = $state<ProgramMeta[]>([]);
+  let blueprints = $state<BlueprintMeta[]>([]);
   let accounts = $state<OciAccount[]>([]);
   let passphrases = $state<Passphrase[]>([]);
   let dialogOpen = $state(false);
-  let solutionWizardOpen = $state(false);
-  let activeSolution = $state<SolutionCard | null>(null);
+  let starterWizardOpen = $state(false);
+  let activeStarter = $state<StarterCard | null>(null);
   let loading = $state(true);
   let loadingAccounts = $state(true);
-  let loadingPrograms = $state(false);
+  let loadingBlueprints = $state(false);
   let error = $state('');
 
   $effect(() => {
@@ -28,9 +28,9 @@
       .then(s => { stacks = s; })
       .catch(e => { error = e.message; })
       .finally(() => { loading = false; });
-    listPrograms()
-      .then(p => { programs = p; })
-      .catch(() => { programs = []; });
+    listBlueprints()
+      .then(p => { blueprints = p; })
+      .catch(() => { blueprints = []; });
     listAccounts()
       .then(a => { accounts = a; })
       .catch(() => { accounts = []; })
@@ -41,19 +41,19 @@
   });
 
   async function openNewStack() {
-    loadingPrograms = true;
+    loadingBlueprints = true;
     try {
-      if (programs.length === 0) programs = await listPrograms();
+      if (blueprints.length === 0) blueprints = await listBlueprints();
     } finally {
-      loadingPrograms = false;
+      loadingBlueprints = false;
     }
     dialogOpen = true;
   }
 
   let hasAccounts = $derived(!loadingAccounts && accounts.length > 0);
 
-  let agentAccessByProgram = $derived(
-    Object.fromEntries(programs.map(p => [p.name, !!p.agentAccess]))
+  let agentAccessByBlueprint = $derived(
+    Object.fromEntries(blueprints.map(p => [p.name, !!p.agentAccess]))
   );
 </script>
 
@@ -61,55 +61,23 @@
   <div class="flex items-center justify-between mb-6">
     <div>
       <h1 class="text-2xl font-bold">Stacks</h1>
-      <p class="text-muted-foreground text-sm">Manage your Pulumi infrastructure stacks</p>
+      <p class="text-muted-foreground text-sm">Manage your infrastructure stacks</p>
     </div>
     <Tooltip.Root>
       <Tooltip.Trigger>
-        <Button onclick={openNewStack} disabled={loadingPrograms || !hasAccounts}>
-          {loadingPrograms ? 'Loading...' : 'New Stack'}
+        <Button onclick={openNewStack} disabled={loadingBlueprints || !hasAccounts}>
+          {loadingBlueprints ? 'Loading...' : 'New Stack'}
         </Button>
       </Tooltip.Trigger>
       <Tooltip.Content>
         {#if !hasAccounts}
           Add an OCI account before creating a stack
         {:else}
-          Create a new infrastructure stack from a program template
+          Create a new infrastructure stack from a blueprint
         {/if}
       </Tooltip.Content>
     </Tooltip.Root>
   </div>
-
-  <!-- Solution cards -->
-  {#if hasAccounts && passphrases.length > 0}
-    <div class="mb-8">
-      <p class="text-sm text-muted-foreground mb-3">Deploy a solution</p>
-      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {#each solutions as sol}
-          <button
-            class="text-left border rounded-lg p-4 hover:bg-muted/50 hover:border-primary/30 transition-colors group"
-            onclick={() => { activeSolution = sol; solutionWizardOpen = true; }}
-          >
-            <div class="flex items-center gap-2 mb-1">
-              <span class="text-lg">{sol.icon}</span>
-              <span class="font-semibold text-sm">{sol.name}</span>
-            </div>
-            <p class="text-xs text-muted-foreground">{sol.description}</p>
-          </button>
-        {/each}
-        <button
-          class="text-left border rounded-lg p-4 hover:bg-muted/50 hover:border-primary/30 transition-colors border-dashed"
-          onclick={openNewStack}
-          disabled={loadingPrograms}
-        >
-          <div class="flex items-center gap-2 mb-1">
-            <span class="text-lg">+</span>
-            <span class="font-semibold text-sm">Custom Stack</span>
-          </div>
-          <p class="text-xs text-muted-foreground">Pick a program and configure from scratch</p>
-        </button>
-      </div>
-    </div>
-  {/if}
 
   {#if !loadingAccounts && accounts.length === 0}
     <Alert class="mb-6">
@@ -140,18 +108,50 @@
   {:else}
     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {#each stacks as stack}
-        <StackCard {stack} agentAccess={agentAccessByProgram[stack.program] ?? false} />
+        <StackCard {stack} agentAccess={agentAccessByBlueprint[stack.blueprint] ?? false} />
       {/each}
+    </div>
+  {/if}
+
+  <!-- Quick Start -->
+  {#if hasAccounts && passphrases.length > 0}
+    <div class="border-t mt-8 pt-6">
+      <p class="text-xs uppercase tracking-wide text-muted-foreground mb-3">Quick Start</p>
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {#each starters as sol}
+          <button
+            class="text-left border border-dashed rounded-lg p-3 hover:bg-muted/50 hover:border-primary/30 transition-colors group"
+            onclick={() => { activeStarter = sol; starterWizardOpen = true; }}
+          >
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-base">{sol.icon}</span>
+              <span class="font-medium text-sm text-muted-foreground group-hover:text-foreground">{sol.name}</span>
+            </div>
+            <p class="text-xs text-muted-foreground">{sol.description}</p>
+          </button>
+        {/each}
+        <button
+          class="text-left border border-dashed rounded-lg p-3 hover:bg-muted/50 hover:border-primary/30 transition-colors"
+          onclick={openNewStack}
+          disabled={loadingBlueprints}
+        >
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-base">+</span>
+            <span class="font-medium text-sm text-muted-foreground">Custom Stack</span>
+          </div>
+          <p class="text-xs text-muted-foreground">Pick a blueprint and configure from scratch</p>
+        </button>
+      </div>
     </div>
   {/if}
 </div>
 
-<NewStackDialog bind:open={dialogOpen} {programs} {accounts} bind:passphrases />
+<NewStackDialog bind:open={dialogOpen} programs={blueprints} {accounts} bind:passphrases />
 
-{#if activeSolution}
-  <SolutionWizard
-    bind:open={solutionWizardOpen}
-    solution={activeSolution}
+{#if activeStarter}
+  <StarterWizard
+    bind:open={starterWizardOpen}
+    solution={activeStarter}
     {accounts}
     {passphrases}
   />

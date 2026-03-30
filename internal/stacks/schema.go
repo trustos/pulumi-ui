@@ -20,7 +20,7 @@ type StackConfig struct {
 
 type StackMetadata struct {
 	Name        string `yaml:"name"`
-	Program     string `yaml:"program"`
+	Blueprint   string `yaml:"blueprint"`
 	Description string `yaml:"description,omitempty"`
 }
 
@@ -29,8 +29,8 @@ func (s *StackConfig) Validate() error {
 	if s.Metadata.Name == "" {
 		return fmt.Errorf("metadata.name is required")
 	}
-	if s.Metadata.Program == "" {
-		return fmt.Errorf("metadata.program is required")
+	if s.Metadata.Blueprint == "" {
+		return fmt.Errorf("metadata.blueprint is required")
 	}
 	if s.APIVersion != "pulumi.io/v1" {
 		return fmt.Errorf("unsupported apiVersion: %s", s.APIVersion)

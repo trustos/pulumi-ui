@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ResourceItem, ConfigFieldDef } from '$lib/types/program-graph';
+  import type { ResourceItem, ConfigFieldDef } from '$lib/types/blueprint-graph';
   import type { ResourceSchema } from '$lib/schema';
   import PropertyEditor from './PropertyEditor.svelte';
   import { Input } from '$lib/components/ui/input';

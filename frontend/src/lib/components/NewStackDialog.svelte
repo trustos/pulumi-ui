@@ -7,7 +7,7 @@
     import ApplicationSelector from "./ApplicationSelector.svelte";
     import { putStack, createPassphrase } from "$lib/api";
     import { navigate } from "$lib/router";
-    import type { ProgramMeta, OciAccount, Passphrase } from "$lib/types";
+    import type { BlueprintMeta, OciAccount, Passphrase } from "$lib/types";
 
     let {
         open = $bindable(false),
@@ -16,7 +16,7 @@
         passphrases = $bindable([]),
     }: {
         open: boolean;
-        programs: ProgramMeta[];
+        programs: BlueprintMeta[];
         accounts: OciAccount[];
         passphrases: Passphrase[];
     } = $props();
@@ -30,7 +30,7 @@
         programs.find((p) => p.name === selectedProgramName) ?? null,
     );
     const programTrigger = $derived(
-        programs.find((p) => p.name === selectedProgramName)?.displayName ?? "Select a program...",
+        programs.find((p) => p.name === selectedProgramName)?.displayName ?? "Select a blueprint...",
     );
     const accountTrigger = $derived(
         accounts.find((a) => a.id === selectedAccountId)?.name ?? "Select an account...",
@@ -162,7 +162,7 @@
             </Dialog.Title>
             <Dialog.Description>
                 {step === 1
-                    ? "Name your stack and choose a program."
+                    ? "Name your stack and choose a blueprint."
                     : step === 2
                       ? "Fill in the configuration for your stack."
                       : "Choose which applications to deploy."}
@@ -183,7 +183,7 @@
                 </div>
 
                 <div class="space-y-1">
-                    <p class="text-sm font-medium">Program</p>
+                    <p class="text-sm font-medium">Blueprint</p>
                     <Select.Root type="single" bind:value={selectedProgramName}>
                         <Select.Trigger>
                             {programTrigger}
@@ -392,7 +392,7 @@
                     resetVersion={configFormKey}
                     onSubmit={handleConfigNext}
                     submitLabel={hasCatalog
-                        ? "Next: Applications"
+                        ? "Next: Apps"
                         : isSaving
                           ? "Saving..."
                           : "Save & Configure"}

@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS credentials (
 
 CREATE TABLE IF NOT EXISTS stacks (
     name        TEXT    NOT NULL PRIMARY KEY,
-    program     TEXT    NOT NULL,
+    blueprint   TEXT    NOT NULL,
     config_yaml TEXT    NOT NULL,
     created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at  INTEGER NOT NULL DEFAULT (unixepoch())

@@ -13,7 +13,7 @@ The goal: **a user picks a stack from a catalog, selects which applications to d
 The deployment pipeline is split into two independent operations — each is a separate SSE endpoint, tracked as a separate DB operation, and can be retried independently.
 
 ```
-User selects program + applications
+User selects blueprint + applications
 → PUT /api/stacks/{name}  (save config + app selections)
 
 User clicks Deploy (UI chains these two calls automatically):
@@ -41,7 +41,7 @@ Step B — POST /api/stacks/{name}/deploy-apps  (only if Step A succeeded)
 **Why two endpoints instead of one long SSE:**
 - Each operation is independently retryable. If Phase 1 succeeded but Phase 2 timed out (e.g., cloud-init took longer than expected on first boot), the user can re-run `deploy-apps` without re-provisioning infra.
 - Each operation is stored as a separate row in the `operations` DB table with its own log and status.
-- `POST /up` is unchanged from the current implementation — programs without an application catalog use it exactly as before.
+- `POST /up` is unchanged from the current implementation — blueprints without an application catalog use it exactly as before.
 - The UI automatically chains the two calls on the "Deploy" button, presenting them as one seamless operation with section headers in the log stream.
 
 ---
@@ -54,7 +54,7 @@ Both pulumi-ui and the agent embed [Nebula](https://github.com/slackhq/nebula) (
 
 **How it works (implemented):**
 
-1. **Stack creation** (`internal/api/stacks.go`): pulumi-ui generates a per-stack Nebula CA and issues two certificates — a **UI cert** (`.1` address, group "server") and a **dedicated agent cert** (`.2` address, group "agent"). A `crypto/rand` 32-byte hex **auth token** is also generated. All are stored in `stack_connections`. PKI generation is triggered for both `ApplicationProvider` programs and `AgentAccessProvider` programs (YAML with `meta.agentAccess: true`).
+1. **Stack creation** (`internal/api/stacks.go`): pulumi-ui generates a per-stack Nebula CA and issues two certificates — a **UI cert** (`.1` address, group "server") and a **dedicated agent cert** (`.2` address, group "agent"). A `crypto/rand` 32-byte hex **auth token** is also generated. All are stored in `stack_connections`. PKI generation is triggered for both `ApplicationProvider` blueprints and `AgentAccessProvider` blueprints (YAML with `meta.agentAccess: true`).
 2. **Infrastructure deploys**: The agent cert, CA cert, and auth token are injected into cloud-init via multipart MIME composition. The agent bootstrap script installs the Nebula binary from GitHub releases, configures `nebula.service` (systemd), and starts Nebula on port 41820.
 3. **Post-deploy discovery** (`internal/engine/engine.go`): After successful `Up`, the engine scans Pulumi stack outputs for IP patterns and stores the public/NLB IP in `agent_real_ip`. This IP is used in Nebula's `static_host_map` for direct tunnel establishment.
 4. **On-demand tunnels** (`internal/mesh/mesh.go`): `mesh.Manager` creates userspace Nebula tunnels per stack using the gvisor-based `service.Service` — no TUN device, no root privileges. Tunnels are cached with a 5-minute idle timeout and reaped by a background goroutine. `Tunnel.Close()` calls only `svc.Close()` — `ctrl.Stop()` is explicitly avoided because Nebula's main loop calls `os.Exit(0)` after shutdown, which would terminate the server process.
@@ -84,10 +84,10 @@ The Nebula UDP port on the NLB **does not respond to unauthorized probes**. With
 
 ### 2. Topology-Aware Connectivity
 
-The program declares how the agent is reachable based on the infrastructure it creates. The lighthouse address is always surfaced as a well-known Pulumi output key `nebulaLighthouseAddr` so `Engine.Up()` can read it without topology-specific logic:
+The blueprint declares how the agent is reachable based on the infrastructure it creates. The lighthouse address is always surfaced as a well-known Pulumi output key `nebulaLighthouseAddr` so `Engine.Up()` can read it without topology-specific logic:
 
 **Nomad cluster (NLB topology):**
-- Nebula lighthouse on NLB (UDP port, auto-provisioned by the program)
+- Nebula lighthouse on NLB (UDP port, auto-provisioned by the blueprint)
 - Output: `nebulaLighthouseAddr = "nlb-public-ip:41820"`
 - NSG: allow UDP on lighthouse port
 
@@ -150,7 +150,7 @@ Examples: Traefik (Nomad job), PostgreSQL (Nomad job or Docker), nomad-ops, cust
 
 ### 4. Cloud-and-Orchestrator Agnostic
 
-The agent is a **general-purpose command executor**. It doesn't know about Nomad, Kubernetes, or Docker. It runs commands. The application definitions specify WHAT commands to run:
+The agent is a **general-purpose command executor**. It doesn't know about Nomad, Kubernetes, or Docker. It runs commands. The application definitions specify what commands to run:
 
 | Application | Agent Commands |
 |---|---|
@@ -161,7 +161,7 @@ The agent is a **general-purpose command executor**. It doesn't know about Nomad
 
 ### 5. Automatic Agent Bootstrap Injection
 
-The Nebula mesh and pulumi-ui agent are **not** part of any program's application catalog. They are infrastructure plumbing injected automatically by the engine into every compute resource when the program implements `ApplicationProvider` or `AgentAccessProvider`.
+The Nebula mesh and pulumi-ui agent are **not** part of any blueprint's application catalog. They are infrastructure plumbing injected automatically by the engine into every compute resource when the blueprint implements `ApplicationProvider` or `AgentAccessProvider`.
 
 **How it works — `internal/agentinject/` package:**
 
@@ -169,13 +169,13 @@ The Nebula mesh and pulumi-ui agent are **not** part of any program's applicatio
 
 2. **Agent bootstrap script** (`agent_bootstrap.sh`): A standalone shell script containing only Nebula + agent installation. Uses `@@PLACEHOLDER@@` markers (not Go templates) that are replaced at injection time.
 
-3. **Multipart MIME composition** (`compose.go`): Wraps the program's cloud-init and the agent bootstrap into a `multipart/mixed` MIME message. cloud-init natively supports multipart MIME — each part runs as a separate script.
+3. **Multipart MIME composition** (`compose.go`): Wraps the blueprint's cloud-init and the agent bootstrap into a `multipart/mixed` MIME message. cloud-init natively supports multipart MIME — each part runs as a separate script.
 
-4. **Two injection paths** (one per program type):
-   - **YAML programs** (`yaml.go`): Post-render YAML transformation. The engine parses the rendered Pulumi YAML, walks all resources, detects compute types via the map, and composes their `user_data` with the agent bootstrap.
-   - **Go programs** (`goprog.go` + engine): The engine renders the agent bootstrap and passes it to Go programs via a special config key (`__agentBootstrap`). `buildCloudInit()` accepts this and composes via multipart MIME.
+4. **Two injection paths** (one per blueprint type):
+   - **YAML blueprints** (`yaml.go`): Post-render YAML transformation. The engine parses the rendered Pulumi YAML, walks all resources, detects compute types via the map, and composes their `user_data` with the agent bootstrap.
+   - **Go blueprints** (`goprog.go` + engine): The engine renders the agent bootstrap and passes it to Go blueprints via a special config key (`__agentBootstrap`). `buildCloudInit()` accepts this and composes via multipart MIME.
 
-5. **Networking injection** (`network.go`): For programs implementing `AgentAccessProvider` (YAML programs with `meta.agentAccess: true`), the engine also auto-adds networking resources for agent connectivity. The injection adapts to what already exists in the program:
+5. **Networking injection** (`network.go`): For blueprints implementing `AgentAccessProvider` (YAML blueprints with `meta.agentAccess: true`), the engine also auto-adds networking resources for agent connectivity. The injection adapts to what already exists in the blueprint:
    - **Existing NSG/NLB** — adds UDP ingress rules on port 41820 to each detected NSG, and a backend set + listener + backends to each detected NLB.
    - **No NSG but VCN exists** — creates a new `__agent_nsg` in the first VCN with the UDP 41820 rule, and attaches it to each compute instance via `createVnicDetails.nsgIds`.
    - **No NLB but subnet exists** — creates a new `__agent_nlb` in the first subnet, plus backend set, listener, and backends linking each compute instance.
@@ -185,9 +185,9 @@ The Nebula mesh and pulumi-ui agent are **not** part of any program's applicatio
 6. **Intermediate node creation** (`yaml.go`): When injecting `user_data` into compute resources, the engine creates missing intermediate YAML mapping nodes (e.g. if an instance has no `metadata` section, it is created automatically before `user_data` is set). This handles bare instances that lack the full property path.
 
 **Injection gating:**
-- **`ApplicationProvider`** (built-in Go programs like `nomad-cluster`): User_data injection is automatic. Networking is managed by the program itself (the program provisions its own NSG rules and NLB configuration).
-- **`AgentAccessProvider`** (YAML programs with `meta.agentAccess: true`): Both user_data injection AND networking injection are automatic. The engine detects existing NSG/NLB resources and adds agent-specific rules, or creates networking resources from VCN/subnet context when none exist.
-- Programs implementing neither interface are unaffected.
+- **`ApplicationProvider`** (built-in Go blueprints like `nomad-cluster`): User_data injection is automatic. Networking is managed by the blueprint itself (the blueprint provisions its own NSG rules and NLB configuration).
+- **`AgentAccessProvider`** (YAML blueprints with `meta.agentAccess: true`): Both user_data injection AND networking injection are automatic. The engine detects existing NSG/NLB resources and adds agent-specific rules, or creates networking resources from VCN/subnet context when none exist.
+- Blueprints implementing neither interface are unaffected.
 
 **Provider extensibility:** Adding a new cloud provider (AWS, GCP) requires adding entries to the `ComputeResources` map in `internal/agentinject/map.go` and networking resource types in `network.go`. The multipart MIME composition and agent bootstrap script are provider-agnostic (cloud-init is a Linux guest standard).
 
@@ -216,7 +216,7 @@ Cloud-init auto-detects architecture at runtime and downloads the agent binary f
 
 ### ApplicationDef (Go)
 
-New file: `internal/programs/applications.go`
+New file: `internal/blueprints/applications.go`
 
 ```go
 type ApplicationTier string
@@ -238,16 +238,16 @@ type ApplicationDef struct {
     Description  string
     Tier         ApplicationTier
     Target       TargetMode       // which instances to execute on
-    Required     bool             // always deployed, cannot be deselected (per-program)
+    Required     bool             // always deployed, cannot be deselected (per-blueprint)
     DefaultOn    bool             // pre-selected in UI
     DependsOn    []string         // other application keys
-    ConfigFields []programs.ConfigField  // app-specific config fields (reuses existing type)
+    ConfigFields []blueprints.ConfigField  // app-specific config fields (reuses existing type)
 }
 
-// ApplicationProvider is an optional interface a Program can implement to expose
+// ApplicationProvider is an optional interface a Blueprint can implement to expose
 // an application catalog. Discovered via type assertion (same pattern as YAMLProgramProvider):
 //
-//   if provider, ok := p.(programs.ApplicationProvider); ok {
+//   if provider, ok := p.(blueprints.ApplicationProvider); ok {
 //       catalog = provider.Applications()
 //   }
 type ApplicationProvider interface {
@@ -255,7 +255,7 @@ type ApplicationProvider interface {
 }
 ```
 
-`ApplicationProvider` is a separate, optional interface. Programs that do not implement it behave as today — no catalog, no Phase 2/3. The `Program` base interface is not changed.
+`ApplicationProvider` is a separate, optional interface. Blueprints that do not implement it behave as today — no catalog, no Phase 2/3. The `Blueprint` base interface is not changed.
 
 ### StackConfig Extension
 
@@ -421,7 +421,7 @@ For accessing private services (Nomad UI, Consul UI, application UIs) without pu
 
 Bootstrap services (Docker, Consul, Nomad, Nebula, Agent) are installed by cloud-init at first boot — they are not part of the selectable catalog. The catalog contains **workload-tier** applications deployed via agent after infrastructure is ready.
 
-### Current catalog (`programs/nomad-cluster.yaml` → `meta.applications`):
+### Current catalog (`blueprints/nomad-cluster.yaml` → `meta.applications`):
 
 | Application | Tier | Target | Default | Dependencies | Config Fields |
 |---|---|---|---|---|---|
@@ -441,7 +441,7 @@ Bootstrap services (Docker, Consul, Nomad, Nebula, Agent) are installed by cloud
 
 ### How catalog applications are deployed
 
-1. Job templates are embedded in the server binary (`programs/jobs/*.nomad.hcl`)
+1. Job templates are embedded in the server binary (`blueprints/jobs/*.nomad.hcl`)
 2. Templates use `[[` `]]` delimiters for Go template variables (e.g., `[[.acmeEmail]]`). Standard `{{ }}` is reserved for Nomad template expressions (e.g., `{{ key "postgres/adminuser" }}`). This separation prevents the Go template engine from interpreting Nomad expressions.
 3. The deployer extracts per-app config from `appConfig` (stored per-stack in SQLite) using the `appKey.fieldKey` prefix convention
 4. **Config field resolution order**: user value → default → auto-generated (for secret fields)
@@ -464,9 +464,9 @@ The **Applications tab** on the Stack Detail page is an interactive management s
 - **Save** persists selections without deploying; **Save & Deploy** persists + runs the deployer
 - No dialog or tab switching required — configure and deploy from one place
 
-### YAML program application declaration
+### YAML blueprint application declaration
 
-YAML programs declare applications in the `meta.applications` section:
+YAML blueprints declare applications in the `meta.applications` section:
 ```yaml
 meta:
   agentAccess: true
@@ -499,7 +499,7 @@ The agent exposes `GET /nomad-jobs` which queries the local Nomad HTTP API and r
 
 Infrastructure services (docker, consul, nomad, nebula) are shown separately as read-only status indicators from the `GET /agent/services` endpoint (systemd service status).
 
-Parsed by `ParseApplications()` in `internal/programs/yaml_config.go`. The `YAMLProgram` type implements both `AgentAccessProvider` and `ApplicationProvider`.
+Parsed by `ParseApplications()` in `internal/blueprints/yaml_config.go`. The `YAMLBlueprint` type implements both `AgentAccessProvider` and `ApplicationProvider`.
 
 ---
 
@@ -509,7 +509,7 @@ Parsed by `ParseApplications()` in `internal/programs/yaml_config.go`. The `YAML
 
 The rewritten `cloudinit.sh` uses Go template syntax (`{{ if ... }}`) for conditionals. This requires switching from `strings.ReplaceAll(@@KEY@@)` to `text/template.Execute()` on the shell script. Variables move from `@@KEY@@` to `{{ .Key }}` notation. Bash does not use `{{ }}` syntax, so there is no delimiter conflict.
 
-The `buildCloudInit()` function in `internal/programs/cloudinit.go` changes from:
+The `buildCloudInit()` function in `internal/blueprints/cloudinit.go` changes from:
 ```go
 result = strings.ReplaceAll(script, "@@KEY@@", value)
 ```
@@ -557,9 +557,9 @@ discover_peers         # 4. Query subnet for peer IPs (needs oci-cli + SUBNET_OC
 
 **Critical ordering invariant**: `discover_imds` must run AFTER `setup_os` (which installs `jq` and OCI CLI) and AFTER `wait_for_network`. `discover_peers` must run AFTER `discover_imds` (which sets `$SUBNET_OCID`). All discovery functions are defined as functions and called only from the main execution block — never at the top level.
 
-**IMDS discovery chain**: OCI IMDS v2 `/vnics/` does NOT return `subnetId` — it returns `vnicId`, `privateIp`, `subnetCidrBlock`. To get the subnet OCID, `discover_imds` fetches `vnicId` from IMDS, then resolves it via `oci network vnic get --vnic-id` using instance_principal auth. This requires the `read virtual-network-family` IAM policy statement (part of the dynamic group policy created by the program).
+**IMDS discovery chain**: OCI IMDS v2 `/vnics/` does NOT return `subnetId` — it returns `vnicId`, `privateIp`, `subnetCidrBlock`. To get the subnet OCID, `discover_imds` fetches `vnicId` from IMDS, then resolves it via `oci network vnic get --vnic-id` using instance_principal auth. This requires the `read virtual-network-family` IAM policy statement (part of the dynamic group policy created by the blueprint).
 
-**Dynamic group is required**: The nomad-cluster program always creates a dynamic group + IAM policy. The `skipDynamicGroup` config option was removed — instance_principal auth is essential for peer discovery (`oci network private-ip list`) and subnet resolution (`oci network vnic get`).
+**Dynamic group is required**: The nomad-cluster blueprint always creates a dynamic group + IAM policy. The `skipDynamicGroup` config option was removed — instance_principal auth is essential for peer discovery (`oci network private-ip list`) and subnet resolution (`oci network vnic get`).
 
 **Note**: Nebula mesh and the pulumi-ui agent are NOT in this script. They are injected as a separate multipart MIME part via `agent_bootstrap.sh` (see section 5 above). The two scripts run independently — if the cloud-init script fails, the agent bootstrap still executes.
 
@@ -578,22 +578,22 @@ The gzip+base64 encoding invariant from CLAUDE.md is preserved. `buildCloudInit(
 
 ### Stack Creation Wizard: 4 Steps
 
-The existing 3-step wizard (defined in roadmap FE-1) gains a fourth step for programs that implement `ApplicationProvider`. For programs without a catalog, the wizard stays at 3 steps.
+The existing 3-step wizard (defined in roadmap FE-1) gains a fourth step for blueprints that implement `ApplicationProvider`. For blueprints without a catalog, the wizard stays at 3 steps.
 
-- **Step 1 — Name & Program** (existing)
+- **Step 1 — Name & Blueprint** (existing)
 - **Step 2 — Security & Access** (existing: account, passphrase, VM Access Key)
-- **Step 3 — Configure [Program Name]** (existing: infrastructure + compute fields)
-- **Step 4 — Applications** (new, only shown for programs with a catalog)
+- **Step 3 — Configure [Blueprint Name]** (existing: infrastructure + compute fields)
+- **Step 4 — Applications** (new, only shown for blueprints with a catalog)
   - Grouped by tier: "Bootstrap Services" and "Workloads"
   - Required apps shown checked + disabled (cannot be deselected)
   - Optional apps have toggles (default from `defaultOn`)
   - Per-app config fields expand when toggled on
   - Dependency validation (auto-enable deps when a dependent is toggled on, warn on disabling with active dependents)
-  - If the program has no `ApplicationProvider`, Step 4 is skipped entirely
+  - If the blueprint has no `ApplicationProvider`, Step 4 is skipped entirely
 
 ### Solution Wizard (one-click deploy)
 
-`SolutionWizard.svelte` provides a simplified stack creation flow for pre-configured solutions (defined in `solutions.ts`). Each `SolutionCard` maps to a program + pre-selected applications with minimal user input (typically just an email). The wizard computes full `config`, `applications`, and `appConfig` via `deriveConfig()`.
+`StarterWizard.svelte` provides a simplified stack creation flow for pre-configured starters (defined in `starters.ts`). Each `StarterCard` maps to a blueprint + pre-selected applications with minimal user input (typically just an email). The wizard computes full `config`, `applications`, and `appConfig` via `deriveConfig()`.
 
 A collapsible "Infrastructure settings" section exposes configurable overrides:
 - **Compartment Name**, **Node Count**, **OCPUs per Node**, **Memory (GB)**, **Boot Volume (GB)** — initialized from each solution's `deriveConfig` defaults (e.g., NocoBase: 1 node / 4 OCPUs / 24 GB / 200 GB; Nomad Cluster: 3 nodes / 1 OCPU / 6 GB / 50 GB)
@@ -602,7 +602,7 @@ A collapsible "Infrastructure settings" section exposes configurable overrides:
 
 ### Stack Detail: Applications Panel
 
-`frontend/src/pages/StackDetail.svelte` gains a new "Applications" card below outputs (only shown for stacks that used a program with a catalog):
+`frontend/src/pages/StackDetail.svelte` gains a new "Applications" card below outputs (only shown for stacks that used a blueprint with a catalog):
 
 - Each app shows: name, tier badge, status (pending / deploying / running / failed / not selected)
 - Mesh connection indicator (Nebula link status: connected / disconnected / connecting)
@@ -645,7 +645,7 @@ The SSE event structure is unchanged (`type: 'output' | 'error' | 'done'`). Phas
 
 ### `Engine.Up()` — unchanged
 
-`Engine.Up()` runs Phase 1 (Pulumi) only. No post-infra hook is added. Programs with or without an application catalog use the same path. The endpoint returns `succeeded` or `failed` when Pulumi finishes.
+`Engine.Up()` runs Phase 1 (Pulumi) only. No post-infra hook is added. Blueprints with or without an application catalog use the same path. The endpoint returns `succeeded` or `failed` when Pulumi finishes.
 
 Note on `e.registry.Get()`: BE-5 is complete. The engine now holds `registry *programs.ProgramRegistry` and calls `e.registry.Get(programName)` instead of the old package-level `programs.Get()`.
 
@@ -843,7 +843,7 @@ Programs without a catalog omit the `applications` field (or return an empty arr
 - `Makefile` — `build` target includes `build-agent`
 
 **Previously implemented (BE-5, agent injection):**
-- `internal/programs/registry.go` — `ProgramRegistry` struct with `sync.RWMutex`
+- `internal/blueprints/registry.go` — `BlueprintRegistry` struct with `sync.RWMutex`
 - `internal/agentinject/` — Agent bootstrap auto-injection (map, compose, YAML/Go injection, networking)
 - `internal/nebula/` — Nebula PKI generation, cert issuance
 - `internal/applications/deployer.go` — Application deployment orchestration

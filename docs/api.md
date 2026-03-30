@@ -132,19 +132,19 @@ When `generate: true` is sent, the server generates an Ed25519 key pair. The res
 
 `DELETE` returns `409 Conflict` if any stacks reference the key. The key must be unlinked from those stacks first.
 
-### Programs & Stacks (requires auth)
+### Blueprints & Stacks (requires auth)
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET    | `/api/programs`          | —                                                     | `ProgramMeta[]` |
-| POST   | `/api/programs`          | `{ name, displayName, description, programYaml }`    | `CustomProgram` (201) |
-| GET    | `/api/programs/{name}`   | —                                                     | `ProgramMeta` (built-in) or `CustomProgram` (custom) |
-| PUT    | `/api/programs/{name}`   | `{ displayName, description, programYaml }`          | `CustomProgram` |
-| DELETE | `/api/programs/{name}`   | —                                                     | `204 No Content` |
-| POST   | `/api/programs/validate` | `{ programYaml }`                                     | `{ valid, errors[], warnings[] }` |
-| POST   | `/api/programs/{name}/fork` | `{ name, displayName, description }`               | `CustomProgram` (201) |
+| GET    | `/api/blueprints`          | —                                                       | `BlueprintMeta[]` |
+| POST   | `/api/blueprints`          | `{ name, displayName, description, blueprintYaml }`    | `CustomBlueprint` (201) |
+| GET    | `/api/blueprints/{name}`   | —                                                       | `BlueprintMeta` (built-in) or `CustomBlueprint` (custom) |
+| PUT    | `/api/blueprints/{name}`   | `{ displayName, description, blueprintYaml }`          | `CustomBlueprint` |
+| DELETE | `/api/blueprints/{name}`   | —                                                       | `204 No Content` |
+| POST   | `/api/blueprints/validate` | `{ blueprintYaml }`                                     | `{ valid, errors[], warnings[] }` |
+| POST   | `/api/blueprints/{name}/fork` | `{ name, displayName, description }`                 | `CustomBlueprint` (201) |
 | GET    | `/api/stacks`            | —                                                     | `StackSummary[]` |
-| PUT | `/api/stacks/{name}` | `{ program, description?, config, ociAccountId, passphraseId, sshKeyId? }` | `200 OK` |
+| PUT | `/api/stacks/{name}` | `{ blueprint, description?, config, ociAccountId, passphraseId, sshKeyId? }` | `200 OK` |
 | GET | `/api/stacks/{name}/info` | — | `StackInfo` |
 | GET | `/api/stacks/{name}/yaml` | — | YAML file download |
 | GET | `/api/stacks/{name}/logs` | — | `LogEntry[]` (last 20 operations, oldest first) |
@@ -161,7 +161,7 @@ When `generate: true` is sent, the server generates an Ed25519 key pair. The res
 ```json
 {
   "name": "my-cluster",
-  "program": "nomad-cluster",
+  "blueprint": "nomad-cluster",
   "ociAccountId": "uuid",
   "passphraseId": "uuid",
   "sshKeyId": "uuid",
@@ -175,7 +175,7 @@ When `generate: true` is sent, the server generates an Ed25519 key pair. The res
 ```json
 {
   "name": "my-cluster",
-  "program": "nomad-cluster",
+  "blueprint": "nomad-cluster",
   "ociAccountId": "uuid",
   "passphraseId": "uuid",
   "sshKeyId": "uuid",
@@ -210,9 +210,9 @@ The `wasDeployed` field is `true` if at least one successful `up` operation has 
 
 The `lastOperationType` field is the operation type (`up`, `destroy`, `refresh`, `preview`) of the most recent operation, regardless of its outcome. It is omitted when no operations have run.
 
-The `agentAccess` field is `true` for programs that implement `ApplicationProvider` or `AgentAccessProvider` with agent access enabled. It controls whether the Nodes tab and agent proxy endpoints are available in the UI.
+The `agentAccess` field is `true` for blueprints that implement `ApplicationProvider` or `AgentAccessProvider` with agent access enabled. It controls whether the Nodes tab and agent proxy endpoints are available in the UI.
 
-The `applications` and `appConfig` fields are present only for stacks whose program implements `ApplicationProvider`. The `mesh` field is present only when a stack connection (Nebula PKI) exists in `stack_connections`. When `deployed` is `false`, any stale agent runtime fields (`agentNebulaIp`, `agentRealIp`, `lighthouseAddr`, `lastSeenAt`) are cleared lazily on read so the response never contains stale connectivity data.
+The `applications` and `appConfig` fields are present only for stacks whose blueprint implements `ApplicationProvider`. The `mesh` field is present only when a stack connection (Nebula PKI) exists in `stack_connections`. When `deployed` is `false`, any stale agent runtime fields (`agentNebulaIp`, `agentRealIp`, `lighthouseAddr`, `lastSeenAt`) are cleared lazily on read so the response never contains stale connectivity data.
 
 ### Agent Proxy (requires auth, routes through Nebula mesh)
 
@@ -296,7 +296,7 @@ Nodes without a real IP (pre-generated certs for nodes not yet deployed) are fil
 
 Serves pre-compiled agent binaries from `dist/agent_{os}_{arch}`. Used by cloud-init at instance boot time. No authentication required — the binary itself is not sensitive. Defaults: `os=linux`, `arch=arm64`.
 
-`ProgramMeta` response shape (from `GET /api/programs`):
+`BlueprintMeta` response shape (from `GET /api/blueprints`):
 ```json
 {
   "name": "nomad-cluster",
@@ -327,23 +327,23 @@ Serves pre-compiled agent binaries from `dist/agent_{os}_{arch}`. Used by cloud-
 }
 ```
 
-The `applications` field is present only for programs implementing `ApplicationProvider`. Programs without an application catalog omit this field (`null` / absent). When present, the UI shows an application selection step in the stack creation wizard.
+The `applications` field is present only for blueprints implementing `ApplicationProvider`. Blueprints without an application catalog omit this field (`null` / absent). When present, the UI shows an application selection step in the stack creation wizard.
 
-The `agentAccess` field is `true` when the program opts into automatic agent connectivity injection (YAML programs with `meta.agentAccess: true`). When enabled, the engine injects agent bootstrap into compute `user_data`, adds NSG rules to existing NSGs (or creates a new NSG from the VCN), and adds NLB backend set/listener to existing NLBs (or creates a new NLB from the subnet). This is independent of `applications` — a program can have `agentAccess` without an application catalog.
+The `agentAccess` field is `true` when the blueprint opts into automatic agent connectivity injection (YAML blueprints with `meta.agentAccess: true`). When enabled, the engine injects agent bootstrap into compute `user_data`, adds NSG rules to existing NSGs (or creates a new NSG from the VCN), and adds NLB backend set/listener to existing NLBs (or creates a new NLB from the subnet). This is independent of `applications` — a blueprint can have `agentAccess` without an application catalog.
 
-`CustomProgram` response shape (from `GET /api/programs/{name}` for custom programs):
+`CustomBlueprint` response shape (from `GET /api/blueprints/{name}` for custom blueprints):
 ```json
 {
   "name": "my-vcn",
   "displayName": "My VCN",
   "description": "Creates a VCN and compartment",
-  "programYaml": "name: my-vcn\nruntime: yaml\n...",
+  "blueprintYaml": "name: my-vcn\nruntime: yaml\n...",
   "createdAt": "2026-03-21T00:00:00Z",
   "updatedAt": "2026-03-21T00:00:00Z"
 }
 ```
 
-**`DELETE /api/programs/{name}`** returns `409 Conflict` if any stacks reference the program. Built-in programs return `405 Method Not Allowed` on `PUT` and `DELETE`.
+**`DELETE /api/blueprints/{name}`** returns `409 Conflict` if any stacks reference the blueprint. Built-in blueprints return `405 Method Not Allowed` on `PUT` and `DELETE`.
 
 `LogEntry` response shape:
 ```json
@@ -422,10 +422,10 @@ type Credentials struct {
     Passphrase string
 }
 
-func (e *Engine) Up(ctx, stackName, programName string, cfg map[string]string, creds Credentials, send SSESender) string
-func (e *Engine) Destroy(ctx, stackName, programName string, cfg map[string]string, creds Credentials, send SSESender) string
-func (e *Engine) Refresh(ctx, stackName, programName string, cfg map[string]string, creds Credentials, send SSESender) string
-func (e *Engine) Preview(ctx, stackName, programName string, cfg map[string]string, creds Credentials, send SSESender) string
+func (e *Engine) Up(ctx, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) string
+func (e *Engine) Destroy(ctx, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) string
+func (e *Engine) Refresh(ctx, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) string
+func (e *Engine) Preview(ctx, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) string
 ```
 
 The API `resolveCredentials(ociAccountID, passphraseID, sshKeyID *string)` helper:
@@ -438,7 +438,7 @@ The API `resolveCredentials(ociAccountID, passphraseID, sshKeyID *string)` helpe
 
 ## Key Design Rules
 
-1. **Program comes from the DB, not the request body.** `POST /up` reads the program name from the stored `StackConfig.Metadata.Program`.
+1. **Blueprint comes from the DB, not the request body.** `POST /up` reads the blueprint name from the stored `StackConfig.Metadata.Blueprint`.
 2. **Stack must be created first.** `POST /up` returns 400 if no stack config exists.
 3. **Passphrase is required for all stack operations.** `POST /up|destroy|refresh|preview` returns 400 if the stack has no `passphrase_id`.
 4. **Per-stack operation locking.** Two operations on the same stack cannot run simultaneously (engine-level mutex).
@@ -449,5 +449,5 @@ The API `resolveCredentials(ociAccountID, passphraseID, sshKeyID *string)` helpe
 9. **Preview does not modify state.** `POST /stacks/{name}/preview` runs `pulumi preview` — it shows a diff of what would change without actually deploying. It is persisted to the `operations` table but does not alter any OCI resources.
 10. **Unlock clears a stuck Pulumi state lock.** `POST /stacks/{name}/unlock` calls `stack.CancelUpdate()` on the Pulumi Automation API to clear a lock left by a crashed operation.
 11. **Log isolation by creation time.** `ListForStack` and `ListLogsForStack` filter operations to those started on or after the stack's `created_at`, so a deleted-and-recreated stack with the same name starts with a clean history.
-12. **Custom programs are live-registered.** `POST /api/programs` both persists to `custom_programs` and calls `programs.RegisterYAML()` — the new program is available for stack creation immediately without a server restart. `PUT /api/programs/{name}` deregisters and re-registers with the updated body.
-13. **YAML programs cannot execute arbitrary code.** The Pulumi YAML runtime is declarative. The `fn::readFile` directive is stripped before execution to prevent programs from reading server filesystem files.
+12. **Custom blueprints are live-registered.** `POST /api/blueprints` both persists to `custom_blueprints` and calls `blueprints.RegisterYAML()` — the new blueprint is available for stack creation immediately without a server restart. `PUT /api/blueprints/{name}` deregisters and re-registers with the updated body.
+13. **YAML blueprints cannot execute arbitrary code.** The Pulumi YAML runtime is declarative. The `fn::readFile` directive is stripped before execution to prevent blueprints from reading server filesystem files.

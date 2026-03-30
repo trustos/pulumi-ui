@@ -42,10 +42,10 @@
           SSH Keys
         </button>
         <button
-          onclick={() => navigate('/programs')}
-          class={path === '/programs' ? 'text-foreground font-medium' : 'text-muted-foreground hover:text-foreground'}
+          onclick={() => navigate('/blueprints')}
+          class={path === '/blueprints' || path === '/programs' ? 'text-foreground font-medium' : 'text-muted-foreground hover:text-foreground'}
         >
-          Programs
+          Blueprints
         </button>
         <button
           onclick={() => navigate('/logs')}

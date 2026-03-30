@@ -1,10 +1,10 @@
 <script lang="ts">
-  import type { PropertyEntry, ConfigFieldDef } from '$lib/types/program-graph';
+  import type { PropertyEntry, ConfigFieldDef } from '$lib/types/blueprint-graph';
   import type { PropertySchema } from '$lib/schema';
   import { Input } from '$lib/components/ui/input';
   import * as Tooltip from '$lib/components/ui/tooltip';
   import ObjectPropertyEditor from './ObjectPropertyEditor.svelte';
-  import { cleanValue, parseSimpleArray, serializeSimpleArray, stripHtml, isRefOrTemplate, inferValidationHint, validatePropertyValue } from '$lib/program-graph/typed-value';
+  import { cleanValue, parseSimpleArray, serializeSimpleArray, stripHtml, isRefOrTemplate, inferValidationHint, validatePropertyValue } from '$lib/blueprint-graph/typed-value';
 
   type PropertyKeyItem = { value: string; type: string; required: boolean; description?: string; properties?: Record<string, PropertySchema>; items?: PropertySchema };
 

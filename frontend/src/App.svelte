@@ -7,9 +7,9 @@
   import Settings from './pages/Settings.svelte';
   import Accounts from '$lib/pages/Accounts.svelte';
   import SSHKeys from '$lib/pages/SSHKeys.svelte';
-  import Programs from './pages/Programs.svelte';
-  import ProgramDocs from './pages/ProgramDocs.svelte';
-  import ProgramEditor from './pages/ProgramEditor.svelte';
+  import Blueprints from './pages/Blueprints.svelte';
+  import BlueprintDocs from './pages/BlueprintDocs.svelte';
+  import BlueprintEditor from './pages/BlueprintEditor.svelte';
   import Logs from './pages/Logs.svelte';
   import Login from '$lib/pages/Login.svelte';
   import Register from '$lib/pages/Register.svelte';
@@ -62,16 +62,18 @@
       document.title = 'Accounts | Pulumi UI';
     } else if (path === '/ssh-keys') {
       document.title = 'SSH Keys | Pulumi UI';
-    } else if (path === '/programs') {
-      document.title = 'Programs | Pulumi UI';
-    } else if (path === '/programs/docs') {
-      document.title = 'Program Docs · Programs | Pulumi UI';
-    } else if (path.endsWith('/edit') && path !== '/programs/docs') {
-      const n = path.slice('/programs/'.length, -'/edit'.length);
-      document.title = `${n} · Programs | Pulumi UI`;
+    } else if (path === '/blueprints' || path === '/programs') {
+      document.title = 'Blueprints | Pulumi UI';
+    } else if (path === '/blueprints/docs' || path === '/programs/docs') {
+      document.title = 'Blueprint Docs · Blueprints | Pulumi UI';
+    } else if (path.endsWith('/edit') && path !== '/blueprints/docs' && path !== '/programs/docs') {
+      const base = path.startsWith('/blueprints/') ? '/blueprints/' : '/programs/';
+      const n = path.slice(base.length, -'/edit'.length);
+      document.title = `${n} · Blueprints | Pulumi UI`;
     } else if (path.endsWith('/fork')) {
-      const n = path.slice('/programs/'.length, -'/fork'.length);
-      document.title = `Fork ${n} · Programs | Pulumi UI`;
+      const base = path.startsWith('/blueprints/') ? '/blueprints/' : '/programs/';
+      const n = path.slice(base.length, -'/fork'.length);
+      document.title = `Fork ${n} · Blueprints | Pulumi UI`;
     } else if (path === '/logs') {
       document.title = 'Logs | Pulumi UI';
     } else if (path === '/settings') {
@@ -103,16 +105,18 @@
         <Accounts />
       {:else if path === '/ssh-keys'}
         <SSHKeys />
-      {:else if path === '/programs'}
-        <Programs />
-      {:else if path.startsWith('/programs/') && path.endsWith('/edit') && path !== '/programs/docs'}
-        {@const editName = path.slice('/programs/'.length, -'/edit'.length)}
-        <ProgramEditor name={editName} />
-      {:else if path.startsWith('/programs/') && path.endsWith('/fork') && path !== '/programs/docs'}
-        {@const forkName = path.slice('/programs/'.length, -'/fork'.length)}
-        <ProgramEditor name={forkName} fork={true} />
-      {:else if path === '/programs/docs'}
-        <ProgramDocs />
+      {:else if path === '/blueprints' || path === '/programs'}
+        <Blueprints />
+      {:else if (path.startsWith('/blueprints/') || path.startsWith('/programs/')) && path.endsWith('/edit') && path !== '/blueprints/docs' && path !== '/programs/docs'}
+        {@const base = path.startsWith('/blueprints/') ? '/blueprints/' : '/programs/'}
+        {@const editName = path.slice(base.length, -'/edit'.length)}
+        <BlueprintEditor name={editName} />
+      {:else if (path.startsWith('/blueprints/') || path.startsWith('/programs/')) && path.endsWith('/fork') && path !== '/blueprints/docs' && path !== '/programs/docs'}
+        {@const base = path.startsWith('/blueprints/') ? '/blueprints/' : '/programs/'}
+        {@const forkName = path.slice(base.length, -'/fork'.length)}
+        <BlueprintEditor name={forkName} fork={true} />
+      {:else if path === '/blueprints/docs' || path === '/programs/docs'}
+        <BlueprintDocs />
       {:else if path === '/logs'}
         <Logs />
       {:else if path === '/settings'}

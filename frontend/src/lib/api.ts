@@ -1,4 +1,4 @@
-import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob, Hook } from './types';
+import type { BlueprintMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob, Hook } from './types';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -14,7 +14,7 @@ export async function getStackInfo(name: string): Promise<StackInfo> {
 
 export async function putStack(
   name: string,
-  program: string,
+  blueprint: string,
   config: Record<string, string>,
   description = '',
   ociAccountId?: string,
@@ -27,7 +27,7 @@ export async function putStack(
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      program,
+      blueprint,
       config,
       description,
       ociAccountId: ociAccountId ?? null,
@@ -47,23 +47,23 @@ export async function deleteStack(name: string): Promise<void> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
-export async function listPrograms(): Promise<ProgramMeta[]> {
-  const res = await fetch('/api/programs');
+export async function listBlueprints(): Promise<BlueprintMeta[]> {
+  const res = await fetch('/api/blueprints');
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
-export async function getProgram(name: string): Promise<ProgramMeta & { programYaml?: string }> {
-  const res = await fetch(`/api/programs/${encodeURIComponent(name)}`);
+export async function getBlueprint(name: string): Promise<BlueprintMeta & { blueprintYaml?: string }> {
+  const res = await fetch(`/api/blueprints/${encodeURIComponent(name)}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
-export async function validateProgram(programYaml: string): Promise<ValidateProgramResult> {
-  const res = await fetch('/api/programs/validate', {
+export async function validateBlueprint(blueprintYaml: string): Promise<ValidateProgramResult> {
+  const res = await fetch('/api/blueprints/validate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ programYaml }),
+    body: JSON.stringify({ blueprintYaml }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
@@ -76,13 +76,13 @@ function throwValidationErrors(errs: ValidationError[]): never {
   throw new Error(msg);
 }
 
-export async function createProgram(data: {
+export async function createBlueprint(data: {
   name: string;
   displayName: string;
   description: string;
-  programYaml: string;
+  blueprintYaml: string;
 }): Promise<void> {
-  const res = await fetch('/api/programs', {
+  const res = await fetch('/api/blueprints', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -94,11 +94,11 @@ export async function createProgram(data: {
   }
 }
 
-export async function updateProgram(
+export async function updateBlueprint(
   name: string,
-  data: { displayName: string; description: string; programYaml: string }
+  data: { displayName: string; description: string; blueprintYaml: string }
 ): Promise<void> {
-  const res = await fetch(`/api/programs/${encodeURIComponent(name)}`, {
+  const res = await fetch(`/api/blueprints/${encodeURIComponent(name)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -110,14 +110,14 @@ export async function updateProgram(
   }
 }
 
-export async function forkProgram(name: string): Promise<{ programYaml: string }> {
-  const res = await fetch(`/api/programs/${encodeURIComponent(name)}/fork`, { method: 'POST' });
+export async function forkBlueprint(name: string): Promise<{ blueprintYaml: string }> {
+  const res = await fetch(`/api/blueprints/${encodeURIComponent(name)}/fork`, { method: 'POST' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
-export async function deleteProgram(name: string): Promise<void> {
-  const res = await fetch(`/api/programs/${encodeURIComponent(name)}`, {
+export async function deleteBlueprint(name: string): Promise<void> {
+  const res = await fetch(`/api/blueprints/${encodeURIComponent(name)}`, {
     method: 'DELETE',
   });
   if (!res.ok) {

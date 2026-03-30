@@ -20,15 +20,15 @@ The frontend is a pure Svelte 5 SPA built with Vite, embedded in the Go binary v
 | `frontend/src/pages/Settings.svelte` | Named passphrases management, state backend info, health check |
 | `frontend/src/lib/pages/Accounts.svelte` | OCI account management, credential verification, export/import |
 | `frontend/src/lib/pages/SSHKeys.svelte` | SSH key management (list, create, generate, download, delete) |
-| `frontend/src/pages/Programs.svelte` | Programs page: list built-in + custom programs, create/edit/delete custom YAML programs |
+| `frontend/src/pages/Blueprints.svelte` | Blueprints page: list built-in + custom blueprints, create/edit/delete custom YAML blueprints |
 | `frontend/src/lib/pages/Login.svelte` | Login form |
 | `frontend/src/lib/pages/Register.svelte` | First-run registration form |
-| `frontend/src/lib/components/Nav.svelte` | Top nav with Accounts, SSH Keys, Programs, Settings links and Sign out |
-| `frontend/src/lib/components/NewStackDialog.svelte` | Program + account + passphrase selector + config form (SSH key is a program config field in Step 3, not a wizard-level picker) |
+| `frontend/src/lib/components/Nav.svelte` | Top nav with Accounts, SSH Keys, Blueprints, Settings links and Sign out |
+| `frontend/src/lib/components/NewStackDialog.svelte` | Blueprint + account + passphrase selector + config form (SSH key is a blueprint config field in Step 3, not a wizard-level picker) |
 | `frontend/src/lib/components/EditStackDialog.svelte` | Edit an existing stack's config fields (same form as New, pre-filled) |
 | `frontend/src/lib/components/ConfigForm.svelte` | Dynamic form from `ProgramMeta.configFields` |
 | `frontend/src/lib/components/OciImportDialog.svelte` | Multi-step OCI config import wizard (file upload or ZIP) |
-| `frontend/src/lib/components/ApplicationSelector.svelte` | Application catalog selector for stack creation (ApplicationProvider programs) |
+| `frontend/src/lib/components/ApplicationSelector.svelte` | Application catalog selector for stack creation (ApplicationProvider blueprints) |
 | `frontend/src/lib/components/StackCard.svelte` | Card shown on Dashboard for each stack (with Agent Connect indicator) |
 | `frontend/src/lib/components/WebTerminal.svelte` | Interactive web terminal via xterm.js + WebSocket to agent /shell (Nebula mesh) |
 | `frontend/src/lib/components/ui/` | shadcn-svelte component library (Button, Input, Select, Dialog, Tabs, Badge, Combobox, etc.) |
@@ -44,12 +44,12 @@ The frontend is a pure Svelte 5 SPA built with Vite, embedded in the Go binary v
 | `/` | `Dashboard.svelte` | Yes |
 | `/accounts` | `Accounts.svelte` | Yes |
 | `/ssh-keys` | `SSHKeys.svelte` | Yes |
-| `/programs` | `Programs.svelte` | Yes |
+| `/blueprints` | `Blueprints.svelte` | Yes |
 | `/settings` | `Settings.svelte` | Yes |
 | `/stacks/{name}` | `StackDetail.svelte` | Yes |
-| `/programs/:name/edit` | `ProgramEditor.svelte` | Yes |
-| `/programs/:name/fork` | `ProgramEditor.svelte` (fork mode) | Yes |
-| `/programs/docs` | Program reference documentation | Yes |
+| `/blueprints/:name/edit` | `BlueprintEditor.svelte` | Yes |
+| `/blueprints/:name/fork` | `BlueprintEditor.svelte` (fork mode) | Yes |
+| `/blueprints/docs` | Blueprint reference documentation | Yes |
 
 ---
 
@@ -102,10 +102,10 @@ ConfigForm also renders inline pickers for `oci-compartment` (via `listCompartme
 
 ## Stack Creation Wizard (NewStackDialog)
 
-The wizard has **3 or 4 steps**, depending on the selected program. Programs implementing `ApplicationProvider` show an additional application selection step.
+The wizard has **3 or 4 steps**, depending on the selected blueprint. Blueprints implementing `ApplicationProvider` show an additional application selection step.
 
-### Step 1 — Name & Program
-Fields: stack name, program selection.
+### Step 1 — Name & Blueprint
+Fields: stack name, blueprint selection.
 Purpose: define what you are creating. No security or infrastructure concerns here.
 
 ### Step 2 — Security & Access
@@ -114,18 +114,18 @@ Purpose: define who can access the stack and how state is protected.
 - If no passphrases exist, show the inline passphrase creation panel prominently (not buried at the bottom).
 - Show a clear explanation of passphrase immutability: *"The passphrase cannot be changed after stack creation. It encrypts your Pulumi state — changing it would permanently break access to all deployed resources."*
 
-### Step 3 — Configure [Program Name]
-Renders ConfigForm for the selected program's config fields.
+### Step 3 — Configure [Blueprint Name]
+Renders ConfigForm for the selected blueprint's config fields.
 Fields are rendered in layer order: infrastructure → compute → bootstrap.
 Derived fields are shown read-only with a computed-from tooltip.
 
 ### Step 3b — Applications (conditional)
-Shown only for programs with an `applications` catalog. Renders `ApplicationSelector.svelte` which lists available applications from the program's catalog. Required applications are shown as always-on (cannot be deselected). Optional applications can be toggled on/off. Dependencies are enforced (e.g., selecting Traefik auto-selects Nomad if it depends on it). The selected applications are stored in the stack config and determine which apps the deployer installs post-infrastructure.
+Shown only for blueprints with an `applications` catalog. Renders `ApplicationSelector.svelte` which lists available applications from the blueprint's catalog. Required applications are shown as always-on (cannot be deselected). Optional applications can be toggled on/off. Dependencies are enforced (e.g., selecting Traefik auto-selects Nomad if it depends on it). The selected applications are stored in the stack config and determine which apps the deployer installs post-infrastructure.
 
 `PUT /api/stacks/{name}` body:
 ```json
 {
-  "program": "nomad-cluster",
+  "blueprint": "nomad-cluster",
   "description": "Production cluster",
   "ociAccountId": "uuid",
   "passphraseId": "uuid",
@@ -138,12 +138,12 @@ Shown only for programs with an `applications` catalog. Renders `ApplicationSele
 
 ---
 
-## Solution Wizard (SolutionWizard)
+## Starter Wizard (StarterWizard)
 
-`SolutionWizard.svelte` provides a streamlined alternative to `NewStackDialog` for pre-configured deployment recipes. Each solution card (`SolutionCard` from `solutions.ts`) defines a program, pre-selected applications, and a `deriveConfig` function that computes all config from minimal user input.
+`StarterWizard.svelte` provides a streamlined alternative to `NewStackDialog` for pre-configured deployment recipes. Each starter card (`StarterCard` from `starters.ts`) defines a blueprint, pre-selected applications, and a `deriveConfig` function that computes all config from minimal user input.
 
 ### User fields
-Each solution declares a small set of `userFields` (typically just an email address). The wizard renders these as the primary form.
+Each starter declares a small set of `userFields` (typically just an email address). The wizard renders these as the primary form.
 
 ### Infrastructure settings (advanced)
 A collapsible "Infrastructure settings" section exposes additional fields initialized from `deriveConfig` defaults:
@@ -155,9 +155,9 @@ A collapsible "Infrastructure settings" section exposes additional fields initia
 - **Backup Schedule** — cron expression for postgres-backup (default: `0 4 * * *`)
 - **OCI Image** — optional image picker (only shown when images are available)
 
-These defaults differ per solution to match resource requirements: NocoBase uses a single large node (4 OCPUs, 24 GB, 200 GB) while the bare Nomad Cluster distributes across 3 smaller nodes (1 OCPU, 6 GB, 50 GB each).
+These defaults differ per starter to match resource requirements: NocoBase uses a single large node (4 OCPUs, 24 GB, 200 GB) while the bare Nomad Cluster distributes across 3 smaller nodes (1 OCPU, 6 GB, 50 GB each).
 
-The wizard's `$effect` initializes these fields from `solution.deriveConfig({}).config`, using fallbacks for any missing keys (e.g., `defaults.ocpusPerNode ?? '4'`).
+The wizard's `$effect` initializes these fields from `starter.deriveConfig({}).config`, using fallbacks for any missing keys (e.g., `defaults.ocpusPerNode ?? '4'`).
 
 ---
 
@@ -184,9 +184,9 @@ SSH public keys for VM access are provided as program config fields (type `ssh-p
 
 | Term | What it is | Where it appears |
 |---|---|---|
-| **Program SSH Key** | A config field value passed into the Pulumi program template | ConfigForm (field type `ssh-public-key`, Step 3) |
+| **Blueprint SSH Key** | A config field value passed into the Pulumi blueprint template | ConfigForm (field type `ssh-public-key`, Step 3) |
 
-If a program config has a `ssh-public-key` field it renders as a key picker (combobox of named SSH keys from Settings). Label it clearly in the program's config field description.
+If a blueprint config has a `ssh-public-key` field it renders as a key picker (combobox of named SSH keys from Settings). Label it clearly in the blueprint's config field description.
 
 ---
 
@@ -199,7 +199,7 @@ If a program config has a `ssh-public-key` field it renders as a key picker (com
 Some fields cannot be changed after a stack is created:
 - **Passphrase** — immutable; changing it would break the encrypted Pulumi state.
 - **Stack name** — is the primary key; cannot be renamed.
-- **Program** — determines the config schema; cannot be changed post-creation.
+- **Blueprint** — determines the config schema; cannot be changed post-creation.
 
 In `EditStackDialog`:
 - Do not hide immutable fields. Show them as read-only with an explanation.
@@ -244,12 +244,12 @@ Show error messages inline beneath the field. Block step navigation and form sub
 
 ---
 
-## Program Editor Validation
+## Blueprint Editor Validation
 
 `ProgramEditor.svelte` runs client-side validation before save and live during editing:
 
 ### Backend validation (on save)
-The backend `ValidateProgram` pipeline runs seven levels (see `docs/programs.md` — Validation section). Errors are shown in the validation panel below the mode bar.
+The backend `ValidateBlueprint` pipeline runs seven levels (see `docs/blueprints.md` — Validation section). Errors are shown in the validation panel below the mode bar.
 
 ### Visual mode validation (`collectVisualErrors`)
 Before saving in visual mode, `collectVisualErrors()` checks:
@@ -257,14 +257,14 @@ Before saving in visual mode, `collectVisualErrors()` checks:
 - Required properties (from the schema) are all present and non-empty.
 - Loop variables start with `$`.
 - **Undefined variable references**: any `${varName}` in a property value is checked against the graph's defined variables and resource names. References containing `:` (e.g., `${oci:tenancyOcid}`) are skipped as provider config refs. Undefined references are flagged as errors.
-- **Missing "practically required" properties** (level 4 warnings): optional object properties whose nested fields include required sub-fields (e.g. `createVnicDetails` with `subnetId`) are flagged as non-blocking warnings. The warning index is built by `buildWarnByType()` from `$lib/program-graph/schema-utils.ts`.
+- **Missing "practically required" properties** (level 4 warnings): optional object properties whose nested fields include required sub-fields (e.g. `createVnicDetails` with `subnetId`) are flagged as non-blocking warnings. The warning index is built by `buildWarnByType()` from `$lib/blueprint-graph/schema-utils.ts`.
 
 Errors (level 5) block saving and are shown in a destructive alert. Warnings (level 4) are shown in a separate warning-variant alert and **do not block** saving.
 
 ### Agent Connect Toggle
-The program editor header contains an **Agent Connect** toggle visible in both visual and YAML modes. When toggled:
+The blueprint editor header contains an **Agent Connect** toggle visible in both visual and YAML modes. When toggled:
 - **Visual mode**: sets `graph.metadata.agentAccess` which the serializer emits as `meta.agentAccess: true`.
-- **YAML mode**: patches the YAML text directly via `insertAgentAccess()` / `removeAgentAccess()` from `$lib/program-graph/agent-access.ts`. These are pure functions extracted for testability (see `agent-access.test.ts`).
+- **YAML mode**: patches the YAML text directly via `insertAgentAccess()` / `removeAgentAccess()` from `$lib/blueprint-graph/agent-access.ts`. These are pure functions extracted for testability (see `agent-access.test.ts`).
 - An informational banner below the mode bar lists all resources auto-injected at deploy time: user_data on compute instances, NSG rules (added to existing or created from VCN), NLB (added to existing or created from subnet), backend sets/listeners/backends.
 - State syncs on visual↔YAML mode switches, template selection, fork, and load.
 
@@ -275,7 +275,7 @@ When a Level 7 validation error detects that `agentAccess` is enabled but no net
 - Adds `compartmentId` as a config field if not already present.
 - Works in both visual and YAML modes. In visual mode, resources are prepended to the first section. In YAML mode, resources are inserted after `resources:` and the instance is patched inline.
 
-The logic is extracted into pure functions in `$lib/program-graph/scaffold-networking.ts` (`scaffoldNetworkingGraph` for visual mode, `scaffoldNetworkingYaml` for YAML mode), covered by `scaffold-networking.test.ts` (16 tests).
+The logic is extracted into pure functions in `$lib/blueprint-graph/scaffold-networking.ts` (`scaffoldNetworkingGraph` for visual mode, `scaffoldNetworkingYaml` for YAML mode), covered by `scaffold-networking.test.ts` (16 tests).
 
 Level 7 validation errors are **non-blocking** — the program can still be saved even if the warning is shown. Only Levels 1–6 block saving. This is enforced by `hasBlockingErrors()` in the backend API handler.
 
@@ -286,17 +286,17 @@ Renaming a resource in the visual editor automatically updates all references ac
 - **Output values**: `${oldName.publicIp}` → `${newName.publicIp}`
 - Propagation descends into **loops** and **conditionals** (including else branches) at any nesting depth.
 
-The rename is triggered on blur of the resource name input in `ResourceCard.svelte`. The `onRename` callback propagates up through `SectionEditor` / `LoopBlock` / `ConditionalBlock` to `ProgramEditor.handleRenameResource()`, which calls `propagateRename()` from `$lib/program-graph/rename-resource.ts`.
+The rename is triggered on blur of the resource name input in `ResourceCard.svelte`. The `onRename` callback propagates up through `SectionEditor` / `LoopBlock` / `ConditionalBlock` to `BlueprintEditor.handleRenameResource()`, which calls `propagateRename()` from `$lib/blueprint-graph/rename-resource.ts`.
 
 In **YAML mode**, press **F2** (or right-click → "Rename Resource") with the cursor on a resource name. A prompt asks for the new name, and `propagateRenameYaml()` updates all `${oldName...}` references in the YAML text.
 
-Logic is in `$lib/program-graph/rename-resource.ts`, with 23 Vitest unit tests in `rename-resource.test.ts`.
+Logic is in `$lib/blueprint-graph/rename-resource.ts`, with 23 Vitest unit tests in `rename-resource.test.ts`.
 
 ### Promote to Variable
 `PropertyEditor` offers two promotion actions for empty required property values:
 
 - **`→ config`** — adds a `ConfigField` and sets the value to `{{ .Config.<key> }}`. Auto-detects `oci-shape`, `oci-image`, `oci-compartment`, `oci-ad`, `ssh-public-key` types.
-- **`→ variable`** — for keys with known OCI patterns (e.g. `availabilityDomain`), auto-scaffolds a `variables:` entry with the correct `fn::invoke` call and sets the property to the Pulumi interpolation (e.g. `${availabilityDomains[0].name}`). Uses `KNOWN_VARIABLE_TEMPLATES` in `ProgramEditor.svelte`. For unknown keys, sets value to `${key}`.
+- **`→ variable`** — for keys with known OCI patterns (e.g. `availabilityDomain`), auto-scaffolds a `variables:` entry with the correct `fn::invoke` call and sets the property to the Pulumi interpolation (e.g. `${availabilityDomains[0].name}`). Uses `KNOWN_VARIABLE_TEMPLATES` in `BlueprintEditor.svelte`. For unknown keys, sets value to `${key}`.
 
 ### Structured Object Property Editor
 Object-type properties (e.g. `createVnicDetails`, `sourceDetails`, `shapeConfig`, `routeRules`) with sub-field definitions in the schema are rendered as a structured sub-field editor instead of a raw textarea. `ObjectPropertyEditor.svelte` provides:
@@ -308,7 +308,7 @@ Object-type properties (e.g. `createVnicDetails`, `sourceDetails`, `shapeConfig`
 - **Array support** — for `type: "array"` properties with `items.properties` (e.g. `routeRules`), the editor renders a list of item editors with add/remove item controls.
 - **Fallback** — if the compact value string cannot be parsed, the editor falls back to a raw textarea.
 
-The compact value format (`{ key: "val", ref: "${subnet.id}" }`) is parsed/serialized by `$lib/program-graph/object-value.ts` using a state-machine tokenizer that respects nested `{}`, `[]`, quotes, and template expressions. Tests in `object-value.test.ts` (32 tests).
+The compact value format (`{ key: "val", ref: "${subnet.id}" }`) is parsed/serialized by `$lib/blueprint-graph/object-value.ts` using a state-machine tokenizer that respects nested `{}`, `[]`, quotes, and template expressions. Tests in `object-value.test.ts` (32 tests).
 
 Schema sub-field definitions come from the backend's `PropertySchema.Properties` and `PropertySchema.Items` fields, populated either by resolving `$ref` from the live Pulumi OCI provider schema or from the hardcoded `fallbackSchema()` in `internal/oci/schema.go`.
 
@@ -365,24 +365,24 @@ Located at `/ssh-keys`. Allows:
 
 ---
 
-## Programs Page
+## Blueprints Page
 
-Located at `/programs`. Allows:
-- Listing all programs — both built-in (read-only) and custom (editable)
-- Built-in programs show a "Built-in" badge; custom programs show a "Custom" badge
-- Programs with Agent Connect enabled show a globe icon (&#x1f310;) with a tooltip
+Located at `/blueprints`. Allows:
+- Listing all blueprints — both built-in (read-only) and custom (editable)
+- Built-in blueprints show a "Built-in" badge; custom blueprints show a "Custom" badge
+- Blueprints with Agent Connect enabled show a globe icon (&#x1f310;) with a tooltip
 - Each card shows the display name, internal name, description, and config field count
-- **Creating a custom program (Visual)** — "New Program (Visual)" opens the visual editor with a **template gallery** overlay:
+- **Creating a custom blueprint (Visual)** — "New Blueprint (Visual)" opens the visual editor with a **template gallery** overlay:
   - 11 templates across 7 categories (Networking, Compute, Web, Security, Data, High Availability, Cluster, Architecture)
   - Text search filters by name, description, tags, and category
   - Category pill filters for quick browsing
   - Templates with Agent Connect show a globe icon
-  - "Start from scratch" option for a blank program
-- **Creating a custom program (YAML)** — "New Program (YAML)" opens a YAML editor with a default stub
-- **Editing a custom program** — opens the visual/YAML editor (`/programs/:name/edit`)
-- **Deleting a custom program** — confirmation dialog; blocked if any stacks reference the program
+  - "Start from scratch" option for a blank blueprint
+- **Creating a custom blueprint (YAML)** — "New Blueprint (YAML)" opens a YAML editor with a default stub
+- **Editing a custom blueprint** — opens the visual/YAML editor (`/blueprints/:name/edit`)
+- **Deleting a custom blueprint** — confirmation dialog; blocked if any stacks reference the blueprint
 
-New/updated programs are live-registered: the program is available for stack creation immediately after saving, without a server restart.
+New/updated blueprints are live-registered: the blueprint is available for stack creation immediately after saving, without a server restart.
 
 ---
 
@@ -411,7 +411,7 @@ The `running` flag from `StackInfo` is used to show a spinner and disable action
 ### Applications tab
 
 The Applications tab is an interactive management surface for the catalog (not a read-only display):
-- All workload-tier apps from the program's catalog are shown as toggleable cards
+- All workload-tier apps from the blueprint's catalog are shown as toggleable cards
 - Checking an app expands its config fields inline (e.g., ACME email for Traefik)
 - `dependsOn` auto-resolution: checking NocoBase auto-checks PostgreSQL and Traefik; checking pgAdmin auto-checks PostgreSQL and Traefik
 - **Auto-credentials toggle** (`_autoCredentials`): apps with `secret: true` config fields show an auto-credentials toggle (default: ON). When ON, secret fields are hidden — the deployer's `init-secrets` task auto-generates them into Consul KV. When OFF, the user provides values manually. This toggle is per-app.
@@ -634,7 +634,7 @@ Display times as relative ("3h ago", "just now") in compact contexts (headers, c
 - **Page header**: `h1` title + `text-sm text-muted-foreground` description + action buttons on the right
 - **StackDetail**: header + action bar + `Tabs` (Logs/Details/Outputs/Configuration)
 - **List pages** (Accounts, SSH Keys): header + list items with inline actions
-- **Card grids** (Dashboard, Programs): responsive grid with consistent card structure
+- **Card grids** (Dashboard, Blueprints): responsive grid with consistent card structure
 
 ---
 

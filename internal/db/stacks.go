@@ -7,7 +7,7 @@ import (
 
 type StackRow struct {
 	Name         string
-	Program      string
+	Blueprint      string
 	ConfigYAML   string
 	OciAccountID *string
 	PassphraseID *string
@@ -24,28 +24,28 @@ func NewStackStore(db *sql.DB) *StackStore {
 	return &StackStore{db: db}
 }
 
-func (s *StackStore) Upsert(name, program, configYAML string, ociAccountID, passphraseID, sshKeyID *string) error {
+func (s *StackStore) Upsert(name, blueprint, configYAML string, ociAccountID, passphraseID, sshKeyID *string) error {
 	_, err := s.db.Exec(`
-		INSERT INTO stacks (name, program, config_yaml, oci_account_id, passphrase_id, ssh_key_id, updated_at)
+		INSERT INTO stacks (name, blueprint, config_yaml, oci_account_id, passphrase_id, ssh_key_id, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
-			program        = excluded.program,
+			blueprint        = excluded.blueprint,
 			config_yaml    = excluded.config_yaml,
 			oci_account_id = excluded.oci_account_id,
 			passphrase_id  = excluded.passphrase_id,
 			ssh_key_id     = excluded.ssh_key_id,
 			updated_at     = excluded.updated_at,
-			created_at     = CASE WHEN program != excluded.program THEN excluded.updated_at ELSE created_at END
-	`, name, program, configYAML, ociAccountID, passphraseID, sshKeyID, time.Now().Unix())
+			created_at     = CASE WHEN blueprint != excluded.blueprint THEN excluded.updated_at ELSE created_at END
+	`, name, blueprint, configYAML, ociAccountID, passphraseID, sshKeyID, time.Now().Unix())
 	return err
 }
 
 func (s *StackStore) Get(name string) (*StackRow, error) {
 	row := &StackRow{}
 	err := s.db.QueryRow(`
-		SELECT name, program, config_yaml, oci_account_id, passphrase_id, ssh_key_id, created_at, updated_at
+		SELECT name, blueprint, config_yaml, oci_account_id, passphrase_id, ssh_key_id, created_at, updated_at
 		FROM stacks WHERE name = ?
-	`, name).Scan(&row.Name, &row.Program, &row.ConfigYAML, &row.OciAccountID, &row.PassphraseID, &row.SshKeyID, &row.CreatedAt, &row.UpdatedAt)
+	`, name).Scan(&row.Name, &row.Blueprint, &row.ConfigYAML, &row.OciAccountID, &row.PassphraseID, &row.SshKeyID, &row.CreatedAt, &row.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -54,7 +54,7 @@ func (s *StackStore) Get(name string) (*StackRow, error) {
 
 func (s *StackStore) List() ([]StackRow, error) {
 	rows, err := s.db.Query(`
-		SELECT name, program, config_yaml, oci_account_id, passphrase_id, ssh_key_id, created_at, updated_at
+		SELECT name, blueprint, config_yaml, oci_account_id, passphrase_id, ssh_key_id, created_at, updated_at
 		FROM stacks ORDER BY name
 	`)
 	if err != nil {
@@ -64,7 +64,7 @@ func (s *StackStore) List() ([]StackRow, error) {
 	var result []StackRow
 	for rows.Next() {
 		var r StackRow
-		rows.Scan(&r.Name, &r.Program, &r.ConfigYAML, &r.OciAccountID, &r.PassphraseID, &r.SshKeyID, &r.CreatedAt, &r.UpdatedAt)
+		rows.Scan(&r.Name, &r.Blueprint, &r.ConfigYAML, &r.OciAccountID, &r.PassphraseID, &r.SshKeyID, &r.CreatedAt, &r.UpdatedAt)
 		result = append(result, r)
 	}
 	return result, nil

@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/trustos/pulumi-ui/internal/programs"
+	"github.com/trustos/pulumi-ui/internal/blueprints"
 )
 
 type appDomainRequest struct {
@@ -34,13 +34,13 @@ func (h *Handler) ListAppDomains(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prog, ok := h.Registry.Get(cfg.Metadata.Program)
+	prog, ok := h.Registry.Get(cfg.Metadata.Blueprint)
 	if !ok {
-		http.Error(w, "unknown program", http.StatusBadRequest)
+		http.Error(w, "unknown blueprint", http.StatusBadRequest)
 		return
 	}
 
-	provider, ok := prog.(programs.ApplicationProvider)
+	provider, ok := prog.(blueprints.ApplicationProvider)
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte("[]"))
@@ -89,15 +89,15 @@ func (h *Handler) SetAppDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prog, ok := h.Registry.Get(cfg.Metadata.Program)
+	prog, ok := h.Registry.Get(cfg.Metadata.Blueprint)
 	if !ok {
-		http.Error(w, "unknown program", http.StatusBadRequest)
+		http.Error(w, "unknown blueprint", http.StatusBadRequest)
 		return
 	}
 
-	provider, ok := prog.(programs.ApplicationProvider)
+	provider, ok := prog.(blueprints.ApplicationProvider)
 	if !ok {
-		http.Error(w, "program has no applications", http.StatusBadRequest)
+		http.Error(w, "blueprint has no app catalog", http.StatusBadRequest)
 		return
 	}
 
@@ -125,7 +125,7 @@ func (h *Handler) SetAppDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if row, _ := h.Stacks.Get(stackName); row != nil {
-		if err := h.Stacks.Upsert(stackName, row.Program, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID); err != nil {
+		if err := h.Stacks.Upsert(stackName, row.Blueprint, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID); err != nil {
 			log.Printf("[app-domains] WARNING: failed to persist domain for %s/%s: %v", stackName, appKey, err)
 		}
 	}
@@ -158,7 +158,7 @@ func (h *Handler) RemoveAppDomain(w http.ResponseWriter, r *http.Request) {
 	yamlStr, err := cfg.ToYAML()
 	if err == nil {
 		if row, _ := h.Stacks.Get(stackName); row != nil {
-			h.Stacks.Upsert(stackName, row.Program, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID)
+			h.Stacks.Upsert(stackName, row.Blueprint, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID)
 		}
 	}
 

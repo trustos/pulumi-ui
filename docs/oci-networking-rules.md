@@ -1,6 +1,6 @@
-# OCI Networking Rules for Program Templates
+# OCI Networking Rules for Blueprint Templates
 
-Rules and patterns learned from deployment testing. These apply to all YAML program templates and the agent-inject system.
+Rules and patterns learned from deployment testing. These apply to all YAML blueprint templates and the agent-inject system.
 
 ---
 
@@ -168,7 +168,7 @@ Programs with `agentAccess: true` need outputs for IP discovery:
 
 ## Agent Connectivity Topology Coverage
 
-Every OCI compute program with `agentAccess: true` falls into one of these topologies, detectable from the YAML at validation time:
+Every OCI compute blueprint with `agentAccess: true` falls into one of these topologies, detectable from the YAML at validation time:
 
 | # | Topology | Detection signal | Agent connectivity | Outcome |
 |---|---|---|---|---|
@@ -189,7 +189,7 @@ Every OCI compute program with `agentAccess: true` falls into one of these topol
 ## Topology Decision Tree
 
 ```
-Does the program have agentAccess: true?
+Does the blueprint have agentAccess: true?
 ├─ No → No agent networking needed. Standard subnet + IGW.
 └─ Yes → Do instances have public IPs?
     ├─ Yes → Single subnet + IGW.
@@ -233,7 +233,7 @@ This requires `read virtual-network-family` in the dynamic group IAM policy.
 | `.2` | DNS resolver |
 | `.255` | Broadcast |
 
-Safe to assign static IPs from `.3` onwards; the nomad-cluster program uses `.10+` for compute nodes.
+Safe to assign static IPs from `.3` onwards; the nomad-cluster blueprint uses `.10+` for compute nodes.
 
 ### Custom Metadata
 

@@ -1,8 +1,8 @@
 # pulumi-ui — Agent Reference
 
 A self-hosted web application that provisions Oracle Cloud Infrastructure (OCI) using Pulumi.
-Users define **programs** (Pulumi YAML templates or built-in Go programs), create **stacks**
-(instances of a program with specific config), and run deploy / refresh / destroy operations
+Users define **blueprints** (Pulumi YAML templates or built-in Go blueprints), create **stacks**
+(instances of a blueprint with specific config), and run deploy / refresh / destroy operations
 that stream live output back to the browser.
 
 ---
@@ -30,7 +30,7 @@ internal/api/        HTTP handlers (one file per domain)
   router.go          Chi router + Handler god-object (see roadmap BE-4)
   stacks.go          Stack CRUD + operation streaming (SSE)
   accounts.go        OCI account management
-  programs.go        Custom program CRUD + validation
+  blueprints.go      Custom blueprint CRUD + validation
   auth.go            Register / login / session
   credentials.go     Global credential key-value store
   passphrases.go     Named passphrases (for Pulumi state encryption)
@@ -50,26 +50,26 @@ internal/engine/     Pulumi Automation API wrapper
   engine.go          Up / Destroy / Refresh / Preview / Cancel / Unlock
   stream.go          SSE helpers
 
-internal/programs/   Program registry + program implementations
-  registry.go        Global program slice + ConfigField / ProgramMeta types
+internal/blueprints/ Blueprint registry + blueprint implementations
+  registry.go        Global blueprint slice + ConfigField / BlueprintMeta types
   applications.go    ApplicationDef, ApplicationProvider, AgentAccessProvider interfaces, tier/target types
-  nomad_cluster.go   Built-in Nomad + Consul cluster (Go program)
-  test_vcn.go        Built-in minimal VCN (Go program, for testing)
-  yaml_program.go    User-defined YAML program wrapper
-  yaml_config.go     Parses config: + meta: sections (including meta.applications) from YAML programs
-  validate.go        6-level YAML program validation pipeline
+  nomad_cluster.go   Built-in Nomad + Consul cluster (Go blueprint)
+  test_vcn.go        Built-in minimal VCN (Go blueprint, for testing)
+  yaml_blueprint.go  User-defined YAML blueprint wrapper
+  yaml_config.go     Parses config: + meta: sections (including meta.applications) from YAML blueprints
+  validate.go        6-level YAML blueprint validation pipeline
   template.go        Go template rendering + cloudInit / instanceOcpus helpers
-  cloudinit.go       Embeds and renders cloudinit.sh for Go programs
-  cloudinit.sh       Shell script for program-specific bootstrap (Docker, Consul, Nomad)
+  cloudinit.go       Embeds and renders cloudinit.sh for Go blueprints
+  cloudinit.sh       Shell script for bootstrap (Docker, Consul, Nomad)
 
 internal/agentinject/ Universal agent bootstrap injection (Nebula + pulumi-ui agent)
   map.go             ComputeResources registry (OCI instance types, extensible)
   bootstrap.go       Embeds agent_bootstrap.sh, renders @@PLACEHOLDER@@ markers
   agent_bootstrap.sh Standalone Nebula + agent installer script
   compose.go         Multipart MIME composition + gzip/base64 helpers
-  yaml.go            InjectIntoYAML — post-render user_data transformation for YAML programs
+  yaml.go            InjectIntoYAML — post-render user_data transformation for YAML blueprints
   network.go         InjectNetworkingIntoYAML — auto-adds NSG rules + NLB resources for agent port
-  goprog.go          CfgKeyAgentBootstrap constant for Go program injection
+  goprog.go          CfgKeyAgentBootstrap constant for Go blueprint injection
 
 internal/applications/ Application catalog deployment orchestration
   deployer.go        Deploys selected applications via agent (mesh tunnels, job upload + detach/poll)
@@ -90,7 +90,7 @@ internal/db/         SQLite stores (one file per domain)
   credentials.go     Global credential key-value store
   passphrases.go     Named passphrase store
   ssh_keys.go        SSH key pair store
-  custom_programs.go User-defined YAML program persistence
+  custom_blueprints.go User-defined YAML blueprint persistence
   stack_connections.go Nebula mesh state per stack (PKI, subnet, lighthouse, agent cert/key/token/realIP)
   users.go           User accounts
   sessions.go        Session tokens
@@ -111,7 +111,7 @@ frontend/            Svelte 5 SPA (src/ is the source; dist/ is embedded)
   src/pages/         Full-page route components
   src/lib/           Shared components, API client, stores, types
   src/lib/components/ Reusable UI components (ConfigForm, dialogs, pickers, ObjectPropertyEditor)
-  src/lib/program-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking, schema-utils)
+  src/lib/blueprint-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking, schema-utils)
   src/lib/api.ts     All backend calls — no raw fetch elsewhere
   src/lib/types.ts   TypeScript interfaces matching backend JSON
 ```
@@ -130,7 +130,7 @@ Browser
                  │    ├─ Agent Proxy  (internal/api/agent_proxy.go)  — health/exec/upload/shell via mesh
                  │    └─ Forward Manager  (internal/mesh/forward.go)  — kubectl-style TCP port forwarding
                  └─ Engine  (internal/engine/engine.go)  — Pulumi orchestration + post-deploy discovery
-                      ├─ Programs  (internal/programs/)  — what to deploy
+                      ├─ Blueprints  (internal/blueprints/)  — what to deploy
                       ├─ AgentInject (internal/agentinject/) — auto-injects Nebula + agent into compute user_data
                       ├─ Deployer  (internal/applications/) — app deployment via mesh tunnels (upload job + exec)
                       └─ Pulumi Automation API  — subprocess management
@@ -182,10 +182,10 @@ OCI instance metadata has a 32 KB total limit. The uncompressed cloud-init scrip
 (~39 KB base64). Gzipped it is ~8.5 KB (~11 KB base64). cloud-init detects gzip via magic
 bytes and decompresses transparently.
 
-When agent bootstrap injection is active (programs implementing `ApplicationProvider` or
+When agent bootstrap injection is active (blueprints implementing `ApplicationProvider` or
 `AgentAccessProvider` with `meta.agentAccess: true`), the engine produces a multipart MIME
-message composing the program's cloud-init with the agent bootstrap script, then gzip+base64
-encodes the combined payload. Programs with `AgentAccessProvider` also get automatic networking
+message composing the blueprint's cloud-init with the agent bootstrap script, then gzip+base64
+encodes the combined payload. Blueprints with `AgentAccessProvider` also get automatic networking
 injection (NSG rules + NLB backend sets for the agent port). The `internal/agentinject`
 package handles this — see `ComposeAndEncode()`, `InjectNetworkingIntoYAML()`.
 
@@ -241,7 +241,7 @@ oci network vnic get --vnic-id "$VNIC_ID" --auth instance_principal \
 ```
 
 ### Nomad job templates — `[[` `]]` delimiters
-Job templates in `programs/jobs/*.nomad.hcl` use `[[` `]]` for Go template variables
+Job templates in `blueprints/jobs/*.nomad.hcl` use `[[` `]]` for Go template variables
 (rendered by the deployer) and standard `{{ }}` for Nomad template expressions (rendered
 by Nomad at runtime). Example:
 ```hcl
@@ -276,7 +276,7 @@ Full detail: `docs/coding-principles.md`
 - **Stores are dumb**: only SQL. No cross-table rules, no domain logic.
 - **Repository interfaces**: stores implement interfaces from `internal/ports/`; handlers/services depend on interfaces, never on concrete types.
 - **Config layer taxonomy**: every `ConfigField` carries a `ConfigLayer` (`infrastructure`, `compute`, `bootstrap`, `derived`). Derived fields are never editable in the UI. Fields with `Secret: true` are Consul KV auto-managed credentials with per-app `_autoCredentials` toggle.
-- **Program registration**: explicit `RegisterBuiltins(r)` in `main.go`. No `init()` self-registration.
+- **Blueprint registration**: explicit `RegisterBuiltins(r)` in `main.go`. No `init()` self-registration.
 
 ---
 
@@ -308,13 +308,13 @@ Full detail: `docs/roadmap.md`
 | FE-2 | Extract OCI picker components from ConfigForm | pending |
 | FE-3 | SSH key labelling + passphrase immutability UX | pending |
 | BE-4 | Decompose God Object Handler (needs BE-3) | pending |
-| BE-5 | Thread-safe ProgramRegistry (remove `init()`) | **done** |
+| BE-5 | Thread-safe BlueprintRegistry (remove `init()`) | **done** |
 | Agent Phase 1 | Agent bootstrap pipeline (PKI, certs, token, binary endpoint) | **done** |
 | Agent Phase 2 | Nebula mesh (userspace tunnels, post-deploy discovery, agent proxy) | **done** |
 | Agent Phase 3 | Interactive web terminal (WebSocket PTY via Nebula) | **done** |
 | Agent Phase 4 | Health monitoring, auto-update, user mesh access | user mesh access **done** (mesh config download + SSH via Nebula); health monitoring + auto-update pending |
 | Port Forwarding | kubectl-style TCP port forwarding through Nebula mesh | **done** |
-| App Catalog | Application catalog for YAML programs (`meta.applications`) + deployer via mesh tunnels | **done** (GitHub Actions Runner as first catalog app) |
+| App Catalog | Application catalog for YAML blueprints (`meta.applications`) + deployer via mesh tunnels | **done** (GitHub Actions Runner as first catalog app) |
 | FE-4 | Client-side config field validation (needs Part 0) | pending |
 
 ---
@@ -325,12 +325,12 @@ Full detail: `docs/roadmap.md`
 |---|---|
 | `docs/architecture.md` | Layer diagram, single-binary design, two execution paths, security model |
 | `docs/database.md` | SQLite setup, migrations, encryption |
-| `docs/programs.md` | Program interface, built-in programs, YAML program authoring reference, OCI API client |
+| `docs/blueprints.md` | Blueprint interface, built-in blueprints, YAML blueprint authoring reference, OCI API client |
 | `docs/api.md` | All HTTP endpoints |
 | `docs/frontend.md` | SPA structure, routing, component overview, UX rules, type definitions |
 | `docs/deployment.md` | Docker multi-stage build, env vars |
 | `docs/coding-principles.md` | SOLID principles for this codebase |
-| `docs/visual-editor.md` | Visual editor design, Program Graph model, property system simplification roadmap, known bugs + fix plan |
+| `docs/visual-editor.md` | Visual editor design, Blueprint Graph model, property system simplification roadmap, known bugs + fix plan |
 | `docs/roadmap.md` | Architecture improvement roadmap |
 | `docs/testing.md` | Testing strategy: 3-tier pyramid, route coverage checks, integration + deploy tests |
 | `docs/application-catalog-architecture.md` | Application catalog, Nebula mesh, per-node NLB architecture, agent binary, auto-injection, two-phase deploy |

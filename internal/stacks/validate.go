@@ -3,11 +3,11 @@ package stacks
 import (
 	"fmt"
 
-	"github.com/trustos/pulumi-ui/internal/programs"
+	"github.com/trustos/pulumi-ui/internal/blueprints"
 )
 
-// ValidateAgainstProgram checks that all required config fields are present.
-func ValidateAgainstProgram(cfg map[string]string, fields []programs.ConfigField) error {
+// ValidateAgainstBlueprint checks that all required config fields are present.
+func ValidateAgainstBlueprint(cfg map[string]string, fields []blueprints.ConfigField) error {
 	for _, f := range fields {
 		v, ok := cfg[f.Key]
 		if f.Required && (!ok || v == "") {

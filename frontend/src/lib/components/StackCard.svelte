@@ -45,7 +45,7 @@
               <Tooltip.Content>Agent Connect — secure mesh networking</Tooltip.Content>
             </Tooltip.Root>
           {/if}
-          <Badge variant="secondary">{stack.program}</Badge>
+          <Badge variant="secondary">{stack.blueprint}</Badge>
         </div>
       </div>
     </Card.Header>

@@ -17,7 +17,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
 	nebulaPKI "github.com/trustos/pulumi-ui/internal/nebula"
-	"github.com/trustos/pulumi-ui/internal/programs"
+	"github.com/trustos/pulumi-ui/internal/blueprints"
 	"github.com/trustos/pulumi-ui/internal/stacks"
 )
 
@@ -104,7 +104,7 @@ func (h *Handler) ListStacks(w http.ResponseWriter, r *http.Request) {
 
 	type StackSummary struct {
 		Name          string  `json:"name"`
-		Program       string  `json:"program"`
+		Blueprint     string  `json:"blueprint"`
 		OciAccountID  *string `json:"ociAccountId"`
 		PassphraseID  *string `json:"passphraseId"`
 		SshKeyID      *string `json:"sshKeyId"`
@@ -118,7 +118,7 @@ func (h *Handler) ListStacks(w http.ResponseWriter, r *http.Request) {
 		ops, _ := h.Ops.ListForStack(row.Name, 1, row.CreatedAt)
 		summary := StackSummary{
 			Name:          row.Name,
-			Program:       row.Program,
+			Blueprint:     row.Blueprint,
 			OciAccountID:  row.OciAccountID,
 			PassphraseID:  row.PassphraseID,
 			SshKeyID:      row.SshKeyID,
@@ -142,7 +142,7 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	var body struct {
-		Program      string            `json:"program"`
+		Blueprint    string            `json:"blueprint"`
 		Description  string            `json:"description"`
 		Config       map[string]string `json:"config"`
 		OciAccountID *string           `json:"ociAccountId"`
@@ -155,13 +155,13 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if body.Program == "" {
-		http.Error(w, "program is required", http.StatusBadRequest)
+	if body.Blueprint == "" {
+		http.Error(w, "blueprint is required", http.StatusBadRequest)
 		return
 	}
-	prog, ok := h.Registry.Get(body.Program)
+	prog, ok := h.Registry.Get(body.Blueprint)
 	if !ok {
-		http.Error(w, "unknown program: "+body.Program, http.StatusBadRequest)
+		http.Error(w, "unknown blueprint: "+body.Blueprint, http.StatusBadRequest)
 		return
 	}
 
@@ -170,7 +170,7 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		Kind:       "Stack",
 		Metadata: stacks.StackMetadata{
 			Name:        stackName,
-			Program:     body.Program,
+			Blueprint:   body.Blueprint,
 			Description: body.Description,
 		},
 		Config:       body.Config,
@@ -187,7 +187,7 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := h.Stacks.Upsert(stackName, body.Program, yamlStr, body.OciAccountID, body.PassphraseID, body.SshKeyID); err != nil {
+	if err := h.Stacks.Upsert(stackName, body.Blueprint, yamlStr, body.OciAccountID, body.PassphraseID, body.SshKeyID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -196,10 +196,10 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 	// Applies to both ApplicationProvider (built-in Go programs with catalog)
 	// and AgentAccessProvider (YAML programs with meta.agentAccess: true).
 	shouldGeneratePKI := false
-	if _, ok := prog.(programs.ApplicationProvider); ok {
+	if _, ok := prog.(blueprints.ApplicationProvider); ok {
 		shouldGeneratePKI = true
 	}
-	if aap, ok := prog.(programs.AgentAccessProvider); ok && aap.AgentAccess() {
+	if aap, ok := prog.(blueprints.AgentAccessProvider); ok && aap.AgentAccess() {
 		shouldGeneratePKI = true
 	}
 	if shouldGeneratePKI && h.ConnStore != nil {
@@ -247,7 +247,7 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 
 	type StackInfo struct {
 		Name         string                 `json:"name"`
-		Program      string                 `json:"program"`
+		Blueprint    string                 `json:"blueprint"`
 		OciAccountID *string                `json:"ociAccountId"`
 		PassphraseID *string                `json:"passphraseId"`
 		SshKeyID     *string                `json:"sshKeyId"`
@@ -269,7 +269,7 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 
 	info := StackInfo{
 		Name:         stackName,
-		Program:      row.Program,
+		Blueprint:    row.Blueprint,
 		OciAccountID: row.OciAccountID,
 		PassphraseID: row.PassphraseID,
 		SshKeyID:     row.SshKeyID,
@@ -294,7 +294,7 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 	if info.Status == "succeeded" || info.Status == "failed" {
 		creds, err := h.resolveCredentials(row.OciAccountID, row.PassphraseID, row.SshKeyID)
 		if err == nil {
-			outputs, err := h.Engine.GetStackOutputs(r.Context(), stackName, row.Program, cfg.Config, creds)
+			outputs, err := h.Engine.GetStackOutputs(r.Context(), stackName, row.Blueprint, cfg.Config, creds)
 			if err == nil {
 				for k, v := range outputs {
 					info.Outputs[k] = v.Value
@@ -304,11 +304,11 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Determine if program has agent access
-	if prog, ok := h.Registry.Get(row.Program); ok {
-		if _, isApp := prog.(programs.ApplicationProvider); isApp {
+	if prog, ok := h.Registry.Get(row.Blueprint); ok {
+		if _, isApp := prog.(blueprints.ApplicationProvider); isApp {
 			info.AgentAccess = true
 		}
-		if aap, isAgent := prog.(programs.AgentAccessProvider); isAgent && aap.AgentAccess() {
+		if aap, isAgent := prog.(blueprints.AgentAccessProvider); isAgent && aap.AgentAccess() {
 			info.AgentAccess = true
 		}
 	}
@@ -395,8 +395,8 @@ func (h *Handler) DeleteStack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if row != nil {
-		if err := h.Engine.RemoveStackState(stackName, row.Program); err != nil {
-			log.Printf("[warn] failed to remove Pulumi state for stack %s (program %s): %v", stackName, row.Program, err)
+		if err := h.Engine.RemoveStackState(stackName, row.Blueprint); err != nil {
+			log.Printf("[warn] failed to remove Pulumi state for stack %s (blueprint %s): %v", stackName, row.Blueprint, err)
 		}
 	}
 
@@ -510,9 +510,9 @@ func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation
 	var status string
 	switch operation {
 	case "up":
-		status = h.Engine.Up(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
+		status = h.Engine.Up(opCtx, stackName, cfg.Metadata.Blueprint, cfg.Config, creds, logSend)
 	case "destroy":
-		status = h.Engine.Destroy(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
+		status = h.Engine.Destroy(opCtx, stackName, cfg.Metadata.Blueprint, cfg.Config, creds, logSend)
 		if status == "succeeded" {
 			// Infrastructure is gone — clear the agent connection fields so the UI
 			// no longer shows "Connected" or offers the terminal for a dead instance.
@@ -526,9 +526,9 @@ func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation
 			}
 		}
 	case "refresh":
-		status = h.Engine.Refresh(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
+		status = h.Engine.Refresh(opCtx, stackName, cfg.Metadata.Blueprint, cfg.Config, creds, logSend)
 	case "preview":
-		status = h.Engine.Preview(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
+		status = h.Engine.Preview(opCtx, stackName, cfg.Metadata.Blueprint, cfg.Config, creds, logSend)
 	}
 
 	// Post-operation hooks
@@ -595,7 +595,7 @@ func (h *Handler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opCtx := context.Background()
-	status := h.Engine.DeployApps(opCtx, stackName, cfg.Metadata.Program, cfg.Applications, cfg.AppConfig, logSend)
+	status := h.Engine.DeployApps(opCtx, stackName, cfg.Metadata.Blueprint, cfg.Applications, cfg.AppConfig, logSend)
 
 	// Post-deploy-apps hooks
 	h.executeHooks(opCtx, stackName, "post-deploy-apps", status, logSend)
@@ -604,7 +604,7 @@ func (h *Handler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
 	// survive re-deploys. The deployer mutates appConfig in place.
 	if yamlStr, marshalErr := cfg.ToYAML(); marshalErr == nil {
 		if row, _ := h.Stacks.Get(stackName); row != nil {
-			if err := h.Stacks.Upsert(stackName, row.Program, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID); err != nil {
+			if err := h.Stacks.Upsert(stackName, row.Blueprint, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID); err != nil {
 				log.Printf("[deploy-apps] WARNING: failed to persist appConfig for %s: %v (auto-generated secrets may be lost on re-deploy)", stackName, err)
 			}
 		}

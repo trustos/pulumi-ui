@@ -6,7 +6,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/stretchr/testify/assert"
-	"github.com/trustos/pulumi-ui/internal/programs"
+	"github.com/trustos/pulumi-ui/internal/blueprints"
 )
 
 func TestLooksLikeIP(t *testing.T) {
@@ -52,11 +52,11 @@ func TestDiscoverAgentAddress_NonAgentProgram(t *testing.T) {
 	assert.Empty(t, events, "non-agent programs should be skipped before outputs are read")
 }
 
-// plainProgram satisfies programs.Program but not ApplicationProvider or AgentAccessProvider.
+// plainProgram satisfies blueprints.Blueprint but not ApplicationProvider or AgentAccessProvider.
 type plainProgram struct{}
 
 func (p *plainProgram) Name() string                              { return "plain" }
 func (p *plainProgram) DisplayName() string                       { return "Plain" }
 func (p *plainProgram) Description() string                       { return "test" }
-func (p *plainProgram) ConfigFields() []programs.ConfigField      { return nil }
+func (p *plainProgram) ConfigFields() []blueprints.ConfigField      { return nil }
 func (p *plainProgram) Run(cfg map[string]string) pulumi.RunFunc  { return nil }

@@ -52,7 +52,7 @@ export interface ApplicationDef {
   port?: number;
 }
 
-export interface ProgramMeta {
+export interface BlueprintMeta {
   name: string;
   displayName: string;
   description: string;
@@ -84,7 +84,7 @@ export interface Passphrase {
 
 export interface StackSummary {
   name: string;
-  program: string;
+  blueprint: string;
   passphraseId: string | null;
   sshKeyId: string | null;
   lastOperation: string | null;
@@ -122,7 +122,7 @@ export interface NodeInfo {
 
 export interface StackInfo {
   name: string;
-  program: string;
+  blueprint: string;
   ociAccountId: string | null;
   passphraseId: string | null;
   sshKeyId: string | null;
