@@ -5,6 +5,8 @@ server
 /agent
 /dist/
 node_modules/
+.pulumi-ui.pid
+pulumi-ui.log
 
 # ── Go ────────────────────────────────────────────────────────────────────────
 *.test

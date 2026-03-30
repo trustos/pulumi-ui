@@ -2,7 +2,7 @@ BINARY   := pulumi-ui
 DATA_DIR := ./dev-data
 ADDR     := :8080
 
-.PHONY: all build frontend backend backend-static build-agent dev run watch-frontend dev-watch \
+.PHONY: all build frontend backend backend-static build-agent dev run run-bg stop watch-frontend dev-watch \
         docker docker-push deploy clean clean-all help test test-frontend lint test-all \
         release _release-preflight
 
@@ -117,6 +117,24 @@ deploy:
 	nomad job run deploy/nomad/pulumi-ui.nomad.hcl
 
 # ── Maintenance ───────────────────────────────────────────────────────────────
+
+## run-bg: Build and run the server in the background
+run-bg: build
+	@mkdir -p $(DATA_DIR)/state
+	@PULUMI_UI_DATA_DIR=$(DATA_DIR) \
+	 PULUMI_UI_STATE_DIR=$(DATA_DIR)/state \
+	 PULUMI_UI_ADDR=$(ADDR) \
+	 nohup ./$(BINARY) > pulumi-ui.log 2>&1 & echo "$$!" > .pulumi-ui.pid
+	@echo "Server running in background (PID $$(cat .pulumi-ui.pid)) → http://localhost$(ADDR)"
+	@echo "Logs: tail -f pulumi-ui.log"
+
+## stop: Stop the background server
+stop:
+	@if [ -f .pulumi-ui.pid ] && kill -0 $$(cat .pulumi-ui.pid) 2>/dev/null; then \
+	  kill $$(cat .pulumi-ui.pid) && rm -f .pulumi-ui.pid && echo "Server stopped."; \
+	else \
+	  echo "No running server found."; rm -f .pulumi-ui.pid; \
+	fi
 
 ## clean: Remove built binary, dev-data, frontend dist, and embedded agent binaries
 clean:
