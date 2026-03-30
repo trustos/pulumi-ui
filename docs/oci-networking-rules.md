@@ -55,6 +55,8 @@ No additional security list rules needed for Nebula agent connectivity.
 
 **Note**: There are two firewalls at play — the OCI NSG (external, controls which UDP packets reach the instance) and the Nebula overlay firewall (internal, controls which TCP connections are allowed through the tunnel). The OCI NSG only needs UDP 41820. The Nebula overlay firewall (`agent_bootstrap.sh`) allows: any TCP from group `server` (enables port forwarding to Nomad/Consul/etc.), TCP 22 from group `user` (SSH), and ICMP from any.
 
+**DNAT rule for Docker dynamic ports**: The agent bootstrap script also adds an iptables NAT PREROUTING rule that redirects TCP traffic on `nebula1` to the node's private IP (`hostname -I`), excluding port 41820. This enables port forwarding to Docker-published ports (e.g., Nomad dynamic ports like 28080) which bind to the private IP rather than the Nebula VPN IP. The rule is idempotent (`-C` check before `-A`).
+
 ### When to Add Explicit Security Lists
 
 Only needed when the default rules are insufficient:

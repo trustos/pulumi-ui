@@ -400,6 +400,8 @@ For accessing private services (Nomad UI, Consul UI, application UIs) without pu
 
 **Implementation:** `internal/mesh/forward.go` (`ForwardManager`) manages listeners and proxied connections. `Tunnel.DialPort(ctx, port)` dials arbitrary ports through the Nebula overlay (not just the agent port). The UI shows active forwards with local address, connection count, and a stop button.
 
+**DNAT for Docker dynamic ports:** Nomad binds Docker published ports to the node's private IP (e.g., `10.0.1.10:28080`), but port forwarding through the mesh dials the Nebula VPN IP (e.g., `10.42.0.2:28080`). The agent bootstrap script adds an iptables DNAT rule that redirects TCP traffic arriving on `nebula1` to the node's private IP, excluding port 41820 (which must stay on the Nebula IP for the agent). The rule is idempotent (`-C` check before `-A` append) and placed in the `PREROUTING` chain of the `nat` table.
+
 **Drain timeout:** `Stop()` gives active connections 3 seconds to drain before returning. This prevents the `DELETE /forward/{id}` request from hanging indefinitely when browsers keep connections alive (e.g., Nomad UI long-polling or WebSocket upgrades). After the timeout, the forward is considered stopped even if connections remain — the closed listener ensures no new connections are accepted.
 
 ### Tunnel Reliability

@@ -172,6 +172,19 @@ EOF
   systemctl enable nebula
   systemctl start nebula
   echo "[agent-bootstrap] Nebula mesh started."
+
+  # Enable port forwarding from Nebula overlay to Docker containers.
+  # Nomad binds Docker published ports to the node's private IP, but
+  # port forwarding through the mesh dials the Nebula VPN IP. This DNAT
+  # rule redirects TCP traffic arriving on nebula1 to the private IP,
+  # excluding the agent port (41820) which must stay on the Nebula IP.
+  local private_ip
+  private_ip=$(hostname -I | awk '{print $1}')
+  if [ -n "$private_ip" ]; then
+    iptables -t nat -C PREROUTING -i nebula1 -p tcp ! --dport 41820 -j DNAT --to-destination "$private_ip" 2>/dev/null \
+      || iptables -t nat -A PREROUTING -i nebula1 -p tcp ! --dport 41820 -j DNAT --to-destination "$private_ip"
+    echo "[agent-bootstrap] Port forwarding DNAT: nebula1 → $private_ip (excluding agent port 41820)"
+  fi
 }
 
 # --- pulumi-ui agent ---

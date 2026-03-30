@@ -93,6 +93,26 @@ func TestRenderAgentBootstrap_NebulaFirewallHasThreeInboundRules(t *testing.T) {
 	assert.Equal(t, 3, count, "expected exactly 3 inbound firewall rules (server:41820, user:22, icmp:any)")
 }
 
+func TestRenderAgentBootstrap_DNATRuleForDockerPorts(t *testing.T) {
+	result := string(RenderAgentBootstrap(AgentVars{}))
+
+	// The script must contain an iptables DNAT rule for forwarding Nebula
+	// overlay traffic to the node's private IP (Docker dynamic ports).
+	assert.Contains(t, result, "iptables -t nat")
+	assert.Contains(t, result, "PREROUTING")
+	assert.Contains(t, result, "-j DNAT --to-destination")
+
+	// The rule must target the nebula1 interface specifically.
+	assert.Contains(t, result, "-i nebula1")
+
+	// The rule must exclude port 41820 (agent port stays on Nebula IP).
+	assert.Contains(t, result, "! --dport 41820")
+
+	// The rule must be idempotent: check with -C before appending with -A.
+	assert.Contains(t, result, "iptables -t nat -C PREROUTING")
+	assert.Contains(t, result, "iptables -t nat -A PREROUTING")
+}
+
 func TestRenderAgentBootstrap_AgentDependsOnNebula(t *testing.T) {
 	result := string(RenderAgentBootstrap(AgentVars{}))
 	assert.Contains(t, result, "After=network-online.target nebula.service")

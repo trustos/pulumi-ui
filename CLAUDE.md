@@ -201,6 +201,12 @@ group `server`. This enables port forwarding to any service on the node (Nomad U
 Consul UI 8500, etc.) through the mesh tunnel. The OCI NSG only needs UDP 41820 (Nebula
 underlay); all service-level access goes through the encrypted Nebula overlay.
 
+Additionally, the bootstrap script adds an iptables DNAT rule in the `nat` PREROUTING
+chain that redirects TCP traffic on `nebula1` (excluding port 41820) to the node's
+private IP. This is required because Docker/Nomad bind published ports to the private
+IP, not the Nebula VPN IP. Without this rule, port forwarding to dynamic Docker ports
+(e.g., 28080) through the mesh would fail with connection refused.
+
 ### Tunnel handshake retry on server restart
 After a server restart, the agent's Nebula may still have a cached session for the
 server's VPN IP. It ignores new handshakes until the old session expires (~30-90s).
