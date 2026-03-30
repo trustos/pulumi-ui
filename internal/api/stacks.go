@@ -390,6 +390,9 @@ func (h *Handler) DeleteStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Ops.DeleteForStack(stackName)
+	if h.Hooks != nil {
+		h.Hooks.DeleteForStack(stackName)
+	}
 
 	if row != nil {
 		if err := h.Engine.RemoveStackState(stackName, row.Program); err != nil {
@@ -501,6 +504,9 @@ func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation
 	// navigation away. The only way to cancel is via the explicit /cancel endpoint.
 	opCtx := context.Background()
 
+	// Pre-operation hooks
+	h.executeHooks(opCtx, stackName, "pre-"+operation, "", logSend)
+
 	var status string
 	switch operation {
 	case "up":
@@ -524,6 +530,9 @@ func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation
 	case "preview":
 		status = h.Engine.Preview(opCtx, stackName, cfg.Metadata.Program, cfg.Config, creds, logSend)
 	}
+
+	// Post-operation hooks
+	h.executeHooks(opCtx, stackName, "post-"+operation, status, logSend)
 
 	h.Ops.Finish(opID, status)
 	send(engine.SSEEvent{Type: "done", Data: status})
@@ -587,6 +596,9 @@ func (h *Handler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
 
 	opCtx := context.Background()
 	status := h.Engine.DeployApps(opCtx, stackName, cfg.Metadata.Program, cfg.Applications, cfg.AppConfig, logSend)
+
+	// Post-deploy-apps hooks
+	h.executeHooks(opCtx, stackName, "post-deploy-apps", status, logSend)
 
 	// Persist any auto-generated secrets back to the stack config so they
 	// survive re-deploys. The deployer mutates appConfig in place.

@@ -224,3 +224,18 @@ export interface PortForward {
   activeConns: number;
   createdAt: number;
 }
+
+export interface Hook {
+  id: string;
+  stackName: string;
+  trigger: string;
+  type: 'agent-exec' | 'webhook';
+  priority: number;
+  continueOnError: boolean;
+  command?: string;
+  nodeIndex?: number;
+  url?: string;
+  source: string;
+  description: string;
+  createdAt: number;
+}

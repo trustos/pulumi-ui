@@ -149,12 +149,15 @@ func main() {
 		log.Printf("[startup] external URL not detected — agent bootstrap will fall back to GitHub releases")
 	}
 
+	// Hook store
+	hookStore := db.NewHookStore(database)
+
 	// Nebula mesh tunnel manager — creates on-demand userspace tunnels to agents
 	meshMgr := mesh.NewManager(connStore)
 	meshMgr.WithNodeCertStore(nodeCertStore)
 
 	// Application deployer + engine
-	deployer := applications.NewDeployer(connStore, meshMgr)
+	deployer := applications.NewDeployer(connStore, meshMgr, hookStore)
 	eng := engine.New(stateDir, registry, deployer, connStore)
 	eng.WithNodeCertStore(nodeCertStore)
 	eng.SetExternalURL(externalURL)
@@ -162,6 +165,7 @@ func main() {
 
 	// HTTP handler
 	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customPrograms, eng, registry, connStore)
+	h.Hooks = hookStore
 	h.MeshManager = meshMgr
 	h.ForwardManager = mesh.NewForwardManager(meshMgr)
 	h.NodeCertStore = nodeCertStore

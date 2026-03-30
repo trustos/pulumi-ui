@@ -10,8 +10,9 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward, putStack, setAppDomain, removeAppDomain } from '$lib/api';
-  import type { StackInfo, OciAccount, ProgramMeta, ApplicationDef, AgentHealth, AgentService, NomadJob, PortForward } from '$lib/types';
+  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listPrograms, streamDeployApps, getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward, putStack, setAppDomain, removeAppDomain, listHooks, createHook, deleteHook } from '$lib/api';
+  import type { StackInfo, OciAccount, ProgramMeta, ApplicationDef, AgentHealth, AgentService, NomadJob, PortForward, Hook } from '$lib/types';
+  import * as Select from '$lib/components/ui/select';
   import EditStackDialog from '$lib/components/EditStackDialog.svelte';
   import WebTerminal from '$lib/components/WebTerminal.svelte';
 
@@ -164,6 +165,107 @@
   let fwdStarting = $state(false);
   let fwdOpen = $state(false);
   let stoppingForwards = $state<Set<string>>(new Set());
+
+  // Lifecycle hooks
+  let hooks = $state<Hook[]>([]);
+  let hooksLoading = $state(false);
+  let hooksExpanded = $state(false);
+  let addHookOpen = $state(false);
+  let newHookTrigger = $state('pre-destroy');
+  let newHookType = $state<'agent-exec' | 'webhook'>('agent-exec');
+  let newHookDescription = $state('');
+  let newHookCommand = $state('');
+  let newHookUrl = $state('');
+  let newHookPriority = $state(100);
+  let newHookContinueOnError = $state(true);
+  let hookSaving = $state(false);
+  let hookError = $state('');
+  let deletingHooks = $state<Set<string>>(new Set());
+
+  const HOOK_TRIGGERS = ['pre-destroy', 'post-up', 'post-destroy', 'post-deploy-apps'];
+
+  const hooksByTrigger = $derived(() => {
+    const grouped: Record<string, Hook[]> = {};
+    for (const h of hooks) {
+      if (!grouped[h.trigger]) grouped[h.trigger] = [];
+      grouped[h.trigger].push(h);
+    }
+    // Sort each group by priority
+    for (const key of Object.keys(grouped)) {
+      grouped[key].sort((a, b) => a.priority - b.priority);
+    }
+    return grouped;
+  });
+
+  async function loadHooks() {
+    hooksLoading = true;
+    try {
+      hooks = await listHooks(name);
+    } catch {
+      hooks = [];
+    } finally {
+      hooksLoading = false;
+    }
+  }
+
+  function resetNewHookForm() {
+    newHookTrigger = 'pre-destroy';
+    newHookType = 'agent-exec';
+    newHookDescription = '';
+    newHookCommand = '';
+    newHookUrl = '';
+    newHookPriority = 100;
+    newHookContinueOnError = true;
+    hookError = '';
+  }
+
+  async function doCreateHook() {
+    hookError = '';
+    if (!newHookDescription.trim()) {
+      hookError = 'Description is required';
+      return;
+    }
+    if (newHookType === 'agent-exec' && !newHookCommand.trim()) {
+      hookError = 'Command is required for agent-exec hooks';
+      return;
+    }
+    if (newHookType === 'webhook' && !newHookUrl.trim()) {
+      hookError = 'URL is required for webhook hooks';
+      return;
+    }
+    hookSaving = true;
+    try {
+      await createHook(name, {
+        trigger: newHookTrigger,
+        type: newHookType,
+        priority: newHookPriority,
+        continueOnError: newHookContinueOnError,
+        description: newHookDescription.trim(),
+        command: newHookType === 'agent-exec' ? newHookCommand.trim() : undefined,
+        url: newHookType === 'webhook' ? newHookUrl.trim() : undefined,
+        source: 'manual',
+      });
+      addHookOpen = false;
+      resetNewHookForm();
+      await loadHooks();
+    } catch (err) {
+      hookError = err instanceof Error ? err.message : String(err);
+    } finally {
+      hookSaving = false;
+    }
+  }
+
+  async function doDeleteHook(hookId: string) {
+    deletingHooks = new Set([...deletingHooks, hookId]);
+    try {
+      await deleteHook(name, hookId);
+      await loadHooks();
+    } catch (err) {
+      hookError = err instanceof Error ? err.message : String(err);
+    } finally {
+      deletingHooks = new Set([...deletingHooks].filter(x => x !== hookId));
+    }
+  }
 
   // Infrastructure service ports (not catalog apps — those use ApplicationDef.port)
   const INFRA_PORTS: Record<string, number> = {
@@ -343,6 +445,7 @@
     loadInfo();
     loadPersistedLogs();
     loadForwards();
+    loadHooks();
     listAccounts().then((a) => { accounts = a; }).catch(() => {});
     listPrograms().then((p) => { programs = p; }).catch(() => {});
   });
@@ -984,7 +1087,181 @@
               <span class="text-xs text-destructive">{appSaveError}</span>
             {/if}
           </div>
+
+          <!-- Lifecycle Hooks (collapsible) -->
+          <Separator />
+          <div>
+            <button
+              class="flex items-center gap-2 w-full text-left py-1 group"
+              onclick={() => hooksExpanded = !hooksExpanded}
+            >
+              <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Lifecycle Hooks</span>
+              {#if hooks.length > 0}
+                <Badge variant="secondary" class="text-xs">{hooks.length}</Badge>
+              {/if}
+              <span class="text-xs text-muted-foreground ml-auto group-hover:text-foreground transition-colors">
+                {hooksExpanded ? '−' : '+'}
+              </span>
+            </button>
+
+            {#if hooksExpanded}
+              <div class="mt-2 space-y-3">
+                {#if hooksLoading}
+                  <p class="text-xs text-muted-foreground">Loading hooks...</p>
+                {:else if hooks.length === 0}
+                  <p class="text-xs text-muted-foreground">No lifecycle hooks configured. Hooks run commands or call webhooks during stack operations.</p>
+                {:else}
+                  {#each Object.entries(hooksByTrigger()) as [trigger, triggerHooks]}
+                    <div>
+                      <p class="text-xs font-medium text-muted-foreground mb-1">{trigger}</p>
+                      <div class="space-y-1">
+                        {#each triggerHooks as hook}
+                          <div class="flex items-center gap-2 border rounded px-3 py-2 text-sm">
+                            <div class="flex-1 min-w-0">
+                              <div class="flex items-center gap-1.5 flex-wrap">
+                                <span class="font-medium text-xs">{hook.description}</span>
+                                <Badge variant="secondary" class="text-xs">{hook.type}</Badge>
+                                <Badge variant={hook.source === 'manual' ? 'outline' : 'secondary'} class="text-xs">{hook.source}</Badge>
+                                {#if hook.priority !== 100}
+                                  <span class="text-xs text-muted-foreground">pri:{hook.priority}</span>
+                                {/if}
+                                {#if !hook.continueOnError}
+                                  <span class="text-xs text-destructive">stops on error</span>
+                                {/if}
+                              </div>
+                              {#if hook.command}
+                                <p class="text-xs font-mono text-muted-foreground mt-0.5 truncate">{hook.command}</p>
+                              {/if}
+                              {#if hook.url}
+                                <p class="text-xs font-mono text-muted-foreground mt-0.5 truncate">{hook.url}</p>
+                              {/if}
+                            </div>
+                            {#if hook.source === 'manual'}
+                              <button
+                                class="text-xs text-muted-foreground hover:text-destructive shrink-0"
+                                disabled={deletingHooks.has(hook.id)}
+                                onclick={() => doDeleteHook(hook.id)}
+                              >
+                                {deletingHooks.has(hook.id) ? '...' : '×'}
+                              </button>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/each}
+                {/if}
+
+                {#if hookError}
+                  <p class="text-xs text-destructive">{hookError}</p>
+                {/if}
+
+                <Button size="sm" variant="outline" class="text-xs" onclick={() => { resetNewHookForm(); addHookOpen = true; }}>
+                  Add Hook
+                </Button>
+              </div>
+            {/if}
+          </div>
         </div>
+
+        <!-- Add Hook Dialog -->
+        <Dialog.Root bind:open={addHookOpen}>
+          <Dialog.Content class="max-w-md">
+            <Dialog.Header>
+              <Dialog.Title>Add Lifecycle Hook</Dialog.Title>
+              <Dialog.Description>Run a command or call a webhook during stack operations.</Dialog.Description>
+            </Dialog.Header>
+            <div class="space-y-4 py-2">
+              <div class="space-y-1.5">
+                <span class="text-sm font-medium">Trigger</span>
+                <Select.Root type="single" bind:value={newHookTrigger}>
+                  <Select.Trigger>
+                    {newHookTrigger || 'Select trigger...'}
+                  </Select.Trigger>
+                  <Select.Content>
+                    {#each HOOK_TRIGGERS as t}
+                      <Select.Item value={t}>{t}</Select.Item>
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
+              </div>
+
+              <div class="space-y-1.5">
+                <span class="text-sm font-medium">Type</span>
+                <Select.Root type="single" bind:value={newHookType}>
+                  <Select.Trigger>
+                    {newHookType}
+                  </Select.Trigger>
+                  <Select.Content>
+                    <Select.Item value="agent-exec">agent-exec</Select.Item>
+                    <Select.Item value="webhook">webhook</Select.Item>
+                  </Select.Content>
+                </Select.Root>
+              </div>
+
+              <div class="space-y-1.5">
+                <span class="text-sm font-medium">Description</span>
+                <input
+                  type="text"
+                  bind:value={newHookDescription}
+                  placeholder="e.g. Backup database before destroy"
+                  class="w-full h-9 rounded-md border bg-background px-3 text-sm"
+                />
+              </div>
+
+              {#if newHookType === 'agent-exec'}
+                <div class="space-y-1.5">
+                  <span class="text-sm font-medium">Command</span>
+                  <textarea
+                    bind:value={newHookCommand}
+                    placeholder="e.g. /usr/local/bin/backup.sh"
+                    rows="3"
+                    class="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono resize-y"
+                  ></textarea>
+                </div>
+              {/if}
+
+              {#if newHookType === 'webhook'}
+                <div class="space-y-1.5">
+                  <span class="text-sm font-medium">URL</span>
+                  <input
+                    type="text"
+                    bind:value={newHookUrl}
+                    placeholder="https://example.com/webhook"
+                    class="w-full h-9 rounded-md border bg-background px-3 text-sm font-mono"
+                  />
+                </div>
+              {/if}
+
+              <div class="flex items-center gap-4">
+                <div class="space-y-1.5">
+                  <span class="text-sm font-medium">Priority</span>
+                  <input
+                    type="number"
+                    bind:value={newHookPriority}
+                    min="0"
+                    max="999"
+                    class="w-20 h-9 rounded-md border bg-background px-3 text-sm"
+                  />
+                </div>
+                <label class="flex items-center gap-2 mt-5">
+                  <input type="checkbox" bind:checked={newHookContinueOnError} class="h-4 w-4 rounded border-border" />
+                  <span class="text-sm">Continue on error</span>
+                </label>
+              </div>
+
+              {#if hookError}
+                <p class="text-sm text-destructive">{hookError}</p>
+              {/if}
+            </div>
+            <Dialog.Footer>
+              <Button variant="outline" onclick={() => { addHookOpen = false; }}>Cancel</Button>
+              <Button onclick={doCreateHook} disabled={hookSaving}>
+                {hookSaving ? 'Creating...' : 'Create Hook'}
+              </Button>
+            </Dialog.Footer>
+          </Dialog.Content>
+        </Dialog.Root>
 
         <!-- Deploy apps log -->
         {#if deployAppLines.length > 0}

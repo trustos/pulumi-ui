@@ -1,5 +1,5 @@
 /**
- * Solution cards define pre-configured deployment recipes.
+ * Solution cards define pre-configured deployment solutions.
  * Each card maps to a program + pre-selected applications with
  * minimal user input. The derivedConfig function transforms user
  * fields into the full config + appConfig needed by putStack().
@@ -40,7 +40,7 @@ const nocobaseSolution: SolutionCard = {
   description:
     "No-code platform with PostgreSQL, Traefik ingress, and automated backups on a Nomad cluster",
   icon: "🧩",
-  program: "nomad-cluster",
+  program: "nomad-full-stack",
   applications: [
     "traefik",
     "postgres",
@@ -103,18 +103,9 @@ const nomadClusterSolution: SolutionCard = {
     "Docker + Consul + Nomad infrastructure on OCI ARM instances. Add applications later.",
   icon: "⚡",
   program: "nomad-cluster",
-  applications: ["traefik"],
-  userFields: [
-    {
-      key: "email",
-      label: "Email",
-      type: "email",
-      required: true,
-      placeholder: "admin@example.com",
-      description: "Used for Let's Encrypt certificates",
-    },
-  ],
-  deriveConfig: (input) => ({
+  applications: [],
+  userFields: [],
+  deriveConfig: () => ({
     config: {
       nodeCount: "3",
       compartmentName: "nomad-compartment",
@@ -129,10 +120,8 @@ const nomadClusterSolution: SolutionCard = {
       nomadVersion: "1.11.3",
       consulVersion: "1.22.6",
     },
-    applications: { traefik: true },
-    appConfig: {
-      "traefik.acmeEmail": input.email || "",
-    },
+    applications: {},
+    appConfig: {},
   }),
 };
 

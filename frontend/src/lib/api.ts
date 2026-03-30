@@ -1,4 +1,4 @@
-import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob } from './types';
+import type { ProgramMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob, Hook } from './types';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -624,4 +624,30 @@ export function streamLogs(onEntry: (entry: LogEntry) => void, onError?: (err: E
     if (onError) onError(new Error('Log stream connection lost'));
   };
   return () => es.close();
+}
+
+// Lifecycle hooks
+export async function listHooks(stackName: string): Promise<Hook[]> {
+  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/hooks`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function createHook(stackName: string, hook: Omit<Hook, 'id' | 'stackName' | 'createdAt'>): Promise<void> {
+  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/hooks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(hook),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text.trim() || `HTTP ${res.status}`);
+  }
+}
+
+export async function deleteHook(stackName: string, hookId: string): Promise<void> {
+  const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/hooks/${encodeURIComponent(hookId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }

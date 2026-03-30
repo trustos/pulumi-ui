@@ -6,7 +6,7 @@ describe("NocoBase solution", () => {
 
   it("exists", () => {
     expect(nocobase).toBeDefined();
-    expect(nocobase.program).toBe("nomad-cluster");
+    expect(nocobase.program).toBe("nomad-full-stack");
   });
 
   it("pre-selects correct applications", () => {
@@ -103,12 +103,16 @@ describe("Nomad Cluster solution", () => {
     expect(nomad.program).toBe("nomad-cluster");
   });
 
-  it("only pre-selects traefik", () => {
-    expect(nomad.applications).toEqual(["traefik"]);
+  it("has no pre-selected applications (infra only)", () => {
+    expect(nomad.applications).toEqual([]);
+  });
+
+  it("has no user fields", () => {
+    expect(nomad.userFields).toEqual([]);
   });
 
   it("derives config with 3 nodes by default", () => {
-    const result = nomad.deriveConfig({ email: "x@x.com" });
+    const result = nomad.deriveConfig({});
     expect(result.config.nodeCount).toBe("3");
   });
 
@@ -125,8 +129,9 @@ describe("Nomad Cluster solution", () => {
     expect(result.config.compartmentName).toBe("nomad-compartment");
   });
 
-  it("passes email as acmeEmail", () => {
-    const result = nomad.deriveConfig({ email: "ops@company.com" });
-    expect(result.appConfig["traefik.acmeEmail"]).toBe("ops@company.com");
+  it("derives empty applications and appConfig", () => {
+    const result = nomad.deriveConfig({});
+    expect(result.applications).toEqual({});
+    expect(result.appConfig).toEqual({});
   });
 });

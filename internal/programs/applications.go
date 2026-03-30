@@ -17,19 +17,30 @@ const (
 	TargetAny   TargetMode = "any"   // run on any single instance
 )
 
+// ApplicationHook declares a lifecycle hook that an application registers when deployed.
+type ApplicationHook struct {
+	Trigger         string `json:"trigger" yaml:"trigger"`                           // "pre-destroy", "post-up", etc.
+	Type            string `json:"type" yaml:"type"`                                 // "agent-exec", "webhook"
+	Command         string `json:"command,omitempty" yaml:"command,omitempty"`        // shell command for agent-exec
+	ContinueOnError bool   `json:"continueOnError" yaml:"continueOnError"`           // don't block operation on failure
+	Priority        int    `json:"priority" yaml:"priority"`                         // execution order (lower first)
+	Description     string `json:"description" yaml:"description"`
+}
+
 // ApplicationDef describes one selectable application within a program's catalog.
 type ApplicationDef struct {
-	Key          string          `json:"key"`                    // stable identifier: "traefik", "postgres"
-	Name         string          `json:"name"`                   // display name: "Traefik Reverse Proxy"
-	Description  string          `json:"description,omitempty"`
-	Tier         ApplicationTier `json:"tier"`
-	Target       TargetMode      `json:"target"`
-	Required     bool            `json:"required"`               // always deployed, cannot be deselected
-	DefaultOn    bool            `json:"defaultOn"`              // pre-selected in UI when not required
+	Key          string             `json:"key"`                    // stable identifier: "traefik", "postgres"
+	Name         string             `json:"name"`                   // display name: "Traefik Reverse Proxy"
+	Description  string             `json:"description,omitempty"`
+	Tier         ApplicationTier    `json:"tier"`
+	Target       TargetMode         `json:"target"`
+	Required     bool               `json:"required"`               // always deployed, cannot be deselected
+	DefaultOn    bool               `json:"defaultOn"`              // pre-selected in UI when not required
 	DependsOn    []string           `json:"dependsOn,omitempty"`    // keys of other ApplicationDefs
 	ConfigFields []ConfigField      `json:"configFields,omitempty"` // app-specific config fields
 	ConsulEnv    map[string]string  `json:"consulEnv,omitempty"`    // env var name → Consul KV path (read before job run)
 	Port         int                `json:"port,omitempty"`         // default port for port forwarding (e.g., 80 for traefik)
+	Hooks        []ApplicationHook  `json:"hooks,omitempty"`        // lifecycle hooks registered on deploy
 }
 
 // ApplicationProvider is an optional interface a Program can implement to expose

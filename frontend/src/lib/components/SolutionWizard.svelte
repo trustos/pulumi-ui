@@ -132,8 +132,12 @@
       );
 
       open = false;
-      // Navigate to the stack with auto-deploy flag
-      navigate(`/stacks/${encodeURIComponent(stackName)}?autoDeploy=true`);
+      // Navigate to the stack — auto-deploy only when applications are pre-selected
+      if (solution.applications.length > 0) {
+        navigate(`/stacks/${encodeURIComponent(stackName)}?autoDeploy=true`);
+      } else {
+        navigate(`/stacks/${encodeURIComponent(stackName)}`);
+      }
     } catch (err) {
       saveError = err instanceof Error ? err.message : String(err);
     } finally {

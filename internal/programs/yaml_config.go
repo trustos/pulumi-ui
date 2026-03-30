@@ -27,17 +27,27 @@ type pulumiMeta struct {
 }
 
 type pulumiMetaApp struct {
-	Key          string            `yaml:"key"`
-	Name         string            `yaml:"name"`
-	Description  string            `yaml:"description"`
-	Tier         string            `yaml:"tier"`
-	Target       string            `yaml:"target"`
-	Required     bool              `yaml:"required"`
-	DefaultOn    bool              `yaml:"defaultOn"`
-	DependsOn    []string           `yaml:"dependsOn"`
-	ConfigFields []pulumiMetaAppCF  `yaml:"configFields"`
-	ConsulEnv    map[string]string  `yaml:"consulEnv"`
-	Port         int                `yaml:"port"`
+	Key          string              `yaml:"key"`
+	Name         string              `yaml:"name"`
+	Description  string              `yaml:"description"`
+	Tier         string              `yaml:"tier"`
+	Target       string              `yaml:"target"`
+	Required     bool                `yaml:"required"`
+	DefaultOn    bool                `yaml:"defaultOn"`
+	DependsOn    []string            `yaml:"dependsOn"`
+	ConfigFields []pulumiMetaAppCF   `yaml:"configFields"`
+	ConsulEnv    map[string]string   `yaml:"consulEnv"`
+	Port         int                 `yaml:"port"`
+	Hooks        []pulumiMetaAppHook `yaml:"hooks"`
+}
+
+type pulumiMetaAppHook struct {
+	Trigger         string `yaml:"trigger"`
+	Type            string `yaml:"type"`
+	Command         string `yaml:"command"`
+	ContinueOnError bool   `yaml:"continueOnError"`
+	Priority        int    `yaml:"priority"`
+	Description     string `yaml:"description"`
 }
 
 type pulumiMetaAppCF struct {
@@ -321,6 +331,16 @@ func ParseApplications(yamlBody string) []ApplicationDef {
 				Default:     cf.Default,
 				Description: cf.Description,
 				Secret:      cf.Secret,
+			})
+		}
+		for _, h := range ma.Hooks {
+			app.Hooks = append(app.Hooks, ApplicationHook{
+				Trigger:         h.Trigger,
+				Type:            h.Type,
+				Command:         h.Command,
+				ContinueOnError: h.ContinueOnError,
+				Priority:        h.Priority,
+				Description:     h.Description,
 			})
 		}
 		apps = append(apps, app)

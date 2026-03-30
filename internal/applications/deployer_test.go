@@ -59,7 +59,7 @@ func TestFilterWorkloads_BootstrapExcluded(t *testing.T) {
 }
 
 func TestNewDeployer(t *testing.T) {
-	d := NewDeployer(nil, nil)
+	d := NewDeployer(nil, nil, nil)
 	assert.NotNil(t, d)
 }
 
@@ -594,7 +594,7 @@ func TestAutoCredentialsKeyFiltering(t *testing.T) {
 // ── buildEnvExports validation failure ──────────────────────────────────
 
 func TestBuildEnvExportsValidationFailure(t *testing.T) {
-	d := NewDeployer(nil, nil)
+	d := NewDeployer(nil, nil, nil)
 
 	tests := []struct {
 		name      string

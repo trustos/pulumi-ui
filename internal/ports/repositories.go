@@ -96,3 +96,13 @@ type SessionRepository interface {
 	Delete(token string) error
 	DeleteExpired() error
 }
+
+// HookRepository is the persistence boundary for lifecycle hooks.
+type HookRepository interface {
+	Create(h *db.Hook) error
+	ListForStack(stackName string) ([]db.Hook, error)
+	ListByTrigger(stackName, trigger string) ([]db.Hook, error)
+	Delete(id string) error
+	DeleteBySource(stackName, source string) error
+	DeleteForStack(stackName string) error
+}

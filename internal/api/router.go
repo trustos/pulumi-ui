@@ -33,6 +33,7 @@ type Handler struct {
 	ConnStore      *db.StackConnectionStore
 	NodeCertStore  *db.NodeCertStore
 	MeshManager    *mesh.Manager
+	Hooks          *db.HookStore
 	ForwardManager *mesh.ForwardManager
 	LogBuffer      *logbuffer.Buffer
 	AgentBinaries  embed.FS // embedded agent_linux_{arm64,amd64} binaries
@@ -137,6 +138,11 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Post("/stacks/{name}/unlock", h.StackUnlock)
 			r.Post("/stacks/{name}/deploy-apps", h.StackDeployApps)
 			r.Get("/stacks/{name}/logs", h.GetStackLogs)
+
+			// Lifecycle hooks
+			r.Get("/stacks/{name}/hooks", h.ListHooks)
+			r.Post("/stacks/{name}/hooks", h.CreateHook)
+			r.Delete("/stacks/{name}/hooks/{hookId}", h.DeleteHook)
 
 			// Agent proxy (routes through Nebula mesh)
 			r.Get("/stacks/{name}/agent/health", h.AgentHealth)

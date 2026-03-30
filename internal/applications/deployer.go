@@ -33,12 +33,14 @@ const deployTimeout = 10 * time.Minute
 type Deployer struct {
 	connStore   *db.StackConnectionStore
 	meshManager *mesh.Manager
+	hookStore   *db.HookStore
 }
 
-func NewDeployer(connStore *db.StackConnectionStore, meshManager *mesh.Manager) *Deployer {
+func NewDeployer(connStore *db.StackConnectionStore, meshManager *mesh.Manager, hookStore *db.HookStore) *Deployer {
 	return &Deployer{
 		connStore:   connStore,
 		meshManager: meshManager,
+		hookStore:   hookStore,
 	}
 }
 
@@ -99,6 +101,12 @@ func (d *Deployer) DeployApps(
 	if len(failed) > 0 {
 		return fmt.Errorf("%d application(s) failed to deploy: %s", len(failed), strings.Join(failed, ", "))
 	}
+
+	// Register lifecycle hooks from successfully deployed apps.
+	if d.hookStore != nil {
+		d.registerAppHooks(stackName, workloadApps, failed, appConfig, send)
+	}
+
 	return nil
 }
 
@@ -287,7 +295,7 @@ func (d *Deployer) deployWorkload(
 	}
 
 	// Step 1: Register the job (detached — returns immediately).
-	regOutput, regExit, err := d.execOnAgent(ctx, tunnel, envExports+"nomad job run -detach "+jobFile)
+	regOutput, regExit, err := d.ExecOnAgent(ctx, tunnel, envExports+"nomad job run -detach "+jobFile)
 	if err != nil {
 		return fmt.Errorf("job registration: %w", err)
 	}
@@ -335,7 +343,7 @@ func (d *Deployer) deployWorkload(
 				return nil
 			case "failed", "cancelled":
 				// Fetch detailed status for error context.
-				detail, _, _ := d.execOnAgent(ctx, t, envExports+"nomad job deployments -latest "+app.Key)
+				detail, _, _ := d.ExecOnAgent(ctx, t, envExports+"nomad job deployments -latest "+app.Key)
 				if detail != "" {
 					send("output", detail)
 				}
@@ -361,7 +369,7 @@ func (d *Deployer) checkDeploymentStatus(
 		`%snomad job deployments -latest -json %s 2>/dev/null | grep -o '"Status": *"[^"]*"' | head -1 | cut -d'"' -f4`,
 		envExports, jobKey,
 	)
-	output, exitCode, err := d.execOnAgent(ctx, tunnel, cmd)
+	output, exitCode, err := d.ExecOnAgent(ctx, tunnel, cmd)
 	if err != nil {
 		return "", err
 	}
@@ -376,8 +384,8 @@ func (d *Deployer) checkDeploymentStatus(
 	return status, nil
 }
 
-// execOnAgent sends a short-lived command to the agent and returns the output.
-func (d *Deployer) execOnAgent(
+// ExecOnAgent sends a short-lived command to the agent and returns the output.
+func (d *Deployer) ExecOnAgent(
 	ctx context.Context,
 	tunnel *mesh.Tunnel,
 	cmdStr string,
@@ -476,6 +484,81 @@ func filterWorkloads(catalog []programs.ApplicationDef, selected map[string]bool
 		}
 	}
 	return result
+}
+
+// registerAppHooks persists lifecycle hooks declared by successfully deployed apps.
+// Existing hooks for each app source are replaced (idempotent re-deploy).
+func (d *Deployer) registerAppHooks(
+	stackName string,
+	apps []programs.ApplicationDef,
+	failed []string,
+	appConfig map[string]string,
+	send LogFunc,
+) {
+	failedSet := make(map[string]bool, len(failed))
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+
+	for _, app := range apps {
+		if failedSet[app.Key] || len(app.Hooks) == 0 {
+			continue
+		}
+
+		source := "catalog:" + app.Key
+		// Remove previous hooks for this app (idempotent re-deploy).
+		if err := d.hookStore.DeleteBySource(stackName, source); err != nil {
+			send("error", fmt.Sprintf("Failed to clear old hooks for %s: %v", app.Key, err))
+			continue
+		}
+
+		for _, h := range app.Hooks {
+			cmd := renderHookCommand(h.Command, app.Key, appConfig)
+			hook := &db.Hook{
+				StackName:       stackName,
+				Trigger:         h.Trigger,
+				Type:            h.Type,
+				Priority:        h.Priority,
+				ContinueOnError: h.ContinueOnError,
+				Command:         &cmd,
+				Source:          source,
+				Description:     h.Description,
+			}
+			if err := d.hookStore.Create(hook); err != nil {
+				send("error", fmt.Sprintf("Failed to register hook for %s: %v", app.Key, err))
+			} else {
+				send("output", fmt.Sprintf("Registered hook: %s (%s)", h.Description, h.Trigger))
+			}
+		}
+	}
+}
+
+// renderHookCommand renders a hook command template using [[ ]] delimiters,
+// substituting app config values. Keys are stored as "appKey.fieldKey" in
+// appConfig; the template receives just the fieldKey part.
+func renderHookCommand(cmdTemplate, appKey string, appConfig map[string]string) string {
+	if cmdTemplate == "" {
+		return ""
+	}
+	data := make(map[string]string)
+	prefix := appKey + "."
+	for k, v := range appConfig {
+		if strings.HasPrefix(k, prefix) {
+			fieldKey := strings.TrimPrefix(k, prefix)
+			if !strings.HasPrefix(fieldKey, "_") {
+				data[fieldKey] = v
+			}
+		}
+	}
+	tmpl, err := template.New("hook").Delims("[[", "]]").Parse(cmdTemplate)
+	if err != nil {
+		return cmdTemplate // return raw on parse error
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return cmdTemplate
+	}
+	return buf.String()
 }
 
 // isSecretField returns true if the config field key looks like a secret
