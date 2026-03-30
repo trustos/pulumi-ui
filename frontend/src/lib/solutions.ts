@@ -41,7 +41,13 @@ const nocobaseSolution: SolutionCard = {
     "No-code platform with PostgreSQL, Traefik ingress, and automated backups on a Nomad cluster",
   icon: "🧩",
   program: "nomad-cluster",
-  applications: ["traefik", "postgres", "pgadmin", "postgres-backup", "nocobase"],
+  applications: [
+    "traefik",
+    "postgres",
+    "pgadmin",
+    "postgres-backup",
+    "nocobase",
+  ],
   configOverrides: { nodeCount: "1" },
   userFields: [
     {
@@ -111,7 +117,7 @@ const nomadClusterSolution: SolutionCard = {
   deriveConfig: (input) => ({
     config: {
       nodeCount: "3",
-      compartmentName: "nomad-compartment",
+      compartmentName: "nocobase-nomad",
       compartmentDescription: "Compartment for Nomad cluster",
       vcnCidr: "10.0.0.0/16",
       publicSubnetCidr: "10.0.1.0/24",
