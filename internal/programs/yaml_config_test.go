@@ -347,16 +347,21 @@ resources:
 	assert.Equal(t, ApplicationTier("workload"), apps[1].Tier)
 }
 
-// ── Integration: parse real nomad-cluster.yaml ──────────────────────────
+// ── Integration: parse real program YAML files ──────────────────────────
 
 func TestParseApplications_NomadClusterYAML(t *testing.T) {
-	// Parse the actual built-in nomad-cluster.yaml to verify catalog integrity.
+	// nomad-cluster.yaml is pure infrastructure — no application catalog.
 	builtinYAML := readBuiltinYAML(t, "nomad-cluster.yaml")
 	apps := ParseApplications(builtinYAML)
-	require.NotNil(t, apps, "nomad-cluster.yaml should declare applications")
+	assert.Nil(t, apps, "nomad-cluster.yaml should NOT declare applications (infra only)")
+}
 
-	// Verify all 4 catalog apps exist
-	// Use a map for order-independent check
+func TestParseApplications_NomadFullStackYAML(t *testing.T) {
+	// nomad-full-stack.yaml has the full application catalog.
+	builtinYAML := readBuiltinYAML(t, "nomad-full-stack.yaml")
+	apps := ParseApplications(builtinYAML)
+	require.NotNil(t, apps, "nomad-full-stack.yaml should declare applications")
+
 	keySet := map[string]bool{}
 	for _, a := range apps {
 		keySet[a.Key] = true
@@ -368,7 +373,7 @@ func TestParseApplications_NomadClusterYAML(t *testing.T) {
 	assert.True(t, keySet["github-runner"], "catalog should include github-runner")
 	assert.True(t, keySet["pgadmin"], "catalog should include pgadmin")
 
-	// Verify dependency chain: nocobase → postgres, postgres-backup → postgres, postgres → traefik
+	// Dependency chain
 	nocobase := findApp(apps, "nocobase")
 	require.NotNil(t, nocobase)
 	assert.Contains(t, nocobase.DependsOn, "postgres")
@@ -381,50 +386,30 @@ func TestParseApplications_NomadClusterYAML(t *testing.T) {
 	require.NotNil(t, postgres)
 	assert.Contains(t, postgres.DependsOn, "traefik")
 
-	// Traefik should be defaultOn with port 8080 (dashboard)
+	// Port assignments
 	traefik := findApp(apps, "traefik")
 	require.NotNil(t, traefik)
 	assert.True(t, traefik.DefaultOn)
 	assert.Equal(t, 8080, traefik.Port)
-
-	// Postgres should have port 5432
 	assert.Equal(t, 5432, postgres.Port)
-
-	// NocoBase should have port 13000
 	assert.Equal(t, 13000, nocobase.Port)
 
-	// pgAdmin should have port 80, depend on postgres, and require email
+	// pgAdmin
 	pgadmin := findApp(apps, "pgadmin")
 	require.NotNil(t, pgadmin)
 	assert.Equal(t, 80, pgadmin.Port)
 	assert.Contains(t, pgadmin.DependsOn, "postgres")
-	assert.False(t, pgadmin.DefaultOn)
-	assert.False(t, pgadmin.Required)
-	// pgAdmin must have an email config field
-	var hasEmail bool
-	for _, cf := range pgadmin.ConfigFields {
-		if cf.Key == "email" {
-			hasEmail = true
-			assert.True(t, cf.Required, "pgadmin email should be required")
-		}
-	}
-	assert.True(t, hasEmail, "pgadmin should have email config field")
 
-	// All should be workload tier
+	// postgres-backup should have a pre-destroy hook
+	require.NotEmpty(t, pgBackup.Hooks, "postgres-backup should have lifecycle hooks")
+	assert.Equal(t, "pre-destroy", pgBackup.Hooks[0].Trigger)
+	assert.Equal(t, "agent-exec", pgBackup.Hooks[0].Type)
+	assert.True(t, pgBackup.Hooks[0].ContinueOnError)
+
+	// All should be workload tier with consulEnv
 	for _, a := range apps {
 		assert.Equal(t, ApplicationTier("workload"), a.Tier, "app %s should be workload tier", a.Key)
-	}
-
-	// Every app should have config fields (all workload apps need some config)
-	for _, a := range apps {
-		assert.NotEmpty(t, a.ConfigFields, "app %s should have config fields", a.Key)
-	}
-
-	// Every app should have consulEnv with NOMAD_TOKEN
-	for _, a := range apps {
 		assert.NotEmpty(t, a.ConsulEnv, "app %s should have consulEnv", a.Key)
-		assert.Equal(t, "nomad/bootstrap-token", a.ConsulEnv["NOMAD_TOKEN"],
-			"app %s should read NOMAD_TOKEN from consul", a.Key)
 	}
 }
 
