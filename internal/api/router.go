@@ -210,6 +210,10 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 		})
 	})
 
+	// Intercept requests from proxied pages (Referer-based) before the SPA catch-all.
+	// This handles absolute-path fetches (e.g., /v1/jobs) from proxied UIs.
+	r.Use(h.ForwardProxyRefererMiddleware)
+
 	// Serve embedded Svelte SPA — all non-API routes return index.html.
 	r.Handle("/*", spaHandler(frontendFS))
 
