@@ -179,6 +179,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Get("/stacks/{name}/forward", h.ListPortForwards)
 			r.Post("/stacks/{name}/forward", h.StartPortForward)
 			r.Delete("/stacks/{name}/forward/{id}", h.StopPortForward)
+			r.HandleFunc("/stacks/{name}/forward/{id}/proxy/*", h.ForwardProxy)
 
 			// Passphrases
 			r.Get("/passphrases", h.ListPassphrases)

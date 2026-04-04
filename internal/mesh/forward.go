@@ -156,6 +156,14 @@ func (fm *ForwardManager) List(stackName string) []*PortForward {
 	return result
 }
 
+// Get returns a port forward by ID.
+func (fm *ForwardManager) Get(id string) (*PortForward, bool) {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	pf, ok := fm.forwards[id]
+	return pf, ok
+}
+
 // StopAll closes all port forwards for a given stack.
 func (fm *ForwardManager) StopAll(stackName string) {
 	fm.mu.Lock()

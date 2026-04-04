@@ -665,6 +665,10 @@ export async function stopPortForward(stackName: string, id: string): Promise<vo
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
+export function forwardProxyUrl(stackName: string, forwardId: string, path = ''): string {
+  return `/api/stacks/${encodeURIComponent(stackName)}/forward/${encodeURIComponent(forwardId)}/proxy/${path}`;
+}
+
 // App domain management (Traefik dynamic config)
 export async function setAppDomain(stackName: string, appKey: string, domain: string): Promise<void> {
   const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/app-domains/${encodeURIComponent(appKey)}`, {
