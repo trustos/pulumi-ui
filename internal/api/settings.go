@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/trustos/pulumi-ui/internal/db"
@@ -99,7 +102,7 @@ func (h *Handler) TestS3Connection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sign the request with AWS Signature V4 for OCI S3-compatible API.
-	signS3Request(req, accessKey, secretKey, region, bucket)
+	signS3Request(req, accessKey, secretKey, region)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -133,12 +136,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // signS3Request applies AWS Signature Version 4 to an S3 request.
-// This is a minimal implementation sufficient for HEAD bucket operations
-// against OCI's S3-compatible endpoint.
+// Works with any S3 operation (HEAD, GET, PUT) — derives the canonical URI
+// and query string from the request URL.
 //
 // OCI requires: x-amz-content-sha256 header present and included in signing.
 // Go's net/http ignores req.Header["Host"], so we set req.Host explicitly.
-func signS3Request(req *http.Request, accessKey, secretKey, region, bucket string) {
+func signS3Request(req *http.Request, accessKey, secretKey, region string) {
 	now := time.Now().UTC()
 	datestamp := now.Format("20060102")
 	amzdate := now.Format("20060102T150405Z")
@@ -148,18 +151,27 @@ func signS3Request(req *http.Request, accessKey, secretKey, region, bucket strin
 	payloadHash := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 	// Set required headers before signing.
-	req.Host = host // Go's HTTP client uses req.Host for the Host header
+	req.Host = host
 	req.Header.Set("x-amz-date", amzdate)
 	req.Header.Set("x-amz-content-sha256", payloadHash)
 
-	// Canonical request — headers must be sorted alphabetically.
-	canonicalURI := "/" + bucket
+	// Canonical URI from the request path.
+	canonicalURI := req.URL.Path
+	if canonicalURI == "" {
+		canonicalURI = "/"
+	}
+
+	// Canonical query string — params sorted by key (SigV4 requirement).
+	canonicalQuerystring := sortedQueryString(req.URL.Query())
+
+	// Canonical headers — must be sorted alphabetically.
 	canonicalHeaders := fmt.Sprintf("host:%s\nx-amz-content-sha256:%s\nx-amz-date:%s\n",
 		host, payloadHash, amzdate)
 	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
 
 	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
-		req.Method, canonicalURI, "" /* query */, canonicalHeaders, signedHeaders, payloadHash)
+		req.Method, canonicalURI, canonicalQuerystring,
+		canonicalHeaders, signedHeaders, payloadHash)
 
 	// String to sign
 	credentialScope := fmt.Sprintf("%s/%s/s3/aws4_request", datestamp, region)
@@ -181,6 +193,25 @@ func signS3Request(req *http.Request, accessKey, secretKey, region, bucket strin
 	authHeader := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
 		accessKey, credentialScope, signedHeaders, sig)
 	req.Header.Set("Authorization", authHeader)
+}
+
+// sortedQueryString builds a canonical query string with params sorted by key.
+func sortedQueryString(params url.Values) string {
+	if len(params) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, k := range keys {
+		for _, v := range params[k] {
+			parts = append(parts, url.QueryEscape(k)+"="+url.QueryEscape(v))
+		}
+	}
+	return strings.Join(parts, "&")
 }
 
 func hmacSHA256(key []byte, data string) []byte {

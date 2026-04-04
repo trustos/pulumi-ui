@@ -150,6 +150,7 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		SshKeyID     *string           `json:"sshKeyId"`
 		Applications map[string]bool   `json:"applications,omitempty"`
 		AppConfig    map[string]string `json:"appConfig,omitempty"`
+		Claim        bool              `json:"claim,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -159,6 +160,27 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "blueprint is required", http.StatusBadRequest)
 		return
 	}
+
+	// Claim mode: register a remote stack in the local DB without blueprint
+	// validation or config rendering. The blueprint may not exist locally.
+	if body.Claim {
+		cfg := &stacks.StackConfig{
+			APIVersion: "pulumi.io/v1",
+			Kind:       "Stack",
+			Metadata: stacks.StackMetadata{
+				Name:      stackName,
+				Blueprint: body.Blueprint,
+			},
+		}
+		yamlStr, _ := cfg.ToYAML()
+		if err := h.Stacks.Upsert(stackName, body.Blueprint, yamlStr, body.OciAccountID, body.PassphraseID, body.SshKeyID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	prog, ok := h.Registry.Get(body.Blueprint)
 	if !ok {
 		http.Error(w, "unknown blueprint: "+body.Blueprint, http.StatusBadRequest)

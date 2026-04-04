@@ -85,11 +85,17 @@ export interface Passphrase {
 export interface StackSummary {
   name: string;
   blueprint: string;
+  ociAccountId: string | null;
   passphraseId: string | null;
   sshKeyId: string | null;
   lastOperation: string | null;
   status: string;
   resourceCount: number;
+}
+
+export interface RemoteStackSummary {
+  name: string;
+  blueprint: string;
 }
 
 export interface MeshStatus {

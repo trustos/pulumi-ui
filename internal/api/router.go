@@ -136,6 +136,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Post("/programs/{name}/fork", h.ForkBlueprint)
 
 			r.Get("/stacks", h.ListStacks)
+			r.Get("/stacks/discover", h.DiscoverRemoteStacks)
 			r.Put("/stacks/{name}", h.PutStack)
 			r.Delete("/stacks/{name}", h.DeleteStack)
 			r.Get("/stacks/{name}/info", h.GetStackInfo)
