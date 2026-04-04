@@ -4,7 +4,7 @@ PORT     ?= 9770
 ADDR     := :$(PORT)
 
 .PHONY: all build frontend backend backend-static build-agent dev run run-bg stop watch-frontend dev-watch \
-        docker docker-push deploy clean clean-all help test test-frontend lint test-all \
+        docker docker-push docker-buildx clean clean-all help test test-frontend lint test-all \
         release _release-preflight
 
 # ── Default ───────────────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ test-all: test test-frontend lint
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 
-IMAGE ?= pulumi-ui
+IMAGE ?= ghcr.io/trustos/pulumi-ui
 TAG   ?= latest
 
 ## docker: Build the Docker image
@@ -111,11 +111,9 @@ docker:
 docker-push: docker
 	docker push $(IMAGE):$(TAG)
 
-# ── Operations ────────────────────────────────────────────────────────────────
-
-## deploy: Run the Nomad job
-deploy:
-	nomad job run deploy/nomad/pulumi-ui.nomad.hcl
+## docker-buildx: Build and push multi-arch Docker image (amd64 + arm64)
+docker-buildx:
+	docker buildx build --platform linux/amd64,linux/arm64 -t $(IMAGE):$(TAG) --push .
 
 # ── Maintenance ───────────────────────────────────────────────────────────────
 
