@@ -814,10 +814,8 @@ Programs without a catalog omit the `applications` field (or return an empty arr
 
 ### Phase 5 (Future)
 
-- YAML program `meta.applications` support
 - Kubernetes program with Helm chart applications
 - Single-VM program with Docker Compose applications
-- Multi-stack mesh (multiple stacks sharing a Nebula network)
 
 ---
 

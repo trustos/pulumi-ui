@@ -157,6 +157,21 @@ export interface SSEEvent {
   timestamp: string;
 }
 
+export interface AppSettings {
+  backendType: 'local' | 's3';
+  stateDir: string;
+  s3Bucket?: string;
+  s3Namespace?: string;
+  s3Region?: string;
+  s3HasKeys: boolean;
+}
+
+export interface S3TestResult {
+  ok: boolean;
+  error?: string;
+  endpoint?: string;
+}
+
 export interface User {
   id: string;
   username: string;

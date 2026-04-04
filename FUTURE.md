@@ -1,4 +1,2 @@
-1. Add node graph visualisation and representation of the visual editor. A preliminary evaluation was made. Do you agree? [/Users/yavortenev/Projects/Github.Trustos/pulumi-provisioning/1.md]
-2. Revamp the application is a UX friendly manner. Do you agree? [/Users/yavortenev/Projects/Github.Trustos/pulumi-provisioning/2.md]
-3. Make sure we handle cloudinit properly. We should make sure we could for example for the nomad cluster to be able to deploy the needed services for proper cluster operations. Maybe all installs? (Nomad, consul, VPN). What's the best approach?
-4. Add cluster interactions after deploy.
+1. Cross-account nomad cluster — two or more OCI accounts pooling resources into a single Nomad/Consul cluster. Nebula mesh handles cross-network connectivity. See `docs/roadmap.md` for details.
+2. Instance Configuration + Instance Pool — add as an additional capability alongside the per-instance loop in nomad-cluster blueprint. Pools for homogeneous node groups with OCI-managed scaling/healing; loops for heterogeneous configs (e.g., 2×2 OCPU + 3×1 OCPU). See `docs/roadmap.md` for details.

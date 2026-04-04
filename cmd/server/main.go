@@ -159,6 +159,7 @@ func main() {
 	// Application deployer + engine
 	deployer := applications.NewDeployer(connStore, meshMgr, hookStore)
 	eng := engine.New(stateDir, registry, deployer, connStore)
+	eng.WithCredentialStore(creds)
 	eng.WithNodeCertStore(nodeCertStore)
 	eng.SetExternalURL(externalURL)
 	eng.WithMeshManager(meshMgr)

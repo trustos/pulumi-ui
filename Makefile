@@ -1,6 +1,7 @@
 BINARY   := pulumi-ui
 DATA_DIR := ./dev-data
-ADDR     := :8080
+PORT     ?= 9770
+ADDR     := :$(PORT)
 
 .PHONY: all build frontend backend backend-static build-agent dev run run-bg stop watch-frontend dev-watch \
         docker docker-push deploy clean clean-all help test test-frontend lint test-all \
@@ -53,9 +54,9 @@ run: _require-binary
 	 PULUMI_UI_ADDR=$(ADDR) \
 	 ./$(BINARY)
 
-## watch-frontend: Start Vite HMR dev server only (proxy → localhost:8080)
+## watch-frontend: Start Vite HMR dev server only (proxy → localhost:$(PORT))
 watch-frontend:
-	cd frontend && npm run dev
+	cd frontend && PORT=$(PORT) npm run dev
 
 ## dev-watch: Build everything, then run Go server + Vite HMR in parallel (Ctrl-C stops both)
 # Kills any stale server/vite processes first, then starts fresh.
@@ -69,7 +70,7 @@ dev-watch: frontend build-agent backend
 	@sleep 0.3
 	@echo "Starting Vite HMR on http://localhost:5173 and Go server on $(ADDR) ..."
 	@trap 'kill 0' INT TERM EXIT; \
-	 cd frontend && npm run dev & \
+	 cd frontend && PORT=$(PORT) npm run dev & \
 	 PULUMI_UI_DATA_DIR=$(DATA_DIR) \
 	 PULUMI_UI_STATE_DIR=$(DATA_DIR)/state \
 	 PULUMI_UI_ADDR=$(ADDR) \

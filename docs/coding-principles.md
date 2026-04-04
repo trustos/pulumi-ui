@@ -88,24 +88,25 @@ delete a passphrase used by stacks") live in a service, not in the store.
 
 ---
 
-## 4. Config Layer Taxonomy
+## 4. Config Field Grouping
 
-Every `ConfigField` must carry a `ConfigLayer` value:
+Blueprints organize `ConfigField` items into groups via `meta.groups` in the YAML header:
 
-| Layer | Meaning | UI treatment |
-|---|---|---|
-| `infrastructure` | Determines which Pulumi resources are created | Shown first, editable |
-| `compute` | Parameterises resource specifications | Shown second, editable |
-| `bootstrap` | Controls software installed inside VMs | Shown third, editable |
-| `derived` | Calculated from other fields, never user-supplied | Read-only, tooltip shows formula |
+```yaml
+meta:
+  groups:
+    - key: infrastructure
+      label: "Infrastructure"
+      fields: [nodeCount, compartmentName, vcnCidr, publicSubnetCidr, privateSubnetCidr, shape, imageId]
+    - key: compute
+      label: "Compute & Storage"
+      fields: [ocpusPerNode, memoryGbPerNode, bootVolSizeGb, sshPublicKey]
+    - key: software
+      label: "Software Versions"
+      fields: [nomadVersion, consulVersion]
+```
 
-When adding a new config field to any blueprint, assign the correct layer.
-
-For the nomad-cluster blueprint:
-- `nodeCount`, `compartmentName`, `vcnCidr`, `publicSubnetCidr`, `privateSubnetCidr`, `sshSourceCidr` → `infrastructure`
-- `shape`, `imageId`, `bootVolSizeGb` → `compute`
-- `nomadVersion`, `consulVersion` → `bootstrap`
-- NOMAD_CLIENT_CPU, NOMAD_CLIENT_MEMORY (derived from nodeCount × OCPU formula) → `derived`
+Each field should have a clear `Description` to help users understand its purpose. The `ConfigForm` component renders fields grouped by these sections with labels as headings.
 
 ---
 
@@ -137,7 +138,7 @@ When adding a new built-in blueprint:
 1. Create `internal/blueprints/<name>.go`
 2. Implement the `Blueprint` interface
 3. Add `r.Register(&XxxBlueprint{})` to `RegisterBuiltins()`
-4. Annotate all `ConfigField` entries with `ConfigLayer`
+4. Add config fields to the appropriate `meta.groups` section
 
 ---
 

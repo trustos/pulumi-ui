@@ -275,7 +275,7 @@ Full detail: `docs/coding-principles.md`
 - **Services own business logic**: credential resolution, referential integrity, recovery logic live in `internal/services/`.
 - **Stores are dumb**: only SQL. No cross-table rules, no domain logic.
 - **Repository interfaces**: stores implement interfaces from `internal/ports/`; handlers/services depend on interfaces, never on concrete types.
-- **Config layer taxonomy**: every `ConfigField` carries a `ConfigLayer` (`infrastructure`, `compute`, `bootstrap`, `derived`). Derived fields are never editable in the UI. Fields with `Secret: true` are Consul KV auto-managed credentials with per-app `_autoCredentials` toggle.
+- **Config field grouping**: blueprints organize `ConfigField` items into groups via `meta.groups` with `key`, `label`, and `fields` list. Fields with `Secret: true` are Consul KV auto-managed credentials with per-app `_autoCredentials` toggle.
 - **Blueprint registration**: explicit `RegisterBuiltins(r)` in `main.go`. No `init()` self-registration.
 
 ---
@@ -300,22 +300,17 @@ Full detail: `docs/roadmap.md`
 
 | Theme | What | Status |
 |---|---|---|
-| Part 0 | Add `ConfigLayer` + `ValidationHint` to `ConfigField` | pending |
-| BE-1 | Extract `CredentialService` from handler | partially started |
 | BE-2 | Deduplicate Up/Destroy/Refresh/Preview in engine | pending |
+| BE-4 | Decompose God Object Handler (BE-3 done) | pending |
+| BE-6 | OCI Object Storage state backend + state migration | pending |
+| Agent | Auto-update agent binaries through mesh (high-risk, needs careful design) | pending |
 | FE-1 | 3-step stack creation wizard | pending |
-| BE-3 | Repository interfaces + store cleanup | pending |
-| FE-2 | Extract OCI picker components from ConfigForm | pending |
-| FE-3 | SSH key labelling + passphrase immutability UX | pending |
-| BE-4 | Decompose God Object Handler (needs BE-3) | pending |
-| BE-5 | Thread-safe BlueprintRegistry (remove `init()`) | **done** |
-| Agent Phase 1 | Agent bootstrap pipeline (PKI, certs, token, binary endpoint) | **done** |
-| Agent Phase 2 | Nebula mesh (userspace tunnels, post-deploy discovery, agent proxy) | **done** |
-| Agent Phase 3 | Interactive web terminal (WebSocket PTY via Nebula) | **done** |
-| Agent Phase 4 | Health monitoring, auto-update, user mesh access | user mesh access **done** (mesh config download + SSH via Nebula); health monitoring + auto-update pending |
-| Port Forwarding | kubectl-style TCP port forwarding through Nebula mesh | **done** |
-| App Catalog | Application catalog for YAML blueprints (`meta.applications`) + deployer via mesh tunnels | **done** (GitHub Actions Runner as first catalog app) |
-| FE-4 | Client-side config field validation (needs Part 0) | pending |
+| FE-4 | Client-side config field validation (reuse visual editor's `typed-value.ts`) | pending |
+| FE-9 | Node graph editor (Svelte Flow) — third editor mode | pending |
+| Visual Editor | Bug fixes: P1-1, P2-1–P2-7, P3-1–P3-4, G1-6 | pending |
+| Cloud-init | User-provided boot scripts (`{{ userInit }}` template function) | pending |
+| Cross-account | Multi-account nomad cluster (pool OCI accounts) | pending (future) |
+| Instance Pool | Instance Configuration + Instance Pool alongside per-instance loop | pending (future) |
 
 ---
 

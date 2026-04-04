@@ -4,10 +4,14 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
+  import { Alert, AlertTitle, AlertDescription } from '$lib/components/ui/alert';
   import * as Tooltip from '$lib/components/ui/tooltip';
   import { navigate } from '$lib/router';
-  import { getHealth, listPassphrases, createPassphrase, deletePassphrase, renamePassphrase } from '$lib/api';
-  import type { Passphrase } from '$lib/types';
+  import {
+    getHealth, listPassphrases, createPassphrase, deletePassphrase, renamePassphrase,
+    getSettings, putSettings, saveCredentials, testS3Connection, migrateState,
+  } from '$lib/api';
+  import type { Passphrase, AppSettings, S3TestResult } from '$lib/types';
 
   // ── Passphrases tab ────────────────────────────────────────────────────────
   let passphrases = $state<Passphrase[]>([]);
@@ -73,6 +77,127 @@
     renamingId = p.id;
   }
 
+  // ── State Backend tab ───────────────────────────────────────────────────────
+  let settings = $state<AppSettings | null>(null);
+  let s3Namespace = $state('');
+  let s3Region = $state('');
+  let s3Bucket = $state('');
+  let s3AccessKey = $state('');
+  let s3SecretKey = $state('');
+  let revealSecret = $state(false);
+  let savingCreds = $state(false);
+  let saveCredsError = $state('');
+  let saveCredsSuccess = $state(false);
+  let testResult = $state<S3TestResult | null>(null);
+  let testing = $state(false);
+  let migrating = $state(false);
+  let migrateLog = $state<string[]>([]);
+  let migrateError = $state('');
+  let switchError = $state('');
+
+  async function loadSettings() {
+    try {
+      settings = await getSettings();
+      if (settings) {
+        s3Namespace = settings.s3Namespace ?? '';
+        s3Region = settings.s3Region ?? '';
+        s3Bucket = settings.s3Bucket ?? '';
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleSaveS3Creds() {
+    savingCreds = true;
+    saveCredsError = '';
+    saveCredsSuccess = false;
+    testResult = null;
+    try {
+      await saveCredentials({
+        type: 's3',
+        namespace: s3Namespace,
+        region: s3Region,
+        bucket: s3Bucket,
+        accessKeyId: s3AccessKey,
+        secretAccessKey: s3SecretKey,
+      });
+      saveCredsSuccess = true;
+      s3AccessKey = '';
+      s3SecretKey = '';
+      await loadSettings();
+    } catch (err) {
+      saveCredsError = err instanceof Error ? err.message : String(err);
+    } finally {
+      savingCreds = false;
+    }
+  }
+
+  async function handleTestS3() {
+    testing = true;
+    testResult = null;
+    try {
+      testResult = await testS3Connection();
+    } catch (err) {
+      testResult = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      testing = false;
+    }
+  }
+
+  async function handleSwitchBackend(type: 'local' | 's3') {
+    switchError = '';
+    try {
+      await putSettings({ backendType: type });
+      await loadSettings();
+    } catch (err) {
+      switchError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function handleMigrate(direction: 'to-s3' | 'to-local') {
+    migrating = true;
+    migrateLog = [];
+    migrateError = '';
+    try {
+      const res = await migrateState(direction);
+      if (!res.ok && !res.headers.get('content-type')?.includes('text/event-stream')) {
+        migrateError = await res.text();
+        return;
+      }
+      const reader = res.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const ev = JSON.parse(line.slice(6));
+            if (ev.type === 'error') {
+              migrateError = ev.data;
+            } else if (ev.type === 'output') {
+              migrateLog = [...migrateLog, ev.data];
+            } else if (ev.type === 'complete') {
+              migrateLog = [...migrateLog, ev.data];
+            }
+          } catch { /* skip non-JSON */ }
+        }
+      }
+      await loadSettings();
+      await refreshHealth();
+    } catch (err) {
+      migrateError = err instanceof Error ? err.message : String(err);
+    } finally {
+      migrating = false;
+    }
+  }
+
   // ── Status tab ─────────────────────────────────────────────────────────────
   interface ServiceStatus {
     ok: boolean;
@@ -100,6 +225,7 @@
 
   $effect(() => {
     loadPassphrases();
+    loadSettings();
     refreshHealth();
   });
 </script>
@@ -238,19 +364,171 @@
       <Card.Root>
         <Card.Header>
           <Card.Title>Pulumi State Backend</Card.Title>
-          <Card.Description>Where Pulumi stores stack state.</Card.Description>
+          <Card.Description>Where Pulumi stores stack state. You can migrate between backends at any time.</Card.Description>
         </Card.Header>
         <Card.Content class="space-y-4">
-          <div class="p-4 bg-muted rounded text-sm">
-            <p class="font-medium mb-1">Local Volume (active)</p>
-            <p class="text-muted-foreground">
+          <!-- Local Volume option -->
+          <button
+            class="w-full text-left p-4 rounded border-2 transition-colors {settings?.backendType !== 's3' ? 'border-primary bg-primary/5' : 'border-border hover:border-muted-foreground/50'}"
+            onclick={() => { if (settings?.backendType === 's3') handleSwitchBackend('local'); }}
+          >
+            <div class="flex items-center justify-between">
+              <p class="font-medium text-sm">Local Volume</p>
+              {#if settings?.backendType !== 's3'}
+                <Badge variant="default">Active</Badge>
+              {/if}
+            </div>
+            <p class="text-xs text-muted-foreground mt-1">
               State is stored in the <code>/data/state</code> directory on the persistent volume.
-              Back up this directory to preserve stack state.
             </p>
-          </div>
-          <div class="p-4 border rounded text-sm text-muted-foreground">
-            <p class="font-medium mb-1 text-foreground">OCI Object Storage (S3-compatible) — coming soon</p>
-            <p>Store state in an OCI bucket for multi-node access and built-in redundancy.</p>
+          </button>
+
+          <!-- OCI Object Storage option -->
+          <div class="p-4 rounded border-2 transition-colors {settings?.backendType === 's3' ? 'border-primary bg-primary/5' : 'border-border'}">
+            <div class="flex items-center justify-between">
+              <p class="font-medium text-sm">OCI Object Storage (S3-compatible)</p>
+              {#if settings?.backendType === 's3'}
+                <Badge variant="default">Active</Badge>
+              {/if}
+            </div>
+            <p class="text-xs text-muted-foreground mt-1 mb-4">
+              Store state in an OCI bucket for multi-node access and built-in redundancy.
+              Requires <Tooltip.Root><Tooltip.Trigger class="underline decoration-dotted cursor-help">Customer Secret Keys</Tooltip.Trigger><Tooltip.Content class="max-w-xs">Created in OCI Console under Identity &gt; Users &gt; Customer Secret Keys. Max 2 per user. The secret is shown only once at creation.</Tooltip.Content></Tooltip.Root>.
+            </p>
+
+            <!-- S3 credential form -->
+            <form class="space-y-3" onsubmit={(e) => { e.preventDefault(); handleSaveS3Creds(); }}>
+              <div class="grid grid-cols-2 gap-3">
+                <div class="space-y-1">
+                  <label class="text-xs text-muted-foreground" for="s3-ns">Namespace</label>
+                  <Input id="s3-ns" bind:value={s3Namespace} placeholder="e.g. axwhoexample" />
+                </div>
+                <div class="space-y-1">
+                  <label class="text-xs text-muted-foreground" for="s3-region">Region</label>
+                  <Input id="s3-region" bind:value={s3Region} placeholder="e.g. us-ashburn-1" />
+                </div>
+              </div>
+              <div class="space-y-1">
+                <label class="text-xs text-muted-foreground" for="s3-bucket">Bucket Name</label>
+                <Input id="s3-bucket" bind:value={s3Bucket} placeholder="e.g. pulumi-state" />
+              </div>
+              <div class="space-y-1">
+                <label class="text-xs text-muted-foreground" for="s3-ak">Access Key ID</label>
+                <Input id="s3-ak" bind:value={s3AccessKey} placeholder={settings?.s3HasKeys ? '(saved — enter new to replace)' : 'Customer Secret Key access key'} />
+              </div>
+              <div class="space-y-1">
+                <label class="text-xs text-muted-foreground" for="s3-sk">Secret Access Key</label>
+                <Input
+                  id="s3-sk"
+                  type={revealSecret ? 'text' : 'password'}
+                  bind:value={s3SecretKey}
+                  placeholder={settings?.s3HasKeys ? '(saved — enter new to replace)' : 'Customer Secret Key secret'}
+                />
+                <button
+                  type="button"
+                  class="text-xs text-muted-foreground hover:text-foreground"
+                  onclick={() => { revealSecret = !revealSecret; }}
+                >
+                  {revealSecret ? 'Hide' : 'Reveal'}
+                </button>
+              </div>
+
+              {#if saveCredsError}
+                <p class="text-xs text-destructive">{saveCredsError}</p>
+              {/if}
+              {#if saveCredsSuccess}
+                <p class="text-xs text-primary">Credentials saved.</p>
+              {/if}
+
+              <div class="flex gap-2">
+                <Button type="submit" disabled={savingCreds || !s3Namespace || !s3Region || !s3Bucket}>
+                  {savingCreds ? 'Saving...' : 'Save Credentials'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={testing || !settings?.s3HasKeys}
+                  onclick={handleTestS3}
+                >
+                  {testing ? 'Testing...' : 'Test Connection'}
+                </Button>
+              </div>
+            </form>
+
+            {#if testResult}
+              <div class="mt-3">
+                {#if testResult.ok}
+                  <Alert>
+                    <AlertTitle>Connection successful</AlertTitle>
+                    <AlertDescription class="text-xs">{testResult.endpoint}</AlertDescription>
+                  </Alert>
+                {:else}
+                  <Alert variant="destructive">
+                    <AlertTitle>Connection failed</AlertTitle>
+                    <AlertDescription class="text-xs">{testResult.error}</AlertDescription>
+                  </Alert>
+                {/if}
+              </div>
+            {/if}
+
+            <!-- Activate / Migrate section -->
+            {#if settings?.s3HasKeys && s3Bucket && s3Namespace && s3Region}
+              <div class="mt-4 pt-4 border-t space-y-3">
+                {#if settings.backendType !== 's3'}
+                  <p class="text-sm font-medium">Activate OCI Object Storage</p>
+                  <p class="text-xs text-muted-foreground">
+                    Migrate all existing stack state from local storage to OCI Object Storage, then switch the active backend.
+                  </p>
+                  <div class="flex gap-2">
+                    <Button
+                      disabled={migrating}
+                      onclick={() => handleMigrate('to-s3')}
+                    >
+                      {migrating ? 'Migrating...' : 'Migrate & Activate'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={migrating}
+                      onclick={() => handleSwitchBackend('s3')}
+                    >
+                      Activate without migration
+                    </Button>
+                  </div>
+                {:else}
+                  <p class="text-sm font-medium">Switch back to Local</p>
+                  <p class="text-xs text-muted-foreground">
+                    Migrate stack state from OCI Object Storage back to local, then switch the active backend.
+                  </p>
+                  <div class="flex gap-2">
+                    <Button
+                      variant="outline"
+                      disabled={migrating}
+                      onclick={() => handleMigrate('to-local')}
+                    >
+                      {migrating ? 'Migrating...' : 'Migrate & Switch to Local'}
+                    </Button>
+                  </div>
+                {/if}
+
+                {#if switchError}
+                  <Alert variant="destructive">
+                    <AlertTitle>Switch failed</AlertTitle>
+                    <AlertDescription class="text-xs">{switchError}</AlertDescription>
+                  </Alert>
+                {/if}
+
+                {#if migrateLog.length > 0 || migrateError}
+                  <div class="mt-3 p-3 bg-muted rounded text-xs font-mono max-h-48 overflow-y-auto space-y-0.5">
+                    {#each migrateLog as line}
+                      <p>{line}</p>
+                    {/each}
+                    {#if migrateError}
+                      <p class="text-destructive">{migrateError}</p>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            {/if}
           </div>
         </Card.Content>
       </Card.Root>

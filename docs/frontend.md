@@ -87,7 +87,7 @@ The `currentUser` writable store (in `auth.ts`) is the source of truth. `Nav.sve
 - Receives `fields: ConfigField[]`, `values: Record<string, string>`, `accountId`
 - Renders field groups and delegates to the correct input widget by `field.type`
 - Calls `onSubmit(values)` when the form is submitted
-- Validates format hints on blur (using `field.validationHint`)
+- Validates format hints on blur (planned — see FE-4 in `docs/roadmap.md`)
 
 ConfigForm does **not** fetch OCI resources. That responsibility belongs to picker components.
 
@@ -207,40 +207,15 @@ In `EditStackDialog`:
 
 ---
 
-## ConfigLayer Rendering
+## Config Field Grouping
 
-When a `ConfigField` has a `configLayer`, ConfigForm renders layer headings:
-
-```
-── Infrastructure ─────────────────────
-  nodeCount, compartmentName, vcnCidr …
-
-── Compute & Sizing ───────────────────
-  shape, imageId, bootVolSizeGb …
-
-── Bootstrap Configuration ────────────
-  nomadVersion, consulVersion …
-
-── Derived Values (read-only) ─────────
-  NOMAD_CLIENT_CPU = 3000 (from nodeCount × 3000)
-  NOMAD_CLIENT_MEMORY = 5632 (from nodeCount, 6 GB − 512 MB)
-```
-
-Fields without a `configLayer` fall back to their `group` / `groupLabel` rendering.
+ConfigForm renders fields grouped by `meta.groups` from the blueprint. Each group gets a heading label and its fields rendered in order. Fields without a group are shown under a default section.
 
 ---
 
-## Validation
+## Validation (planned — FE-4)
 
-ConfigForm runs `onBlur` validation using `field.validationHint`:
-
-| Hint | Validator |
-|---|---|
-| `"cidr"` | Regex: `^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$` |
-| `"ocid"` | Must start with `ocid1.` |
-| `"semver"` | Regex: `^\d+\.\d+\.\d+` |
-
-Show error messages inline beneath the field. Block step navigation and form submission until all required fields with hints pass validation. Never suppress errors silently.
+ConfigForm client-side validation is planned (see `docs/roadmap.md` FE-4). The validation logic already exists in `frontend/src/lib/blueprint-graph/typed-value.ts` (`inferValidationHint` + `validatePropertyValue`) and is used in the visual editor. FE-4 wires this into ConfigForm as `onBlur` validators with inline error messages beneath fields.
 
 ---
 
@@ -697,8 +672,7 @@ interface ConfigField {
   options?: string[];       // for 'select' type
   group?: string;           // stable group key, e.g. "iam"
   groupLabel?: string;      // display heading, e.g. "IAM & Permissions"
-  configLayer?: string;     // 'infrastructure' | 'compute' | 'bootstrap' | 'derived'
-  validationHint?: string;  // 'cidr' | 'ocid' | 'semver' | 'url'
+  secret?: boolean;         // Consul KV auto-managed credential
 }
 
 type ApplicationTier = 'bootstrap' | 'workload';

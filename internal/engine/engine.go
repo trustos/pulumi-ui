@@ -21,6 +21,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/trustos/pulumi-ui/internal/agentinject"
 	"github.com/trustos/pulumi-ui/internal/applications"
 	"github.com/trustos/pulumi-ui/internal/db"
@@ -41,6 +42,7 @@ type Engine struct {
 	deployer       *applications.Deployer
 	connStore      *db.StackConnectionStore
 	nodeCertStore  *db.NodeCertStore
+	credStore      *db.CredentialStore
 	meshManager    *mesh.Manager
 	externalURL    string // PULUMI_UI_EXTERNAL_URL or auto-detected public URL
 
@@ -60,6 +62,12 @@ func New(stateDir string, registry *blueprints.BlueprintRegistry, deployer *appl
 		running:       make(map[string]bool),
 		computeCounts: make(map[string]int),
 	}
+}
+
+// WithCredentialStore attaches the credential store so the engine can read
+// the active backend type and S3 credentials at operation time.
+func (e *Engine) WithCredentialStore(s *db.CredentialStore) {
+	e.credStore = s
 }
 
 // WithNodeCertStore attaches the per-node cert store for multi-node injection.
@@ -101,9 +109,11 @@ func (e *Engine) unlock(stackName string) {
 // buildEnvVars returns the full workspace env map.
 // The OCI private key is passed as inline content (OCI_PRIVATE_KEY), never as
 // a temp file path — temp files are deleted after Up which breaks Refresh.
+// When the backend is S3, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are
+// injected so Pulumi can authenticate with the OCI S3-compatible endpoint.
 func (e *Engine) buildEnvVars(creds Credentials) (map[string]string, func(), error) {
 	oci := creds.OCI
-	return map[string]string{
+	env := map[string]string{
 		"PULUMI_CONFIG_PASSPHRASE":                creds.Passphrase,
 		"PULUMI_DEBUG_YAML_DISABLE_TYPE_CHECKING": "true",
 		"OCI_TENANCY_OCID":                        oci.TenancyOCID,
@@ -112,10 +122,47 @@ func (e *Engine) buildEnvVars(creds Credentials) (map[string]string, func(), err
 		"OCI_PRIVATE_KEY":                         oci.PrivateKey,
 		"OCI_REGION":                              oci.Region,
 		"OCI_USER_SSH_PUBLIC_KEY":                 oci.SSHPublicKey,
-	}, func() {}, nil
+	}
+
+	// Inject S3 credentials when the backend is OCI Object Storage.
+	if e.credStore != nil {
+		bt, _, _ := e.credStore.Get(db.KeyBackendType)
+		if bt == "s3" {
+			if ak, _, _ := e.credStore.Get(db.KeyS3AccessKeyID); ak != "" {
+				env["AWS_ACCESS_KEY_ID"] = ak
+			}
+			if sk, _, _ := e.credStore.Get(db.KeyS3SecretAccessKey); sk != "" {
+				env["AWS_SECRET_ACCESS_KEY"] = sk
+			}
+		}
+	}
+
+	return env, func() {}, nil
 }
 
+// backendURL returns the Pulumi backend URL based on the configured backend type.
+// For "local" (default): file:///data/state
+// For "s3": s3://<bucket>?endpoint=<oci-s3-compat>&s3ForcePathStyle=true&region=<region>
 func (e *Engine) backendURL() string {
+	if e.credStore != nil {
+		bt, _, _ := e.credStore.Get(db.KeyBackendType)
+		if bt == "s3" {
+			bucket, _, _ := e.credStore.Get(db.KeyS3Bucket)
+			ns, _, _ := e.credStore.Get(db.KeyS3Namespace)
+			region, _, _ := e.credStore.Get(db.KeyS3Region)
+			if bucket != "" && ns != "" && region != "" {
+				endpoint := fmt.Sprintf("https://%s.compat.objectstorage.%s.oraclecloud.com", ns, region)
+				return fmt.Sprintf("s3://%s?endpoint=%s&s3ForcePathStyle=true&region=%s", bucket, endpoint, region)
+			}
+			log.Printf("[backend] S3 backend configured but missing bucket/namespace/region — falling back to local")
+		}
+	}
+	return "file://" + e.stateDir
+}
+
+// localBackendURL always returns the local file backend URL, used as the
+// source during state migration regardless of the active backend setting.
+func (e *Engine) localBackendURL() string {
 	return "file://" + e.stateDir
 }
 
@@ -1127,6 +1174,97 @@ func (e *Engine) GetStackOutputs(ctx context.Context, stackName, blueprintName s
 		return nil, err
 	}
 	return stack.Outputs(ctx)
+}
+
+// StackMigrationInput contains the info needed to migrate a single stack.
+type StackMigrationInput struct {
+	StackName     string
+	BlueprintName string // used as the Pulumi project name
+	Passphrase    string
+}
+
+// MigrateStacks exports state from the source backend and imports it into the
+// target backend for each stack. Uses the Pulumi Automation SDK Export/Import
+// (same pattern as recoverPendingOperations). Returns the count of migrated stacks.
+func (e *Engine) MigrateStacks(ctx context.Context, stacks []StackMigrationInput, sourceBackendURL, targetBackendURL string, send SSESender) (int, error) {
+	// Verify no operations are running.
+	e.mu.Lock()
+	for _, s := range stacks {
+		if e.running[s.StackName] {
+			e.mu.Unlock()
+			return 0, fmt.Errorf("cannot migrate: operation running on stack %s", s.StackName)
+		}
+	}
+	e.mu.Unlock()
+
+	migrated := 0
+	noop := func(ctx *pulumi.Context) error { return nil }
+
+	for i, s := range stacks {
+		send(SSEEvent{Type: "output", Data: fmt.Sprintf("[%d/%d] Migrating stack %s...", i+1, len(stacks), s.StackName)})
+
+		envVars := map[string]string{
+			"PULUMI_CONFIG_PASSPHRASE": s.Passphrase,
+		}
+
+		// S3 backend needs AWS credentials in env vars.
+		if strings.HasPrefix(targetBackendURL, "s3://") {
+			if e.credStore != nil {
+				if ak, _, _ := e.credStore.Get(db.KeyS3AccessKeyID); ak != "" {
+					envVars["AWS_ACCESS_KEY_ID"] = ak
+				}
+				if sk, _, _ := e.credStore.Get(db.KeyS3SecretAccessKey); sk != "" {
+					envVars["AWS_SECRET_ACCESS_KEY"] = sk
+				}
+			}
+		}
+
+		// Open stack on source backend and export.
+		srcStack, err := auto.UpsertStackInlineSource(ctx, s.StackName, s.BlueprintName, noop,
+			auto.WorkDir(os.TempDir()),
+			auto.EnvVars(envVars),
+			auto.Project(workspace.Project{
+				Name:    tokens.PackageName(s.BlueprintName),
+				Runtime: workspace.NewProjectRuntimeInfo("go", nil),
+				Backend: &workspace.ProjectBackend{URL: sourceBackendURL},
+			}),
+		)
+		if err != nil {
+			send(SSEEvent{Type: "output", Data: fmt.Sprintf("  SKIP %s: cannot open on source backend: %v", s.StackName, err)})
+			continue
+		}
+
+		state, err := srcStack.Export(ctx)
+		if err != nil {
+			send(SSEEvent{Type: "output", Data: fmt.Sprintf("  SKIP %s: export failed: %v", s.StackName, err)})
+			continue
+		}
+
+		// Open stack on target backend and import.
+		dstStack, err := auto.UpsertStackInlineSource(ctx, s.StackName, s.BlueprintName, noop,
+			auto.WorkDir(os.TempDir()),
+			auto.EnvVars(envVars),
+			auto.Project(workspace.Project{
+				Name:    tokens.PackageName(s.BlueprintName),
+				Runtime: workspace.NewProjectRuntimeInfo("go", nil),
+				Backend: &workspace.ProjectBackend{URL: targetBackendURL},
+			}),
+		)
+		if err != nil {
+			send(SSEEvent{Type: "output", Data: fmt.Sprintf("  FAIL %s: cannot create on target backend: %v", s.StackName, err)})
+			continue
+		}
+
+		if err := dstStack.Import(ctx, state); err != nil {
+			send(SSEEvent{Type: "output", Data: fmt.Sprintf("  FAIL %s: import failed: %v", s.StackName, err)})
+			continue
+		}
+
+		send(SSEEvent{Type: "output", Data: fmt.Sprintf("  OK %s migrated successfully", s.StackName)})
+		migrated++
+	}
+
+	return migrated, nil
 }
 
 // sseWriter adapts SSESender to io.Writer for Pulumi's ProgressStreams.

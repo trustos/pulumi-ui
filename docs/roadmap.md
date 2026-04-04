@@ -4,64 +4,6 @@ This document records planned architectural improvements and feature redesigns. 
 
 ---
 
-## Part 0 — Config Layer Taxonomy (foundation)
-
-### Problem
-All `ConfigField` values for a blueprint share one flat namespace. When a user configures the nomad-cluster blueprint, `compartmentName` (infrastructure), `shape` (compute), `nomadVersion` (bootstrap), and internally-derived values like `NOMAD_CLIENT_CPU` (calculated from `nodeCount`, never user-supplied) are indistinguishable from the outside.
-
-The UI groups fields but the grouping is visual only. There is no semantic concept of "this field controls what Pulumi resources get created" vs "this field controls what goes inside the VMs at boot."
-
-### Solution
-Add two optional annotations to `ConfigField`:
-
-**`ConfigLayer`** (enum):
-- `infrastructure` — determines which Pulumi resources are created (VCN, subnets, node count)
-- `compute` — parameterises resource specifications (shape, image, boot volume, OCPUs)
-- `bootstrap` — controls VM-internal configuration (software versions, cloud-init tuning)
-- `derived` — computed from other fields; never editable; shown read-only with a tooltip
-
-**`ValidationHint`** (string, optional):
-- `"cidr"`, `"ocid"`, `"semver"`, `"url"` — drives client-side format validators in ConfigForm
-
-Fields without a `ConfigLayer` fall back to their current group-based rendering (backward compatible).
-
-### Files
-- `internal/blueprints/registry.go` — add fields to `ConfigField` struct
-- `internal/blueprints/nomad_cluster.go` — annotate all 14 fields
-- `internal/blueprints/yaml_config.go` — parse `layer:` from `meta.fields` in YAML blueprints
-- `frontend/src/lib/types.ts` — add `configLayer` and `validationHint` to `ConfigField`
-
-**Scope: Medium | Dependencies: none | Priority: 1 (everything else builds on this)**
-
----
-
-## BE-1 — Extract CredentialService
-
-### Problem
-`resolveCredentials()` in `internal/api/stacks.go` implements a multi-step business rule inside an HTTP handler:
-1. If an OCI account ID is provided → load that account's credentials
-2. Else → fall back to global credentials
-3. If a dedicated SSH key is linked → override the account's SSH key
-4. Passphrase is always required
-
-This is business logic in the wrong layer. It also means the raw `db.OCICredentials` struct leaks directly from the database layer into the engine with no transformation boundary.
-
-### Solution
-Create `internal/services/credentials.go`:
-```go
-type CredentialService struct { /* AccountRepository, PassphraseRepository, SSHKeyRepository, CredentialRepository */ }
-func (s *CredentialService) Resolve(ociAccountID, passphraseID, sshKeyID *string) (engine.Credentials, error)
-```
-The `engine.Credentials` type is the explicit boundary — `db.OCICredentials` never appears outside `internal/db/` and `internal/services/`.
-
-### Files
-- new `internal/services/credentials.go`
-- `internal/api/stacks.go` — remove `resolveCredentials`, call service
-
-**Scope: Small | Dependencies: none | Priority: 2**
-
----
-
 ## BE-2 — Eliminate Engine Operation Duplication
 
 ### Problem
@@ -89,37 +31,7 @@ The four public methods become one-liners passing their specific Pulumi call as 
 ### Files
 - `internal/engine/engine.go` only
 
-**Scope: Small | Dependencies: none | Priority: 2**
-
----
-
-## BE-3 — Repository Interfaces + Store Cleanup
-
-### Problem
-All DB stores are concrete types — nothing is substitutable or testable in isolation. Additionally:
-- `PassphraseStore.Delete()` queries the stacks table to enforce referential integrity — one store depends on another store's schema.
-- `OperationStore.MarkStaleRunning()` contains crash-recovery logic that belongs at the application layer.
-
-### Solution
-1. Define narrow interfaces in `internal/ports/`:
-   ```go
-   type StackRepository interface { Upsert(...); Get(...); List(...); Delete(...) }
-   type OperationRepository interface { Create(...); Finish(...); AppendLog(...); List(...) }
-   type PassphraseRepository interface { Create(...); List(...); GetValue(...); Delete(...); HasAny() bool }
-   type AccountRepository interface { Get(...); List(...); Create(...); Update(...); Delete(...) }
-   type SSHKeyRepository interface { GetPublicKey(...); List(...); Create(...); Delete(...) }
-   type CredentialRepository interface { GetOCICredentials() (OCICredentials, error) }
-   ```
-2. Move referential integrity check from `PassphraseStore.Delete()` to a `PassphraseService.Delete()` in `internal/services/`.
-3. Move `MarkStaleRunning()` call to explicit startup step in `main.go`.
-
-### Files
-- new `internal/ports/` package (interface definitions)
-- `internal/db/passphrases.go` — remove referential integrity check
-- `internal/db/operations.go` — move recovery logic
-- `cmd/server/main.go` — call recovery explicitly
-
-**Scope: Medium | Dependencies: none | Priority: 4**
+**Scope: Small | Dependencies: none | Priority: 1**
 
 ---
 
@@ -148,160 +60,7 @@ Replace single `Handler` with focused handler groups, each with minimal dependen
 - all `internal/api/*.go` handler files — receiver type changes
 - `cmd/server/main.go` — wiring updated
 
-**Scope: Large | Dependencies: BE-3 (for interfaces) | Priority: 7**
-
----
-
-## BE-5 — Thread-Safe BlueprintRegistry ✓ DONE
-
-### Problem
-`internal/blueprints/registry.go` used a package-level `var registry []Blueprint` slice with no mutex. Concurrent `RegisterYAML` / `Deregister` calls from HTTP handlers were a data race.
-
-### Solution (implemented)
-Replaced the package-level slice with a `BlueprintRegistry` struct:
-```go
-type BlueprintRegistry struct {
-    mu         sync.RWMutex
-    blueprints []Blueprint
-}
-func (r *BlueprintRegistry) Register(p Blueprint)
-func (r *BlueprintRegistry) Deregister(name string)
-func (r *BlueprintRegistry) Get(name string) (Blueprint, bool)
-func (r *BlueprintRegistry) List() []BlueprintMeta
-```
-
-Created in `main.go`, passed explicitly to engine and handlers. `init()` removed from all blueprint files:
-```go
-func RegisterBuiltins(r *BlueprintRegistry) {
-    r.Register(&NomadClusterBlueprint{})
-    r.Register(&TestVcnBlueprint{})
-}
-```
-
-`RegisterYAML` signature changed to accept the registry explicitly:
-```go
-func RegisterYAML(r *BlueprintRegistry, name, displayName, description, yamlBody string)
-```
-
-### Files changed
-- `internal/blueprints/registry.go` — rewritten; `BlueprintRegistry` struct + `RegisterBuiltins`
-- `internal/blueprints/nomad_cluster.go` — removed `func init() { Register(...) }`
-- `internal/blueprints/test_vcn.go` — removed `func init() { Register(...) }`
-- `internal/blueprints/yaml_blueprint.go` — `RegisterYAML` now takes `*BlueprintRegistry` as first param
-- `internal/engine/engine.go` — `New()` accepts `*BlueprintRegistry`; all `blueprints.Get()` → `e.registry.Get()`
-- `internal/api/router.go` — `Handler` gains `Registry *blueprints.BlueprintRegistry`; `NewHandler` gains `registry` param
-- `internal/api/blueprints.go` — all registry calls through `h.Registry`
-- `internal/api/stacks.go` — blueprint lookup via `h.Registry.Get()`; removed `blueprints` import
-- `cmd/server/main.go` — creates registry, calls `RegisterBuiltins`, passes to engine and handler
-
-**Scope: Medium | Dependencies: none | Status: complete**
-
----
-
-## Port Forwarding ✓ DONE
-
-kubectl-style TCP port forwarding through Nebula mesh tunnels. Replaces public NLB exposure for services like Nomad UI (port 4646).
-
-### What was done
-- `internal/mesh/mesh.go` — Added `DialPort(ctx, port)` to dial arbitrary ports through the Nebula overlay
-- `internal/mesh/forward.go` — New `ForwardManager`: local TCP listener → Nebula tunnel → remote port, bidirectional relay
-- `internal/api/port_forward.go` — HTTP handlers: `POST /forward` (start), `DELETE /forward/{id}` (stop), `GET /forward` (list)
-- Frontend: port forward UI card in Nodes tab with port input, active forward list, stop button
-- `blueprints/nomad-cluster.yaml` — Removed port 4646 NLB resources (NSG rule + backend set + listener + backends)
-- Removed "Join Mesh" button from frontend (NAT coexistence issues)
-
-**Status: complete**
-
----
-
-## App Catalog ✓ DONE
-
-Application catalog for YAML blueprints with mesh-based deployment.
-
-### What was done
-- `internal/blueprints/yaml_config.go` — Added `meta.applications` parsing (`ParseApplications()`)
-- `internal/blueprints/yaml_blueprint.go` — `YAMLBlueprint` implements `ApplicationProvider`
-- `internal/applications/deployer.go` — Rewritten to use mesh tunnels (not direct HTTP). Added job template upload before exec. Removed lighthouse dependency.
-- `internal/engine/engine.go` — Simplified `DeployApps()`: removed lighthouse output requirement, added `appConfig` parameter
-- `blueprints/builtins.go` — Extended embed to include `jobs/*.nomad.hcl`
-- `blueprints/jobs/github-runner.nomad.hcl` — New Nomad job template for self-hosted GitHub Actions runner
-- `blueprints/nomad-cluster.yaml` — Added `meta.applications` with GitHub Actions Runner (workload, target: first, config: githubToken + githubRepo + runnerLabels)
-
-**Status: complete**
-
----
-
-## FE-1 — 3-Step Stack Creation Wizard
-
-### Problem
-`NewStackDialog` Step 1 conflates four unrelated concerns in one form: stack identity (name + blueprint), cloud identity (OCI account), cryptographic identity (passphrase), and VM access (SSH key override). The `New Stack` button in Dashboard only checks `hasAccounts`, not `hasPassphrases`. A user can open the dialog and discover the passphrase requirement mid-flow.
-
-### Solution
-Restructure into 3 semantically clear steps (see `docs/frontend.md` — Stack Creation Wizard for UX detail). **Dashboard prerequisite banner**: check for both accounts AND passphrases before enabling "New Stack". If either is missing, show an actionable banner with a link, not a disabled button with no explanation.
-
-### Files
-- `frontend/src/lib/components/NewStackDialog.svelte`
-- `frontend/src/pages/Dashboard.svelte`
-
-**Scope: Medium | Dependencies: Part 0 (for layer headings in Step 3) | Priority: 3**
-
----
-
-## FE-2 — Extract OCI Picker Components from ConfigForm
-
-### Problem
-`ConfigForm.svelte` is simultaneously a generic field layout renderer and an OCI API client. When it detects field types `oci-shape`, `oci-image`, or `ssh-public-key`, it calls `listShapes(accountId)`, `listImages(accountId)`, and `listSSHKeys()`. This violates SRP.
-
-### Solution
-Extract three dedicated picker components:
-- `OciShapePicker.svelte` — receives `accountId`, fetches shapes, renders combobox
-- `OciImagePicker.svelte` — receives `accountId`, fetches images, auto-selects Ubuntu
-- `SshKeyPicker.svelte` — fetches SSH keys, renders combobox
-
-`ConfigForm` becomes a pure layout renderer that delegates to pickers by field type.
-
-### Files
-- `frontend/src/lib/components/ConfigForm.svelte`
-- new `frontend/src/lib/components/OciShapePicker.svelte`
-- new `frontend/src/lib/components/OciImagePicker.svelte`
-- new `frontend/src/lib/components/SshKeyPicker.svelte`
-
-**Scope: Medium | Dependencies: none | Priority: 5**
-
----
-
-## FE-3 — SSH Key Labelling + Passphrase Immutability UX
-
-### Problem
-Two SSH key mechanisms exist with no explanation. `EditStackDialog` silently hides the passphrase field without explaining why.
-
-### Solution
-- Rename stack-level field to **"VM Access Key"** + tooltip explaining it overrides the OCI account's key for all VMs.
-- Label `ssh-public-key` config fields as **"Blueprint SSH Key"** + tooltip explaining it is a config value passed to the Pulumi blueprint.
-- In `EditStackDialog`, show passphrase as read-only with a clear explanation.
-
-### Files
-- `frontend/src/lib/components/NewStackDialog.svelte`
-- `frontend/src/lib/components/EditStackDialog.svelte`
-- `frontend/src/lib/components/ConfigForm.svelte`
-
-**Scope: Small | Dependencies: FE-1 | Priority: 6**
-
----
-
-## FE-4 — Client-Side Config Field Validation
-
-### Problem
-`ConfigForm` submits with no client-side validation. Typing `"abc"` into a CIDR field only fails at Pulumi runtime, after several minutes of a running deployment.
-
-### Solution
-Use `ValidationHint` from Part 0 to drive `onBlur` validators in ConfigForm. Inline error messages shown beneath fields. Form submission blocked until all required fields with hints pass validation.
-
-### Files
-- `frontend/src/lib/components/ConfigForm.svelte`
-- `frontend/src/lib/types.ts` (add `validationHint` field — comes from Part 0)
-
-**Scope: Medium | Dependencies: Part 0 | Priority: 9**
+**Scope: Large | Dependencies: BE-3 (done) | Priority: 2**
 
 ---
 
@@ -324,135 +83,81 @@ Add an OCI Object Storage backend option using the S3-compatible API. OCI bucket
 - Backend URL format: `s3://<bucket>?endpoint=<s3-compat-endpoint>&region=<region>`
 - Environment variables `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` set from OCI Customer Secret Keys
 
-**Migration path:**
-- Existing local state remains readable — no migration needed for existing stacks
-- New stacks created after switching use the remote backend
-- A `migrate` command could be added later to move existing state to the bucket
+**State migration/sync:**
+- Users can switch between local and OCI Object Storage at any time
+- Upload existing local state to OCI Object Storage from the Settings page
+- Pull remote state to a new instance — enables state portability between pulumi-ui instances
+- Existing local state remains readable — no forced migration
 
 ### Files
 - `internal/engine/engine.go` — backend selection logic in stack creation
-- `internal/api/settings.go` — backend configuration endpoint
+- `internal/api/settings.go` — backend configuration endpoint + state migration
 - `internal/db/credentials.go` — store Customer Secret Key pair
-- `frontend/src/pages/Settings.svelte` — enable the OCI Object Storage option
+- `frontend/src/pages/Settings.svelte` — enable the OCI Object Storage option + migration UI
 - `docs/deployment.md` — document the new backend option
 
-**Scope: Medium | Dependencies: none | Priority: pending**
+**Scope: Medium | Dependencies: none | Priority: 3**
 
 ---
 
-## FE-5 — Goal-Driven Stack Creation
+## Agent Auto-Update
 
 ### Problem
-The current flow is resource-first: user picks a blueprint, fills config fields, deploys. Users who don't know OCI well struggle with "which blueprint do I need?" and "what do these fields mean?" The template gallery helps, but the entry point is still "pick a template" rather than "describe what you want."
+When the server binary is updated, deployed agents on VMs still run the old version. The only way to update the agent is to redeploy the stack (which re-runs cloud-init with the new binary). This is disruptive and slow.
 
 ### Solution
-Add an intent-first flow before the existing blueprint selection:
+Push new agent binaries through the Nebula mesh when the server detects a version mismatch.
 
-**Step 0 — "What do you want to build?"** (new, before current Step 1)
-- Cards: "Public web app", "Private database", "VM with SSH", "Nomad cluster", "Network foundation", "Start from scratch"
-- Each card shows: description, difficulty badge, estimated cost range, resource count
-- Selecting a card filters the blueprint/template list or directly selects the best-fit blueprint
-
-**Architecture recommender** (rule-based, not AI):
-- Short questionnaire: public/private? HA? storage? budget level? cloud experience?
-- Output: recommended blueprint + preset + optional extras
-- Can be rule-based initially (`if public && HA → ha-pair template`)
-
-The existing blueprint selection (current Step 1) becomes the fallback for users who click "Start from scratch" or "Advanced."
+**Safety requirements (high-risk — loss of connectivity to private instances is catastrophic):**
+- Pre-flight health check on the new binary before replacing the running agent
+- Keep the old binary as a fallback with automatic rollback if the new agent fails to start or respond
+- Staged rollout for multi-node stacks: one node at a time, verify mesh connectivity before proceeding to the next
+- Never update the Nebula component alongside the agent in the same operation
+- Timeout-based rollback: if the new agent doesn't respond within N seconds, restore the old binary and restart
 
 ### Files
-- new `frontend/src/lib/components/GoalSelector.svelte`
-- `frontend/src/lib/components/NewStackDialog.svelte` — add Step 0
-- `frontend/src/lib/blueprint-graph/templates/` — add metadata for goal mapping (tags, difficulty, cost hints)
+- `cmd/agent/main.go` — self-update endpoint (receive binary, validate, swap)
+- `internal/api/agent_proxy.go` — update trigger endpoint
+- `internal/mesh/mesh.go` — post-update connectivity verification
 
-**Scope: Large | Dependencies: FE-1 (wizard restructure) | Priority: future**
+**Scope: Medium | Dependencies: Agent Phase 4 (done) | Priority: 4 (needs careful design)**
 
 ---
 
-## FE-6 — Deployment Presets
+## FE-1 — 3-Step Stack Creation Wizard
 
 ### Problem
-Every config field requires a value. Users who don't know OCI face decision fatigue: "How many OCPUs? What boot volume size? Which CIDR?" The defaults are reasonable but one-size-fits-all. A dev cluster and a production cluster need very different settings.
+`NewStackDialog` Step 1 conflates four unrelated concerns in one form: stack identity (name + blueprint), cloud identity (OCI account), cryptographic identity (passphrase), and VM access (SSH key override). The `New Stack` button in Dashboard only checks `hasAccounts`, not `hasPassphrases`. A user can open the dialog and discover the passphrase requirement mid-flow.
 
 ### Solution
-Add named presets per blueprint that fill multiple config fields at once:
-
-```typescript
-interface Preset {
-  key: string;           // "dev-cheap", "staging", "production-secure"
-  label: string;
-  description: string;
-  values: Record<string, string>;  // config field overrides
-}
-```
-
-**UI**: A preset selector (radio group or dropdown) above the config form in the stack creation wizard. Selecting a preset fills all fields; user can still override individual values after.
-
-**Built-in presets for nomad-cluster:**
-
-| Preset | nodeCount | shape | bootVolSizeGb | Notes |
-|--------|-----------|-------|---------------|-------|
-| Dev (cheap) | 1 | VM.Standard.A1.Flex | 50 | Single node, minimal resources |
-| Balanced | 3 | VM.Standard.A1.Flex | 50 | 3-node cluster, Always Free eligible |
-| Production | 4 | VM.Standard.A1.Flex | 100 | Max Always Free nodes, larger volumes |
-
-Presets are defined in blueprint `meta:` section or as a separate `presets:` block.
+Restructure into 3 semantically clear steps using existing `meta.groups` for field organization. **Dashboard prerequisite banner**: check for both accounts AND passphrases before enabling "New Stack". If either is missing, show an actionable banner with a link, not a disabled button with no explanation.
 
 ### Files
-- `internal/blueprints/yaml_config.go` — parse `meta.presets` from YAML blueprints
-- `internal/blueprints/registry.go` — add `Presets []Preset` to `BlueprintMeta`
-- `frontend/src/lib/components/ConfigForm.svelte` — preset selector UI
-- `frontend/src/lib/types.ts` — `Preset` interface
+- `frontend/src/lib/components/NewStackDialog.svelte`
+- `frontend/src/pages/Dashboard.svelte`
 
-**Scope: Medium | Dependencies: none | Priority: future**
+**Scope: Medium | Dependencies: none | Priority: 5**
 
 ---
 
-## FE-7 — Resource Explainability
+## FE-4 — Client-Side Config Field Validation
 
 ### Problem
-Users see a list of resources (VCN, subnet, IGW, NAT, route table, NSG, instance, NLB) but don't understand why each exists or what happens if it's removed. This is especially true for auto-injected `__agent_*` resources.
+`ConfigForm` submits with no client-side validation. Typing `"abc"` into a CIDR field only fails at Pulumi runtime, after several minutes of a running deployment.
 
 ### Solution
-Add explainability metadata to resources, shown as tooltips and an optional "Why?" panel:
+Reuse the existing validation system from the visual editor (`frontend/src/lib/blueprint-graph/typed-value.ts`):
+- `inferValidationHint()` — already auto-detects CIDR, IP, OCID, port, integer, number from property name/description
+- `validatePropertyValue()` — already validates with proper error messages, skips template refs and empty values
+- 60+ test cases already exist
 
-**Per resource type**: static explanations ("A NAT Gateway provides outbound internet for private instances without exposing them publicly").
-
-**Per injected resource**: explain the injection reason ("This NSG rule was added because Agent Connect is enabled — it allows the Nebula mesh to reach your instances on UDP port 41820").
-
-**Security/cost impact badges**: visual indicators per resource — "increases cost", "required for security", "enables connectivity".
-
-### Files
-- new `frontend/src/lib/blueprint-graph/resource-explanations.ts` — static explanation map by resource type
-- `frontend/src/lib/components/ResourceCard.svelte` — "Why?" tooltip/popover
-- `frontend/src/pages/StackDetail.svelte` — resource explanation in deployed state
-
-**Scope: Medium | Dependencies: none | Priority: future**
-
----
-
-## FE-8 — Cost Estimation
-
-### Problem
-Users have no idea what their stack will cost before deploying. OCI Always Free has limits; exceeding them incurs charges. Even approximate cost feedback would prevent surprises.
-
-### Solution
-Approximate monthly cost estimation based on:
-- Compute: shape → OCPU/memory pricing (from OCI price list, hardcoded or fetched)
-- Storage: boot volume GB + block volume GB pricing
-- NLB: per-hour + per-GB pricing
-- Always Free eligibility detection (A1 Flex ≤ 4 OCPU / 24 GB → $0)
-
-**UI**: A cost badge on the architecture preview in the stack creation wizard. Updates live as config fields change. Shows "Always Free eligible" or "~$X/month" estimate.
-
-**Non-goal**: exact billing. This is order-of-magnitude guidance.
+Wire these into `ConfigForm.svelte` as `onBlur` validators. Inline error messages shown beneath fields. Form submission blocked until all required fields with hints pass validation. Hints can be inferred from field names (matching what the visual editor already does) or declared explicitly via a `validation` key in `meta.fields`.
 
 ### Files
-- new `frontend/src/lib/cost-estimator.ts` — pricing rules per resource type
-- `frontend/src/lib/components/NewStackDialog.svelte` — cost badge in wizard
-- `frontend/src/pages/StackDetail.svelte` — cost estimate for deployed stack
+- `frontend/src/lib/components/ConfigForm.svelte` — add validation on blur + submission blocking
+- `frontend/src/lib/blueprint-graph/typed-value.ts` — reuse existing `inferValidationHint` + `validatePropertyValue`
 
-**Scope: Medium | Dependencies: none | Priority: future**
+**Scope: Medium | Dependencies: none | Priority: 6**
 
 ---
 
@@ -519,50 +224,102 @@ Svelte Flow is the best fit because:
 - `frontend/src/pages/BlueprintEditor.svelte` — add Graph mode toggle
 - `frontend/package.json` — add `@xyflow/svelte` dependency
 
-**Scope: Large | Dependencies: none (Phase 1 is read-only, uses existing ProgramGraph model) | Priority: future**
+**Scope: Large | Dependencies: none (Phase 1 is read-only, uses existing BlueprintGraph model) | Priority: 7**
 
 ---
 
-## Cloud-Init Redesign ✓ PARTIALLY DONE
+## Visual Editor Bugs + Polish
 
-### Current Implementation
+### Open issues (from `docs/visual-editor.md`)
 
-The Nomad cluster blueprint embeds `cloudinit.sh` via `//go:embed`. `buildCloudInit()` renders it as a Go template with `CloudInitData` (containing `Vars` and `Apps` maps), gzip-compresses, and base64-encodes. The `{{ cloudInit nodeIndex $.Config }}` YAML template function does the same but leaves `COMPARTMENT_OCID` and `SUBNET_OCID` empty (not available at template render time — only Go blueprints can use `pulumi.All(...).ApplyT(...)` to fill runtime values).
+**P1 — Critical:**
+- P1-1: Property values with YAML-special characters produce silent bad output
 
-`cloudinit.sh` uses conditional blocks (`{{ if .Apps.KEY }}`) for each application (Docker, Consul, Nomad). Nebula mesh and the pulumi-ui agent are **not** in `cloudinit.sh` — they are automatically injected by the engine via `internal/agentinject/` using multipart MIME composition (see below).
+**P2 — MVP Quality:**
+- P2-1: Raw code blocks appear editable but are not
+- P2-2: Loop variable not validated
+- P2-3: PropertyEditor gives no hint about YAML quoting
+- P2-4: Duplicate resource names cause silent data loss
+- P2-5: No protection against losing YAML edits when switching to Visual mode
+- P2-6: Section label not editable
+- P2-7: No section delete
 
-### What's been implemented
+**P3 — Polish:**
+- P3-1: Duplicate resource button on ResourceCard
+- P3-2: Up/down reorder buttons within a section
+- P3-3: `beforeunload` guard for unsaved changes
+- P3-4: Schema-driven property hints in ResourceCard
 
-**Agent bootstrap auto-injection (`internal/agentinject/`):**
+**G1 — Loop/Conditional:**
+- G1-6: Config field groups not supported in visual editor
 
-Blueprints implementing `ApplicationProvider` or `AgentAccessProvider` (with `AgentAccess() == true`) automatically get Nebula mesh + pulumi-ui agent injected into every compute resource's `user_data`:
+**Code quality (optional):**
+- Phase 1–3 property system simplification (extract concerns, structured values, deep parser)
 
-- **`map.go`** — `ComputeResources` registry mapping Pulumi resource type tokens (e.g. `oci:Core/instance:Instance`) to their `user_data` property paths. Extensible for AWS, GCP, etc.
-- **`agent_bootstrap.sh`** — standalone Nebula + agent installer with `@@PLACEHOLDER@@` markers. Downloads Nebula binary from GitHub releases, creates `nebula.service` systemd unit, starts Nebula on port 41820, configures firewall (TCP 41820 inbound from "server" group).
-- **`bootstrap.go`** — embeds the script and renders placeholders with `AgentVars`.
-- **`compose.go`** — multipart MIME composition (`ComposeAndEncode`), gzip/base64 helpers (`GzipBase64`).
-- **`yaml.go`** — `InjectIntoYAML()` post-render YAML transformation: walks resources, detects compute types, composes `user_data` with agent bootstrap. Creates missing intermediate mapping nodes (e.g. `metadata`) when the property path doesn't exist.
-- **`network.go`** — `InjectNetworkingIntoYAML()` post-render YAML transformation: detects existing NSG and NLB resources, auto-adds NSG security rules (UDP 41820) and NLB backend set/listener/backends for agent connectivity. When no NSG/NLB exist but VCN/subnet context is available, creates them from scratch and attaches the NSG to compute instances. Uses `__agent_` prefix to avoid naming collisions.
-- **`goprog.go`** — `CfgKeyAgentBootstrap` constant. Go programs receive the rendered agent script via cfg map and pass it to `buildCloudInit()`.
+See `docs/visual-editor.md` for full details and estimated effort per item.
 
-**Injection gating:**
-- `ApplicationProvider` — full application catalog blueprints (Go built-ins). Agent bootstrap injected; networking is managed by the blueprint itself.
-- `AgentAccessProvider` (YAML `meta.agentAccess: true`) — agent bootstrap injected AND networking resources auto-added (existing resources modified, or new NSG/NLB created from VCN/subnet context). Blueprints without either interface are unaffected.
+**Scope: Medium (aggregate) | Dependencies: none | Priority: 8**
 
-**Go template rendering in `cloudinit.sh`:**
+---
 
-The old `@@PLACEHOLDER@@` string substitution was replaced with Go `text/template` rendering. `CloudInitData` provides `Vars` (runtime variables) and `Apps` (per-app conditionals). Each application section is wrapped in `{{ if .Apps.KEY }}` blocks.
+## Cloud-Init — User-Provided Scripts
 
-**Nebula mesh + agent pipeline (Phases 1–3 complete):**
+### Problem
+Users cannot provide a custom boot script for YAML blueprints without manually base64-encoding it. The agent bootstrap injection (`internal/agentinject/`) handles the Nebula + agent part automatically, but there's no way for users to add their own initialization logic through the UI.
 
-PKI generation extended to `AgentAccessProvider` programs. Dedicated agent cert (`.2`, group "agent") separate from UI cert (`.1`, group "server"). Per-stack `crypto/rand` token. Post-deploy IP discovery populates `agent_real_ip`. Userspace Nebula tunnels via `internal/mesh/`. Agent proxy endpoints for health, services, exec, upload, and interactive WebSocket terminal. See `docs/application-catalog-architecture.md`.
+### Solution
+Add a `{{ userInit .Config.cloudInitScript }}` template function that:
+- Takes a user-provided shell script from a config field
+- Composes it with the agent bootstrap (if enabled) via multipart MIME
+- Handles gzip + base64 encoding transparently
 
-### Remaining work
-
-**User-provided cloud-init scripts:** Users still cannot provide a custom boot script for YAML programs without hardcoding base64. A `{{ userInit .Config.cloudInitScript }}` template function would address this. The `cloudinit` config field type for the visual editor is also pending.
+Add a `cloudinit` config field type in the visual editor that renders a textarea for script input.
 
 **Limitations:**
 - `{{ cloudInit }}` and `{{ userInit }}` run at template render time, before Pulumi provisions resources. They cannot reference `${resource.id}` outputs. If the boot script needs a compartment or subnet OCID, use a built-in Go blueprint where `pulumi.All(...).ApplyT(...)` is available.
+
+### Files
+- `internal/blueprints/template.go` — add `userInit` template function
+- `internal/agentinject/compose.go` — support 3-part MIME (program + user + agent)
+- `frontend/src/lib/components/ConfigForm.svelte` — `cloudinit` field type → textarea
+
+**Scope: Small | Dependencies: none | Priority: 9**
+
+---
+
+## Cross-Account Nomad Cluster
+
+### Problem
+A single OCI Always Free account has limited resources (4 OCPU, 24 GB RAM). Users with multiple OCI accounts want to pool resources into a single Nomad/Consul cluster — e.g., 3 nodes from Account A + 3 nodes from Account B forming a 6-node cluster.
+
+### Solution
+Allow a stack to reference multiple OCI accounts, with different nodes provisioned in different tenancies. The Nebula mesh handles cross-network connectivity (nodes in different VCNs/tenancies communicate over the encrypted overlay).
+
+Key challenges:
+- Engine credential management: multiple OCI credential sets per stack
+- Blueprint config: per-node-group account assignment
+- Networking: nodes in different VCNs need Nebula underlay connectivity (public IPs or NLB)
+- Consul/Nomad: cluster formation across networks via Nebula overlay IPs
+
+**Scope: Large | Dependencies: none | Priority: 10 (future)**
+
+---
+
+## Instance Configuration + Instance Pool
+
+### Problem
+The nomad-cluster blueprint creates individual `oci:Core/instance:Instance` resources in a loop. OCI offers `InstanceConfiguration` + `InstancePool` for homogeneous groups with OCI-managed placement, fault domains, and instance replacement.
+
+### Solution
+Add Instance Configuration + Instance Pool as an **additional capability** alongside the existing per-instance loop. Use pools for homogeneous groups (e.g., 3 identical worker nodes) with OCI-managed scaling and self-healing. Keep the per-instance loop for heterogeneous configurations (e.g., 2×2 OCPU + 3×1 OCPU in the same blueprint).
+
+A blueprint could combine both: a pool of identical workers + individually configured server nodes.
+
+Key challenges:
+- Per-node Nebula cert injection: pool instances share the same `user_data`, so certs must be fetched at boot time rather than baked in
+- Node discovery: pool instance IPs are not known at Pulumi plan time
+
+**Scope: Medium | Dependencies: none | Priority: 11 (future)**
 
 ---
 
@@ -570,37 +327,44 @@ PKI generation extended to `AgentAccessProvider` programs. Dedicated agent cert 
 
 | # | Theme | Scope | Gate | Status |
 |---|---|---|---|---|
-| 1 | Part 0 — Config layer taxonomy | Medium | — | pending |
-| 2 | BE-1 — CredentialService | Small | — | partially started (service exists, handlers not migrated) |
-| 3 | BE-2 — Engine deduplication | Small | — | pending |
-| 4 | FE-1 — 3-step wizard | Medium | Part 0 | pending |
-| 5 | BE-3 — Repository interfaces | Medium | — | pending |
-| 6 | FE-2 — Picker components | Medium | — | pending |
-| 7 | FE-3 — SSH key + passphrase UX | Small | FE-1 | pending |
-| 8 | BE-4 — Handler decomposition | Large | BE-3 | pending |
-| 9 | BE-5 — Thread-safe registry | Medium | — | **done** |
-| 10 | FE-4 — Client-side validation | Medium | Part 0 | pending |
-| 11 | Cloud-init redesign | Medium | — | **partial** (agent injection done, user scripts pending) |
-| 12 | Agent bootstrap pipeline (Phase 1) | Medium | — | **done** (PKI, agent cert, token, binary endpoint, migration 012) |
-| 13 | Nebula mesh (Phase 2) | Large | Phase 1 | **done** (userspace tunnels, post-deploy discovery, agent proxy) |
-| 14 | Interactive web terminal (Phase 3) | Small | Phase 2 | **done** (WebSocket PTY via Nebula, per-node health/terminal) |
-| 15 | Agent Phase 4 (health, auto-update, user mesh) | Medium | Phase 3 | **partial** (user mesh access done: config download + SSH via Nebula; health monitoring + auto-update pending) |
-| 16 | Multi-stack mesh (Phase 5) | Large | Phase 4 | pending |
-| 17 | Visual editor property system (3 phases) | Medium | — | pending (see `visual-editor.md` simplification roadmap) |
-| 18 | Private-instance NLB templates | Small | — | pending (bastion-host, database-server, multi-tier-app need NLBs) |
-| 19 | Serializer expanded YAML format | Small | — | **done** (arrays-of-objects emitted as expanded YAML) |
-| 20 | NLB serialization fix | Small | — | **done** (dependsOn chains for 409 prevention) |
-| 21 | Level 6 dependsOn validation | Small | — | **done** |
-| 22 | Built-in blueprint fork support | Small | — | **done** (`POST /api/blueprints/{name}/fork`) |
-| 23 | BE-6 — OCI Object Storage state backend | Medium | — | pending (S3-compatible bucket for Pulumi state; replaces local filesystem for multi-node/HA) |
-| 24 | FE-5 — Goal-driven stack creation | Large | FE-1 | pending (intent-first "What do you want to build?" flow → recommended blueprint) |
-| 25 | FE-6 — Deployment presets | Medium | — | pending (dev-cheap / staging / production-secure sizing presets per blueprint) |
-| 26 | FE-7 — Resource explainability | Medium | — | pending ("why is this resource here?" tooltips + cost/security impact) |
-| 27 | FE-8 — Cost estimation | Medium | — | pending (approximate monthly cost from OCI shape pricing + storage + NLB) |
-| 28 | FE-9 — Node graph editor (Svelte Flow) | Large | — | pending (third editor mode: interactive dependency graph with custom nodes per resource type) |
+| 1 | BE-2 — Engine deduplication | Small | — | pending |
+| 2 | BE-4 — Handler decomposition | Large | BE-3 (done) | pending |
+| 3 | BE-6 — OCI Object Storage state backend | Medium | — | pending |
+| 4 | Agent auto-update | Medium | Agent Phase 4 (done) | pending (needs careful design) |
+| 5 | FE-1 — 3-step wizard | Medium | — | pending |
+| 6 | FE-4 — Client-side validation | Medium | — | pending |
+| 7 | FE-9 — Node graph editor (Svelte Flow) | Large | — | pending |
+| 8 | Visual editor bugs + polish | Medium | — | pending (see `visual-editor.md`) |
+| 9 | Cloud-init user scripts | Small | — | pending |
+| 10 | Cross-account nomad cluster | Large | — | pending (future) |
+| 11 | Instance Configuration + Instance Pool | Medium | — | pending (future) |
 
-See `docs/visual-editor.md` for the visual blueprint editor fix plan (G1 + P1/P2/P3 bugs) and property system simplification roadmap.
+See `docs/visual-editor.md` for the visual blueprint editor fix plan (P1/P2/P3/G1 bugs) and property system simplification roadmap.
 See `docs/application-catalog-architecture.md` for the complete agent/mesh architecture.
+
+---
+
+## Completed Items
+
+| Item | Status |
+|---|---|
+| BE-1 — CredentialService | **done** (`internal/services/credentials.go` with `Resolve()`) |
+| BE-3 — Repository interfaces | **done** (`internal/ports/repositories.go` — 10 interfaces) |
+| BE-5 — Thread-safe BlueprintRegistry | **done** (`BlueprintRegistry` struct with `sync.RWMutex`) |
+| FE-2 — OCI Picker extraction | **done** (`OciShapePicker`, `OciImagePicker`, `SshKeyPicker` components) |
+| Port Forwarding | **done** (kubectl-style TCP forwarding through Nebula mesh) |
+| App Catalog | **done** (YAML blueprint applications + mesh-based deployment) |
+| Agent Phase 1 — Bootstrap pipeline | **done** (PKI, agent cert, token, binary endpoint) |
+| Agent Phase 2 — Nebula mesh | **done** (userspace tunnels, post-deploy discovery, agent proxy) |
+| Agent Phase 3 — Interactive terminal | **done** (WebSocket PTY via Nebula, per-node health/terminal) |
+| Agent Phase 4 — User mesh access | **done** (mesh config download + SSH via Nebula) |
+| Cloud-init — Agent injection | **done** (`internal/agentinject/` — multipart MIME composition) |
+| Visual editor property system | **done** (all 8 phases shipped) |
+| Private-instance NLB templates | **done** (bastion-host, database-server, multi-tier-app) |
+| Serializer expanded YAML format | **done** |
+| NLB serialization fix | **done** (dependsOn chains for 409 prevention) |
+| Level 6 dependsOn validation | **done** |
+| Built-in blueprint fork support | **done** (`POST /api/blueprints/{name}/fork`) |
 
 ---
 
@@ -608,11 +372,8 @@ See `docs/application-catalog-architecture.md` for the complete agent/mesh archi
 
 | Principle | Violation today | Addressed by |
 |---|---|---|
-| SRP | `Handler` (11 deps), `Engine` (6 responsibilities), `PassphraseStore.Delete` has business logic | BE-4, BE-2, BE-3 |
+| SRP | `Handler` (11 deps), `Engine` (6 responsibilities) | BE-4, BE-2 |
 | OCP | Engine: adding a new operation requires copy-pasting 40 lines | BE-2 |
-| LSP | No store interfaces — concrete types everywhere | BE-3, BE-4 |
 | ISP | Single `Handler` exposes all stores to all handlers | BE-4 |
-| DIP | Handlers/engine depend on concrete DB types | BE-3, BE-4 |
-| UI SRP | `ConfigForm` renders AND fetches OCI resources | FE-2 |
-| UX coherence | Prerequisites hidden, wizard steps conflate concerns | FE-1, FE-3 |
-| Conceptual model | Blueprint config and cloud-init config are indistinguishable | Part 0, FE-1, Cloud-init redesign |
+| DIP | Handlers/engine depend on concrete DB types | BE-4 |
+| UX coherence | Prerequisites hidden, wizard steps conflate concerns | FE-1 |

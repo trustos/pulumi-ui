@@ -190,6 +190,8 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			// Settings & Credentials
 			r.Get("/settings", h.GetSettings)
 			r.Put("/settings", h.PutSettings)
+			r.Post("/settings/test-s3", h.TestS3Connection)
+			r.Post("/settings/migrate", h.MigrateState)
 			r.Get("/settings/credentials", h.GetCredentials)
 			r.Put("/settings/credentials", h.PutCredentials)
 			r.Get("/settings/health", h.GetHealth)

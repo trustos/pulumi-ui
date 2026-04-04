@@ -18,6 +18,7 @@ const (
 	KeySSHPublicKey      = "ssh/public-key"
 	KeyPulumiPassphrase  = "pulumi/passphrase"
 	KeyS3Namespace       = "s3/namespace"
+	KeyS3Region          = "s3/region"
 	KeyS3Bucket          = "s3/bucket"
 	KeyS3AccessKeyID     = "s3/access-key-id"
 	KeyS3SecretAccessKey = "s3/secret-access-key"
@@ -27,7 +28,7 @@ const (
 // AllCredentialKeys are the keys shown on the Settings page.
 // OCI credentials are no longer stored here — they live in the oci_accounts table.
 var AllCredentialKeys = []string{
-	KeyPulumiPassphrase, KeyS3Namespace, KeyS3Bucket,
+	KeyPulumiPassphrase, KeyS3Namespace, KeyS3Region, KeyS3Bucket,
 	KeyS3AccessKeyID, KeyS3SecretAccessKey, KeyBackendType,
 }
 

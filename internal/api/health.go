@@ -2,10 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 
 	"github.com/trustos/pulumi-ui/internal/auth"
+	"github.com/trustos/pulumi-ui/internal/db"
 )
 
 type ServiceStatus struct {
@@ -66,19 +68,32 @@ func (h *Handler) GetHealth(w http.ResponseWriter, r *http.Request) {
 		resp.Passphrase = ServiceStatus{OK: false, Error: "No passphrases configured — create one in Settings before running stack operations"}
 	}
 
-	// Backend — check that the Pulumi state directory is accessible
-	stateDir := os.Getenv("PULUMI_UI_STATE_DIR")
-	if stateDir == "" {
-		dataDir := os.Getenv("PULUMI_UI_DATA_DIR")
-		if dataDir == "" {
-			dataDir = "/data"
+	// Backend — check that the Pulumi state backend is accessible
+	backendType, _, _ := h.Creds.Get(db.KeyBackendType)
+	if backendType == "s3" {
+		bucket, _, _ := h.Creds.Get(db.KeyS3Bucket)
+		ns, _, _ := h.Creds.Get(db.KeyS3Namespace)
+		region, _, _ := h.Creds.Get(db.KeyS3Region)
+		if bucket == "" || ns == "" || region == "" {
+			resp.Backend = ServiceStatus{OK: false, Error: "S3 backend configured but missing bucket/namespace/region"}
+		} else {
+			endpoint := fmt.Sprintf("https://%s.compat.objectstorage.%s.oraclecloud.com", ns, region)
+			resp.Backend = ServiceStatus{OK: true, Info: fmt.Sprintf("s3://%s @ %s", bucket, endpoint)}
 		}
-		stateDir = dataDir + "/state"
-	}
-	if _, err := os.Stat(stateDir); err != nil {
-		resp.Backend = ServiceStatus{OK: false, Error: "state dir not accessible: " + err.Error()}
 	} else {
-		resp.Backend = ServiceStatus{OK: true, Info: "file://" + stateDir}
+		stateDir := os.Getenv("PULUMI_UI_STATE_DIR")
+		if stateDir == "" {
+			dataDir := os.Getenv("PULUMI_UI_DATA_DIR")
+			if dataDir == "" {
+				dataDir = "/data"
+			}
+			stateDir = dataDir + "/state"
+		}
+		if _, err := os.Stat(stateDir); err != nil {
+			resp.Backend = ServiceStatus{OK: false, Error: "state dir not accessible: " + err.Error()}
+		} else {
+			resp.Backend = ServiceStatus{OK: true, Info: "file://" + stateDir}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

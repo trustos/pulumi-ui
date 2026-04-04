@@ -42,6 +42,7 @@ func (h *Handler) PutCredentials(w http.ResponseWriter, r *http.Request) {
 	case "s3":
 		toSet = map[string]string{
 			db.KeyS3Namespace:       body["namespace"],
+			db.KeyS3Region:          body["region"],
 			db.KeyS3Bucket:          body["bucket"],
 			db.KeyS3AccessKeyID:     body["accessKeyId"],
 			db.KeyS3SecretAccessKey: body["secretAccessKey"],

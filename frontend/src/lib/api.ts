@@ -1,4 +1,4 @@
-import type { BlueprintMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob, Hook } from './types';
+import type { BlueprintMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob, Hook, AppSettings, S3TestResult } from './types';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -270,6 +270,38 @@ export async function getHealth(): Promise<unknown> {
   const res = await fetch('/api/settings/health');
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+export async function getSettings(): Promise<AppSettings> {
+  const res = await fetch('/api/settings');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function putSettings(body: Partial<AppSettings>): Promise<void> {
+  const res = await fetch('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+}
+
+export async function testS3Connection(): Promise<S3TestResult> {
+  const res = await fetch('/api/settings/test-s3', { method: 'POST' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function migrateState(direction: 'to-s3' | 'to-local'): Promise<Response> {
+  return fetch('/api/settings/migrate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ direction }),
+  });
 }
 
 export async function saveCredentials(body: Record<string, unknown>): Promise<void> {
