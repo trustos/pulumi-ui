@@ -75,6 +75,17 @@ func (h *Handler) RenamePassphrase(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (h *Handler) GetPassphraseValue(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	value, err := h.Passphrases.GetValue(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"value": value})
+}
+
 func (h *Handler) DeletePassphrase(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.Passphrases.Delete(id); err != nil {

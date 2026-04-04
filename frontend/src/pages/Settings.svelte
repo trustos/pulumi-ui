@@ -5,10 +5,11 @@
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
   import { Alert, AlertTitle, AlertDescription } from '$lib/components/ui/alert';
+  import * as Dialog from '$lib/components/ui/dialog';
   import * as Tooltip from '$lib/components/ui/tooltip';
   import { navigate } from '$lib/router';
   import {
-    getHealth, listPassphrases, createPassphrase, deletePassphrase, renamePassphrase,
+    getHealth, listPassphrases, createPassphrase, deletePassphrase, renamePassphrase, getPassphraseValue,
     getSettings, putSettings, saveCredentials, testS3Connection, migrateState,
   } from '$lib/api';
   import type { Passphrase, AppSettings, S3TestResult } from '$lib/types';
@@ -22,6 +23,8 @@
   let creating = $state(false);
   let createError = $state('');
   let deleteErrors = $state<Record<string, string>>({});
+  let revealedValues = $state<Record<string, string>>({});
+  let revealingId = $state<string | null>(null);
   let renamingId = $state<string | null>(null);
   let renameValues = $state<Record<string, string>>({});
 
@@ -77,6 +80,23 @@
     renamingId = p.id;
   }
 
+  async function toggleReveal(id: string) {
+    if (revealedValues[id] !== undefined) {
+      const { [id]: _, ...rest } = revealedValues;
+      revealedValues = rest;
+      return;
+    }
+    revealingId = id;
+    try {
+      const value = await getPassphraseValue(id);
+      revealedValues = { ...revealedValues, [id]: value };
+    } catch (err) {
+      deleteErrors = { ...deleteErrors, [id]: err instanceof Error ? err.message : String(err) };
+    } finally {
+      revealingId = null;
+    }
+  }
+
   // ── State Backend tab ───────────────────────────────────────────────────────
   let settings = $state<AppSettings | null>(null);
   let s3Namespace = $state('');
@@ -94,6 +114,7 @@
   let migrateLog = $state<string[]>([]);
   let migrateError = $state('');
   let switchError = $state('');
+  let confirmAction = $state<{ type: 'migrate-s3' | 'migrate-local' | 'activate-s3' } | null>(null);
 
   async function loadSettings() {
     try {
@@ -284,12 +305,20 @@
                     <p class="text-xs text-muted-foreground mt-0.5">
                       {p.stackCount === 0 ? 'No stacks' : p.stackCount === 1 ? '1 stack' : `${p.stackCount} stacks`}
                     </p>
+                    {#if revealedValues[p.id] !== undefined}
+                      <code class="block text-xs font-mono bg-muted px-2 py-1 rounded mt-1 break-all">{revealedValues[p.id]}</code>
+                    {/if}
                     {#if deleteErrors[p.id]}
                       <p class="text-xs text-destructive mt-1">{deleteErrors[p.id]}</p>
                     {/if}
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
                     {#if renamingId !== p.id}
+                      <button
+                        class="text-xs text-muted-foreground hover:text-foreground"
+                        disabled={revealingId === p.id}
+                        onclick={() => toggleReveal(p.id)}
+                      >{revealingId === p.id ? '...' : revealedValues[p.id] !== undefined ? 'Hide' : 'Reveal'}</button>
                       <button
                         class="text-xs text-muted-foreground hover:text-foreground"
                         onclick={() => startRename(p)}
@@ -482,14 +511,14 @@
                   <div class="flex gap-2">
                     <Button
                       disabled={migrating}
-                      onclick={() => handleMigrate('to-s3')}
+                      onclick={() => { confirmAction = { type: 'migrate-s3' }; }}
                     >
                       {migrating ? 'Migrating...' : 'Migrate & Activate'}
                     </Button>
                     <Button
                       variant="outline"
                       disabled={migrating}
-                      onclick={() => handleSwitchBackend('s3')}
+                      onclick={() => { confirmAction = { type: 'activate-s3' }; }}
                     >
                       Activate without migration
                     </Button>
@@ -503,7 +532,7 @@
                     <Button
                       variant="outline"
                       disabled={migrating}
-                      onclick={() => handleMigrate('to-local')}
+                      onclick={() => { confirmAction = { type: 'migrate-local' }; }}
                     >
                       {migrating ? 'Migrating...' : 'Migrate & Switch to Local'}
                     </Button>
@@ -646,3 +675,50 @@
     </Tabs.Content>
   </Tabs.Root>
 </div>
+
+<!-- Backend switch confirmation dialog -->
+<Dialog.Root open={confirmAction !== null} onOpenChange={(open) => { if (!open) confirmAction = null; }}>
+  <Dialog.Content>
+    <Dialog.Header>
+      <Dialog.Title>
+        {#if confirmAction?.type === 'migrate-s3'}
+          Migrate to OCI Object Storage
+        {:else if confirmAction?.type === 'activate-s3'}
+          Activate OCI Object Storage
+        {:else}
+          Switch back to Local
+        {/if}
+      </Dialog.Title>
+      <Dialog.Description>
+        {#if confirmAction?.type === 'migrate-s3'}
+          This will migrate all stack state from local storage to OCI Object Storage and switch the active backend. Existing local state will remain as a backup.
+        {:else if confirmAction?.type === 'activate-s3'}
+          This will switch the active backend to OCI Object Storage <strong>without migrating existing state</strong>. Any stacks with local-only state may become inaccessible until you migrate or switch back.
+        {:else}
+          This will migrate all stack state from OCI Object Storage back to local storage and switch the active backend.
+        {/if}
+      </Dialog.Description>
+    </Dialog.Header>
+    <Dialog.Footer>
+      <Button variant="outline" onclick={() => { confirmAction = null; }}>Cancel</Button>
+      <Button
+        variant={confirmAction?.type === 'activate-s3' ? 'destructive' : 'default'}
+        onclick={() => {
+          const action = confirmAction;
+          confirmAction = null;
+          if (action?.type === 'migrate-s3') handleMigrate('to-s3');
+          else if (action?.type === 'migrate-local') handleMigrate('to-local');
+          else if (action?.type === 'activate-s3') handleSwitchBackend('s3');
+        }}
+      >
+        {#if confirmAction?.type === 'migrate-s3'}
+          Migrate & Activate
+        {:else if confirmAction?.type === 'activate-s3'}
+          Activate without migration
+        {:else}
+          Migrate & Switch to Local
+        {/if}
+      </Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>

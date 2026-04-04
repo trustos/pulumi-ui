@@ -172,6 +172,9 @@ func main() {
 	h.NodeCertStore = nodeCertStore
 	h.LogBuffer = logBuf
 	h.AgentBinaries = agentBinaries
+	h.DataDir = dataDir
+	h.KeyFilePath = dataDir + "/encryption.key"
+	h.RestartCh = make(chan struct{}, 1)
 
 	// Embedded frontend — serve from the embed.FS sub-tree
 	sub, err := fs.Sub(frontendDist, "frontend/dist")
@@ -209,7 +212,10 @@ func main() {
 		}
 	}()
 
-	<-stop
+	select {
+	case <-stop:
+	case <-h.RestartCh:
+	}
 	log.Println("Shutting down...")
 	meshMgr.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -13,6 +13,7 @@
   import Logs from './pages/Logs.svelte';
   import Login from '$lib/pages/Login.svelte';
   import Register from '$lib/pages/Register.svelte';
+  import ImportSetup from '$lib/pages/ImportSetup.svelte';
   import * as Tooltip from '$lib/components/ui/tooltip';
 
   let path = $derived($router);
@@ -44,7 +45,7 @@
 
   // Auth-route redirect: if logged in and on /login or /register, go home.
   $effect(() => {
-    if (user && (path === '/login' || path === '/register')) {
+    if (user && (path === '/login' || path === '/register' || path === '/import')) {
       navigate('/');
     }
   });
@@ -82,6 +83,8 @@
       document.title = 'Login | Pulumi UI';
     } else if (path === '/register') {
       document.title = 'Register | Pulumi UI';
+    } else if (path === '/import') {
+      document.title = 'Import Setup | Pulumi UI';
     }
   });
 </script>
@@ -95,6 +98,8 @@
   <Login />
 {:else if path === '/register'}
   <Register />
+{:else if path === '/import'}
+  <ImportSetup />
 {:else if user}
   <div class="min-h-screen">
     <Nav />

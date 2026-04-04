@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -256,6 +257,11 @@ func (h *Handler) MigrateState(w http.ResponseWriter, r *http.Request) {
 			dataDir = "/data"
 		}
 		stateDir = dataDir + "/state"
+	}
+	if !filepath.IsAbs(stateDir) {
+		if abs, err := filepath.Abs(stateDir); err == nil {
+			stateDir = abs
+		}
 	}
 	localURL := "file://" + stateDir
 

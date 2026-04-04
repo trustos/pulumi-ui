@@ -435,6 +435,16 @@ export async function renamePassphrase(id: string, name: string): Promise<void> 
   }
 }
 
+export async function getPassphraseValue(id: string): Promise<string> {
+  const res = await fetch(`/api/passphrases/${id}/value`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text.trim() || `HTTP ${res.status}`);
+  }
+  const data: { value: string } = await res.json();
+  return data.value;
+}
+
 export async function deletePassphrase(id: string): Promise<void> {
   const res = await fetch(`/api/passphrases/${id}`, { method: 'DELETE' });
   if (!res.ok) {

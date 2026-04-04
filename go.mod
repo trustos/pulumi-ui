@@ -8,7 +8,6 @@ require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/pulumi/pulumi-oci/sdk/v2 v2.33.0
 	github.com/pulumi/pulumi/sdk/v3 v3.228.0
 	github.com/sirupsen/logrus v1.9.4
 	github.com/slackhq/nebula v1.10.3

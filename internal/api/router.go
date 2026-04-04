@@ -37,6 +37,9 @@ type Handler struct {
 	ForwardManager   *mesh.ForwardManager
 	LogBuffer        *logbuffer.Buffer
 	AgentBinaries    embed.FS // embedded agent_linux_{arm64,amd64} binaries
+	DataDir          string
+	KeyFilePath      string
+	RestartCh        chan struct{}
 }
 
 func NewHandler(
@@ -91,6 +94,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 		r.Get("/auth/status", h.AuthStatus)
 		r.Post("/auth/register", h.Register)
 		r.Post("/auth/login", h.Login)
+		r.Post("/auth/import", h.ImportSetup)
 
 		// Authenticated routes
 		r.Group(func(r chi.Router) {
@@ -179,6 +183,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			// Passphrases
 			r.Get("/passphrases", h.ListPassphrases)
 			r.Post("/passphrases", h.CreatePassphrase)
+			r.Get("/passphrases/{id}/value", h.GetPassphraseValue)
 			r.Patch("/passphrases/{id}", h.RenamePassphrase)
 			r.Delete("/passphrases/{id}", h.DeletePassphrase)
 

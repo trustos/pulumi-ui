@@ -45,6 +45,18 @@ export async function logout(): Promise<void> {
   currentUser.set(null);
 }
 
+export async function importSetup(database: File, key: File): Promise<{ ok: boolean; message: string }> {
+  const form = new FormData();
+  form.append('database', database);
+  form.append('key', key);
+  const res = await fetch('/api/auth/import', { method: 'POST', body: form });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text.trim() || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function fetchMe(): Promise<User | null> {
   const res = await fetch('/api/auth/me');
   if (res.status === 401) {

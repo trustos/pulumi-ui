@@ -66,5 +66,21 @@
         {loading ? 'Creating...' : 'Create account'}
       </Button>
     </form>
+
+    <div class="relative">
+      <div class="absolute inset-0 flex items-center">
+        <span class="w-full border-t"></span>
+      </div>
+      <div class="relative flex justify-center text-xs uppercase">
+        <span class="bg-card px-2 text-muted-foreground">or</span>
+      </div>
+    </div>
+    <button
+      type="button"
+      class="w-full text-sm text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+      onclick={() => navigate('/import')}
+    >
+      Import existing setup
+    </button>
   </div>
 </div>

@@ -65,8 +65,8 @@ watch-frontend:
 dev-watch: frontend build-agent backend
 	@mkdir -p $(DATA_DIR)/state
 	@echo "Killing any stale pulumi-ui / vite processes..."
-	@pkill -f './$(BINARY)' 2>/dev/null || true
-	@pkill -f 'vite' 2>/dev/null || true
+	@pkill -xf '\./$(BINARY)' 2>/dev/null || true
+	@pkill -xf 'node .*/vite' 2>/dev/null || true
 	@sleep 0.3
 	@echo "Starting Vite HMR on http://localhost:5173 and Go server on $(ADDR) ..."
 	@trap 'kill 0' INT TERM EXIT; \
