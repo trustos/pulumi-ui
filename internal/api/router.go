@@ -80,8 +80,6 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
-	r.Use(h.ForwardProxyRefererMiddleware)
-
 	r.Route("/api", func(r chi.Router) {
 		// Agent binary download — no auth (instances download at boot)
 		r.Get("/agent/binary/{os}/{arch}", h.ServeAgentBinary)
