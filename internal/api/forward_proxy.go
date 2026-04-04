@@ -99,14 +99,22 @@ func (h *Handler) ForwardProxy(w http.ResponseWriter, r *http.Request) {
 		// The script must run before any other scripts on the page.
 		patchScript := fmt.Sprintf(`<script>(function(){`+
 			`var p=%q;`+
+			`function rw(u){return(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(p))?p+u:u}`+
+			// Patch fetch
 			`var F=window.fetch;`+
-			`window.fetch=function(u,o){`+
-			`if(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(p))u=p+u;`+
-			`return F.call(this,u,o)};`+
+			`window.fetch=function(u,o){return F.call(this,rw(u),o)};`+
+			// Patch XMLHttpRequest.open
 			`var X=XMLHttpRequest.prototype.open;`+
-			`XMLHttpRequest.prototype.open=function(){`+
-			`if(typeof arguments[1]==='string'&&arguments[1].startsWith('/')&&!arguments[1].startsWith(p))arguments[1]=p+arguments[1];`+
-			`return X.apply(this,arguments)};`+
+			`XMLHttpRequest.prototype.open=function(){arguments[1]=rw(arguments[1]);return X.apply(this,arguments)};`+
+			// Patch setAttribute (catches dynamic script/link/img elements)
+			`var SA=Element.prototype.setAttribute;`+
+			`Element.prototype.setAttribute=function(n,v){`+
+			`if((n==='src'||n==='href')&&typeof v==='string')v=rw(v);`+
+			`return SA.call(this,n,v)};`+
+			// Patch script.src property setter (Webpack uses el.src = '...')
+			`var sd=Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype,'src');`+
+			`if(sd&&sd.set){Object.defineProperty(HTMLScriptElement.prototype,'src',{`+
+			`set:function(v){sd.set.call(this,rw(v))},get:sd.get,configurable:true})}`+
 			`})();</script><base href="%s/">`, prefix, prefix)
 		headRe := regexp.MustCompile(`(?i)(<head[^>]*>)`)
 		if loc := headRe.FindIndex(body); loc != nil {
@@ -137,6 +145,62 @@ func (h *Handler) ForwardProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+// proxyPathRe extracts (stackName, forwardID) from a forward proxy URL.
+var proxyPathRe = regexp.MustCompile(`/api/stacks/([^/]+)/forward/([^/]+)/proxy`)
+
+// ForwardProxyRefererMiddleware intercepts requests whose Referer header points
+// to a forward proxy URL and proxies them through the same forward. This catches
+// dynamic asset loads (Webpack chunks, CSS imports) and API calls that the
+// injected JS patch cannot intercept (e.g., resources loaded before scripts run).
+func (h *Handler) ForwardProxyRefererMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip pulumi-ui's own routes.
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/assets/") ||
+			r.URL.Path == "/healthz" || r.URL.Path == "/" || r.URL.Path == "/favicon.svg" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ref := r.Header.Get("Referer")
+		if ref == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		refURL, err := url.Parse(ref)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		m := proxyPathRe.FindStringSubmatch(refURL.Path)
+		if m == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if h.ForwardManager == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		pf, ok := h.ForwardManager.Get(m[2])
+		if !ok || pf.StackName != m[1] {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Proxy to the forwarded service.
+		target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", pf.LocalPort))
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		origDir := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			origDir(req)
+			req.Host = target.Host
+		}
+		proxy.ServeHTTP(w, r)
+	})
 }
 
 // proxyForwardWebSocket upgrades the browser connection and dials the local
