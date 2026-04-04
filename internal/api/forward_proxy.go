@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -107,7 +108,11 @@ func (h *Handler) ForwardProxy(w http.ResponseWriter, r *http.Request) {
 			`if(typeof arguments[1]==='string'&&arguments[1].startsWith('/')&&!arguments[1].startsWith(p))arguments[1]=p+arguments[1];`+
 			`return X.apply(this,arguments)};`+
 			`})();</script><base href="%s/">`, prefix, prefix)
-		body = bytes.Replace(body, []byte("<head>"), append([]byte("<head>"), []byte(patchScript)...), 1)
+		headRe := regexp.MustCompile(`(?i)(<head[^>]*>)`)
+		if loc := headRe.FindIndex(body); loc != nil {
+			inject := []byte(patchScript)
+			body = append(body[:loc[1]], append(inject, body[loc[1]:]...)...)
+		}
 
 		// Rewrite absolute paths in src/href/action attributes.
 		for _, attr := range []string{"src", "href", "action"} {
