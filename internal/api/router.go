@@ -80,6 +80,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
+	r.Use(h.ForwardProxyRefererMiddleware)
 
 	r.Route("/api", func(r chi.Router) {
 		// Agent binary download — no auth (instances download at boot)
@@ -209,10 +210,6 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Get("/logs/stream", h.StreamLogs)
 		})
 	})
-
-	// Intercept requests from proxied pages (Referer-based) before the SPA catch-all.
-	// This handles absolute-path fetches (e.g., /v1/jobs) from proxied UIs.
-	r.Use(h.ForwardProxyRefererMiddleware)
 
 	// Serve embedded Svelte SPA — all non-API routes return index.html.
 	r.Handle("/*", spaHandler(frontendFS))
