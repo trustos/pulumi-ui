@@ -201,6 +201,7 @@ func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
 			r.Get("/settings/credentials", h.GetCredentials)
 			r.Put("/settings/credentials", h.PutCredentials)
 			r.Get("/settings/health", h.GetHealth)
+			r.Get("/settings/export", h.ExportSetup)
 
 			// Application logs
 			r.Get("/logs", h.GetLogs)

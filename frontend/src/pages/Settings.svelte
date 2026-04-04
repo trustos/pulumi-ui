@@ -114,7 +114,7 @@
   let migrateLog = $state<string[]>([]);
   let migrateError = $state('');
   let switchError = $state('');
-  let confirmAction = $state<{ type: 'migrate-s3' | 'migrate-local' | 'activate-s3' } | null>(null);
+  let confirmAction = $state<{ type: 'migrate-s3' | 'migrate-local' | 'activate-s3' | 'switch-local' } | null>(null);
 
   async function loadSettings() {
     try {
@@ -399,7 +399,7 @@
           <!-- Local Volume option -->
           <button
             class="w-full text-left p-4 rounded border-2 transition-colors {settings?.backendType !== 's3' ? 'border-primary bg-primary/5' : 'border-border hover:border-muted-foreground/50'}"
-            onclick={() => { if (settings?.backendType === 's3') handleSwitchBackend('local'); }}
+            onclick={() => { if (settings?.backendType === 's3') confirmAction = { type: 'switch-local' }; }}
           >
             <div class="flex items-center justify-between">
               <p class="font-medium text-sm">Local Volume</p>
@@ -672,6 +672,20 @@
           {/if}
         </Card.Content>
       </Card.Root>
+
+      <Card.Root class="mt-4">
+        <Card.Header>
+          <Card.Title>Export Setup</Card.Title>
+          <Card.Description>
+            Download the database and encryption key to migrate this instance to a new server.
+          </Card.Description>
+        </Card.Header>
+        <Card.Content>
+          <Button variant="outline" onclick={() => { window.location.href = '/api/settings/export'; }}>
+            Download export archive
+          </Button>
+        </Card.Content>
+      </Card.Root>
     </Tabs.Content>
   </Tabs.Root>
 </div>
@@ -685,6 +699,8 @@
           Migrate to OCI Object Storage
         {:else if confirmAction?.type === 'activate-s3'}
           Activate OCI Object Storage
+        {:else if confirmAction?.type === 'switch-local'}
+          Switch to Local Volume
         {:else}
           Switch back to Local
         {/if}
@@ -694,6 +710,8 @@
           This will migrate all stack state from local storage to OCI Object Storage and switch the active backend. Existing local state will remain as a backup.
         {:else if confirmAction?.type === 'activate-s3'}
           This will switch the active backend to OCI Object Storage <strong>without migrating existing state</strong>. Any stacks with local-only state may become inaccessible until you migrate or switch back.
+        {:else if confirmAction?.type === 'switch-local'}
+          This will switch the active backend to local volume storage <strong>without migrating state</strong>. Any stacks with S3-only state may become inaccessible until you migrate or switch back.
         {:else}
           This will migrate all stack state from OCI Object Storage back to local storage and switch the active backend.
         {/if}
@@ -702,19 +720,22 @@
     <Dialog.Footer>
       <Button variant="outline" onclick={() => { confirmAction = null; }}>Cancel</Button>
       <Button
-        variant={confirmAction?.type === 'activate-s3' ? 'destructive' : 'default'}
+        variant={confirmAction?.type === 'activate-s3' || confirmAction?.type === 'switch-local' ? 'destructive' : 'default'}
         onclick={() => {
           const action = confirmAction;
           confirmAction = null;
           if (action?.type === 'migrate-s3') handleMigrate('to-s3');
           else if (action?.type === 'migrate-local') handleMigrate('to-local');
           else if (action?.type === 'activate-s3') handleSwitchBackend('s3');
+          else if (action?.type === 'switch-local') handleSwitchBackend('local');
         }}
       >
         {#if confirmAction?.type === 'migrate-s3'}
           Migrate & Activate
         {:else if confirmAction?.type === 'activate-s3'}
           Activate without migration
+        {:else if confirmAction?.type === 'switch-local'}
+          Switch to Local
         {:else}
           Migrate & Switch to Local
         {/if}
