@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"testing"
 
@@ -104,4 +105,87 @@ func TestEncrypt_ProducesDifferentCiphertext(t *testing.T) {
 	ct2, _ := enc.Encrypt("same text")
 
 	assert.NotEqual(t, ct1, ct2, "each encryption should produce unique ciphertext (random nonce)")
+}
+
+// --- Passphrase-based encryption tests ---
+
+func testSalt() []byte {
+	salt := make([]byte, 16)
+	rand.Read(salt)
+	return salt
+}
+
+func TestEncryptWithPassphrase_RoundTrip(t *testing.T) {
+	salt := testSalt()
+	plaintext := []byte("nebula-private-key-pem-data")
+
+	ct, err := EncryptWithPassphrase(plaintext, "my-passphrase", salt)
+	require.NoError(t, err)
+	assert.NotEmpty(t, ct)
+
+	decrypted, err := DecryptWithPassphrase(ct, "my-passphrase", salt)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, decrypted)
+}
+
+func TestEncryptWithPassphrase_EmptyPlaintext(t *testing.T) {
+	salt := testSalt()
+
+	ct, err := EncryptWithPassphrase([]byte{}, "pass", salt)
+	require.NoError(t, err)
+
+	decrypted, err := DecryptWithPassphrase(ct, "pass", salt)
+	require.NoError(t, err)
+	assert.Empty(t, decrypted)
+}
+
+func TestDecryptWithPassphrase_WrongPassphrase(t *testing.T) {
+	salt := testSalt()
+
+	ct, err := EncryptWithPassphrase([]byte("secret"), "correct-pass", salt)
+	require.NoError(t, err)
+
+	_, err = DecryptWithPassphrase(ct, "wrong-pass", salt)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "decryption failed")
+}
+
+func TestDecryptWithPassphrase_WrongSalt(t *testing.T) {
+	salt1 := testSalt()
+	salt2 := testSalt()
+
+	ct, err := EncryptWithPassphrase([]byte("secret"), "pass", salt1)
+	require.NoError(t, err)
+
+	_, err = DecryptWithPassphrase(ct, "pass", salt2)
+	assert.Error(t, err)
+}
+
+func TestDecryptWithPassphrase_TooShort(t *testing.T) {
+	_, err := DecryptWithPassphrase([]byte{0x01}, "pass", testSalt())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "too short")
+}
+
+func TestEncryptWithPassphrase_DifferentNonces(t *testing.T) {
+	salt := testSalt()
+	plaintext := []byte("same data")
+
+	ct1, _ := EncryptWithPassphrase(plaintext, "pass", salt)
+	ct2, _ := EncryptWithPassphrase(plaintext, "pass", salt)
+
+	assert.NotEqual(t, ct1, ct2, "each encryption should produce unique ciphertext")
+}
+
+func TestEncryptWithPassphrase_SameSaltDeterminesKey(t *testing.T) {
+	// Same passphrase + salt should derive the same key, so cross-decrypt works.
+	salt := testSalt()
+	plaintext := []byte("cross-decrypt test")
+
+	ct, err := EncryptWithPassphrase(plaintext, "shared-pass", salt)
+	require.NoError(t, err)
+
+	decrypted, err := DecryptWithPassphrase(ct, "shared-pass", salt)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, decrypted)
 }

@@ -1,5 +1,7 @@
 # Sync Nebula Mesh Data to S3 for Cross-Instance Portability
 
+**Status: Implemented** (2026-04-06)
+
 ## Context
 
 After claiming a stack from a shared S3 backend, the claiming instance has config + Pulumi state but no Nebula mesh data (PKI, certs, tokens). Without this, it can't establish tunnels to agents — the Nodes tab shows "Infrastructure not deployed" and port forwarding/shell don't work.

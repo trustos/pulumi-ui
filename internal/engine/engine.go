@@ -883,7 +883,7 @@ func (e *Engine) Destroy(ctx context.Context, stackName, blueprintName string, c
 // Refresh runs pulumi refresh for the given stack.
 func (e *Engine) Refresh(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) string {
 	return e.executeOperation(ctx, stackName, blueprintName, cfg, creds, send,
-		func(opCtx context.Context, stack auto.Stack, _ blueprints.Blueprint, send SSESender) string {
+		func(opCtx context.Context, stack auto.Stack, prog blueprints.Blueprint, send SSESender) string {
 			if err := e.recoverPendingOperations(opCtx, stack, send); err != nil {
 				send(SSEEvent{Type: "error", Data: "state recovery: " + err.Error()})
 				return "failed"
@@ -899,6 +899,10 @@ func (e *Engine) Refresh(ctx context.Context, stackName, blueprintName string, c
 				send(SSEEvent{Type: "error", Data: err.Error()})
 				return "failed"
 			}
+			// Discover agent addresses from Pulumi outputs. This is essential
+			// for claimed stacks where refresh is the first operation and
+			// AgentRealIP is nil. For non-agent stacks this is a no-op.
+			e.discoverAgentAddress(opCtx, stackName, prog, stack, send)
 			return "succeeded"
 		})
 }

@@ -42,6 +42,7 @@ internal/api/        HTTP handlers (one file per domain)
   agent_proxy.go     Agent proxy endpoints (health, services, exec, upload, shell WebSocket) — routes through Nebula mesh
   agent_binary.go    Agent binary serving (GET /api/agent/binary/{os}/{arch})
   mesh_config.go     Nebula mesh config download for user local machine access (GET /api/stacks/{name}/mesh/config)
+  mesh_sync.go       Mesh PKI sync to S3 for cross-instance portability (syncMeshToS3, fetchMeshFromS3, meshExistsInS3)
   port_forward.go    kubectl-style TCP port forwarding through Nebula mesh (start/stop/list)
 
 cmd/agent/           Standalone agent binary (Nebula mesh + management HTTP API + /shell WebSocket PTY + /nomad-jobs with two-step alloc port lookup)

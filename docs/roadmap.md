@@ -333,6 +333,14 @@ Sync `stack_connections` + `stack_node_certs` to S3 alongside the config YAML. P
 
 See `docs/mesh-sync-plan.md` for the full implementation plan.
 
+**Status: Done** — Implemented 2026-04-06. Includes:
+- Passphrase-based encryption (PBKDF2 + AES-256-GCM) in `internal/crypto/`
+- S3 mesh sync (`internal/api/mesh_sync.go`): sync after operations + PKI generation, fetch during claim
+- `hasMeshData` flag in unlock result for UI indicator
+- Synthetic "claim" operation for persistent claimed-stack detection
+- Auto-refresh on claimed stacks with agent IP discovery after refresh
+- All buttons disabled until info loads (no flash of enabled Destroy)
+
 **Scope: Medium | Dependencies: Stack ownership + claim wizard (done) | Priority: 12**
 
 ---
@@ -390,7 +398,7 @@ API response validation is implicit — TypeScript interfaces define the shape b
 | 9 | Cloud-init user scripts | Small | — | pending |
 | 10 | Cross-account nomad cluster | Large | — | pending (future) |
 | 11 | Instance Configuration + Instance Pool | Medium | — | pending (future) |
-| 12 | Mesh data sync to S3 | Medium | — | pending (plan: `docs/mesh-sync-plan.md`) |
+| 12 | Mesh data sync to S3 | Medium | — | **done** |
 | 13 | FE-10 — Stately (XState) + Zod evaluation | Small | — | pending (discussion) |
 
 See `docs/visual-editor.md` for the visual blueprint editor fix plan (P1/P2/P3/G1 bugs) and property system simplification roadmap.

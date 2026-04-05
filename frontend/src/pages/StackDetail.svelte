@@ -109,6 +109,15 @@
 
   let passphraseOk = $derived(info === null ? null : info.passphraseId != null);
   let notDeployed = $derived(info?.status === 'not deployed');
+  let claimed = $derived(info?.lastOperationType === 'claim');
+
+  // Auto-refresh claimed stacks to pull Pulumi state + discover agent IPs.
+  // After refresh completes, lastOperationType becomes "refresh" so this won't re-trigger.
+  $effect(() => {
+    if (claimed && !isRunning && passphraseOk) {
+      startOperation('refresh');
+    }
+  });
 
   const appCatalog = $derived<ApplicationDef[]>(currentBlueprint?.applications ?? []);
   const hasApps = $derived(appCatalog.length > 0);
@@ -745,7 +754,7 @@
   <div class="flex items-center gap-2 flex-wrap shrink-0 mb-4">
     <Tooltip.Root>
       <Tooltip.Trigger>
-        <Button variant="outline" size="sm" onclick={() => startOperation('preview')} disabled={isRunning || passphraseOk === false}>
+        <Button variant="outline" size="sm" onclick={() => startOperation('preview')} disabled={!info || isRunning || passphraseOk === false}>
           Preview
         </Button>
       </Tooltip.Trigger>
@@ -753,7 +762,7 @@
     </Tooltip.Root>
     <Tooltip.Root>
       <Tooltip.Trigger>
-        <Button size="sm" onclick={() => startOperation('up')} disabled={isRunning || passphraseOk === false}>
+        <Button size="sm" onclick={() => startOperation('up')} disabled={!info || isRunning || passphraseOk === false}>
           Deploy
         </Button>
       </Tooltip.Trigger>
@@ -761,7 +770,7 @@
     </Tooltip.Root>
     <Tooltip.Root>
       <Tooltip.Trigger>
-        <Button variant="outline" size="sm" onclick={() => startOperation('refresh')} disabled={isRunning || passphraseOk === false || notDeployed}>
+        <Button variant="outline" size="sm" onclick={() => startOperation('refresh')} disabled={!info || isRunning || passphraseOk === false || (notDeployed && !claimed)}>
           Refresh
         </Button>
       </Tooltip.Trigger>
@@ -769,7 +778,7 @@
     </Tooltip.Root>
     <Tooltip.Root>
       <Tooltip.Trigger>
-        <Button variant="destructive" size="sm" onclick={() => startOperation('destroy')} disabled={isRunning || passphraseOk === false || notDeployed}>
+        <Button variant="destructive" size="sm" onclick={() => startOperation('destroy')} disabled={!info || isRunning || passphraseOk === false || notDeployed || claimed}>
           Destroy
         </Button>
       </Tooltip.Trigger>

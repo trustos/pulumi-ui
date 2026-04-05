@@ -188,6 +188,13 @@ func (h *StackHandler) PutStack(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Record a synthetic "claim" operation so the stack has an explicit,
+		// persistent marker in the ops table. This enables the frontend to
+		// show "Refresh" and triggers the Pulumi state check in GetStackInfo.
+		claimOpID := uuid.New().String()
+		h.Ops.Create(claimOpID, stackName, "claim")
+		h.Ops.Finish(claimOpID, "succeeded")
+
 		// Import Nebula mesh PKI from S3 if available. This is non-critical —
 		// errors are logged but the claim still succeeds (just without mesh).
 		if h.ConnStore != nil && body.PassphraseID != nil && *body.PassphraseID != "" {
