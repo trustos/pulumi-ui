@@ -32,7 +32,7 @@ type s3Object struct {
 
 // DiscoverRemoteStacks lists stacks in the S3 backend that are not registered
 // in the local database. Returns an empty array if the backend is not S3.
-func (h *Handler) DiscoverRemoteStacks(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) DiscoverRemoteStacks(w http.ResponseWriter, r *http.Request) {
 	backendType, _, _ := h.Creds.Get(db.KeyBackendType)
 	if backendType != "s3" {
 		w.Header().Set("Content-Type", "application/json")

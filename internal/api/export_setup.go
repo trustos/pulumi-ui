@@ -11,7 +11,7 @@ import (
 
 // ExportSetup streams a zip archive containing the database and encryption key.
 // This allows migrating the entire instance to a new server.
-func (h *Handler) ExportSetup(w http.ResponseWriter, r *http.Request) {
+func (h *AdminHandler) ExportSetup(w http.ResponseWriter, r *http.Request) {
 	dbPath := filepath.Join(h.DataDir, "pulumi-ui.db")
 	keyPath := h.KeyFilePath
 

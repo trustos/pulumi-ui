@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func (h *Handler) ListSSHKeys(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) ListSSHKeys(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	keys, err := h.SSHKeys.List(user.ID)
 	if err != nil {
@@ -41,7 +41,7 @@ func (h *Handler) ListSSHKeys(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func (h *Handler) CreateSSHKey(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) CreateSSHKey(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 
 	var body struct {
@@ -111,7 +111,7 @@ func (h *Handler) CreateSSHKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) DeleteSSHKey(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) DeleteSSHKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.SSHKeys.Delete(id); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -122,7 +122,7 @@ func (h *Handler) DeleteSSHKey(w http.ResponseWriter, r *http.Request) {
 
 // DownloadSSHPrivateKey serves the encrypted-then-decrypted private key as a file download.
 // A trailing newline is ensured because SSH tools reject PEM files without one.
-func (h *Handler) DownloadSSHPrivateKey(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) DownloadSSHPrivateKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	name, privKey, err := h.SSHKeys.GetPrivateKey(id)

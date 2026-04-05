@@ -12,14 +12,14 @@ import (
 )
 
 // ListBlueprints returns all blueprints (built-in + custom) without YAML bodies.
-func (h *Handler) ListBlueprints(w http.ResponseWriter, r *http.Request) {
+func (h *BlueprintHandler) ListBlueprints(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(h.Registry.List())
 }
 
 // GetBlueprint returns a single blueprint. For custom blueprints the full YAML body
 // is included in the response.
-func (h *Handler) GetBlueprint(w http.ResponseWriter, r *http.Request) {
+func (h *BlueprintHandler) GetBlueprint(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Check custom blueprints first (they carry the YAML body).
@@ -60,7 +60,7 @@ type createBlueprintRequest struct {
 
 // ValidateBlueprintHandler runs all validation levels against a YAML body and
 // returns the result. Always responds 200; callers check the "valid" field.
-func (h *Handler) ValidateBlueprintHandler(w http.ResponseWriter, r *http.Request) {
+func (h *BlueprintHandler) ValidateBlueprintHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		BlueprintYAML string `json:"blueprintYaml"`
 	}
@@ -87,7 +87,7 @@ func (h *Handler) ValidateBlueprintHandler(w http.ResponseWriter, r *http.Reques
 }
 
 // CreateBlueprint saves a new user-defined YAML blueprint and registers it.
-func (h *Handler) CreateBlueprint(w http.ResponseWriter, r *http.Request) {
+func (h *BlueprintHandler) CreateBlueprint(w http.ResponseWriter, r *http.Request) {
 	var req createBlueprintRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -137,7 +137,7 @@ type updateBlueprintRequest struct {
 }
 
 // UpdateBlueprint replaces the YAML body of an existing custom blueprint.
-func (h *Handler) UpdateBlueprint(w http.ResponseWriter, r *http.Request) {
+func (h *BlueprintHandler) UpdateBlueprint(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Block updates to built-in blueprints.
@@ -191,7 +191,7 @@ func (h *Handler) UpdateBlueprint(w http.ResponseWriter, r *http.Request) {
 }
 
 // ForkBlueprint generates a starter YAML from a built-in blueprint's config fields.
-func (h *Handler) ForkBlueprint(w http.ResponseWriter, r *http.Request) {
+func (h *BlueprintHandler) ForkBlueprint(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	prog, ok := h.Registry.Get(name)
 	if !ok {
@@ -247,7 +247,7 @@ func buildForkYAML(prog blueprints.Blueprint) string {
 
 // DeleteBlueprint removes a custom blueprint from the DB and registry.
 // Blocked if any stacks reference the blueprint.
-func (h *Handler) DeleteBlueprint(w http.ResponseWriter, r *http.Request) {
+func (h *BlueprintHandler) DeleteBlueprint(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// Block deletes of built-in blueprints.

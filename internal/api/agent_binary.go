@@ -8,7 +8,7 @@ import (
 
 // ServeAgentBinary serves a pre-compiled agent binary for the given OS/arch.
 // Binaries are embedded in the server at compile time from cmd/server/dist/.
-func (h *Handler) ServeAgentBinary(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) ServeAgentBinary(w http.ResponseWriter, r *http.Request) {
 	osName := chi.URLParam(r, "os")
 	arch := chi.URLParam(r, "arch")
 

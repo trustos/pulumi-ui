@@ -54,7 +54,7 @@ func computeDeployed(ops []db.Operation) bool {
 // OCI credentials come from the account (or global fallback).
 // The passphrase is looked up from the named passphrases table.
 // If sshKeyID is set, the SSH public key from that key overrides the account's SSH key.
-func (h *Handler) resolveCredentials(ociAccountID, passphraseID, sshKeyID *string) (engine.Credentials, error) {
+func (h *StackHandler) resolveCredentials(ociAccountID, passphraseID, sshKeyID *string) (engine.Credentials, error) {
 	var oci db.OCICredentials
 	var err error
 
@@ -95,7 +95,7 @@ func (h *Handler) resolveCredentials(ociAccountID, passphraseID, sshKeyID *strin
 }
 
 // ListStacks returns all stacks from SQLite merged with last-operation status.
-func (h *Handler) ListStacks(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) ListStacks(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Stacks.List()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -138,7 +138,7 @@ func (h *Handler) ListStacks(w http.ResponseWriter, r *http.Request) {
 }
 
 // PutStack saves or updates a stack config in SQLite.
-func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) PutStack(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	var body struct {
@@ -237,7 +237,7 @@ func (h *Handler) PutStack(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetStackInfo returns full stack details including Pulumi outputs and last operation.
-func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	row, err := h.Stacks.Get(stackName)
@@ -390,7 +390,7 @@ func (h *Handler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 
 // DeleteStack removes the stack config, operation history, and Pulumi backend
 // state so that re-creating a stack with the same name starts completely fresh.
-func (h *Handler) DeleteStack(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) DeleteStack(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	// Prevent deletion while an operation is running.
@@ -438,7 +438,7 @@ func (h *Handler) DeleteStack(w http.ResponseWriter, r *http.Request) {
 }
 
 // ExportStackYAML returns the stack config as a downloadable YAML file.
-func (h *Handler) ExportStackYAML(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) ExportStackYAML(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	stackDir := os.Getenv("PULUMI_UI_STACK_DIR")
@@ -467,13 +467,18 @@ func (h *Handler) ExportStackYAML(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadStackConfig loads a stack config and returns the stack row alongside it.
-func (h *Handler) loadStackConfig(stackName string) (*stacks.StackConfig, *db.StackRow, error) {
+func (h *StackHandler) loadStackConfig(stackName string) (*stacks.StackConfig, *db.StackRow, error) {
+	return loadStackConfig(h.Stacks, stackName)
+}
+
+// loadStackConfig is a package-level helper used by both StackHandler and BlueprintHandler.
+func loadStackConfig(stackStore *db.StackStore, stackName string) (*stacks.StackConfig, *db.StackRow, error) {
 	stackDir := os.Getenv("PULUMI_UI_STACK_DIR")
 	if stackDir != "" {
 		cfg, err := stacks.LoadFromFile(filepath.Join(stackDir, stackName+".yaml"))
 		return cfg, nil, err
 	}
-	row, err := h.Stacks.Get(stackName)
+	row, err := stackStore.Get(stackName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -485,7 +490,7 @@ func (h *Handler) loadStackConfig(stackName string) (*stacks.StackConfig, *db.St
 }
 
 // runOperation is the shared SSE operation runner.
-func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation string) {
+func (h *StackHandler) runOperation(w http.ResponseWriter, r *http.Request, operation string) {
 	stackName := chi.URLParam(r, "name")
 
 	cfg, row, err := h.loadStackConfig(stackName)
@@ -527,7 +532,7 @@ func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation
 	opCtx := context.Background()
 
 	// Pre-operation hooks
-	h.executeHooks(opCtx, stackName, "pre-"+operation, "", logSend)
+	h.ExecuteHooks(stackName, "pre-"+operation, "", logSend)
 
 	var status string
 	switch operation {
@@ -554,35 +559,35 @@ func (h *Handler) runOperation(w http.ResponseWriter, r *http.Request, operation
 	}
 
 	// Post-operation hooks
-	h.executeHooks(opCtx, stackName, "post-"+operation, status, logSend)
+	h.ExecuteHooks(stackName, "post-"+operation, status, logSend)
 
 	h.Ops.Finish(opID, status)
 	send(engine.SSEEvent{Type: "done", Data: status})
 }
 
-func (h *Handler) StackUp(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) StackUp(w http.ResponseWriter, r *http.Request) {
 	h.runOperation(w, r, "up")
 }
 
-func (h *Handler) StackDestroy(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) StackDestroy(w http.ResponseWriter, r *http.Request) {
 	h.runOperation(w, r, "destroy")
 }
 
-func (h *Handler) StackRefresh(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) StackRefresh(w http.ResponseWriter, r *http.Request) {
 	h.runOperation(w, r, "refresh")
 }
 
-func (h *Handler) StackPreview(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) StackPreview(w http.ResponseWriter, r *http.Request) {
 	h.runOperation(w, r, "preview")
 }
 
-func (h *Handler) StackCancel(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) StackCancel(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 	h.Engine.Cancel(stackName)
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *Handler) StackUnlock(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) StackUnlock(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 	if err := h.Engine.Unlock(stackName); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -592,7 +597,7 @@ func (h *Handler) StackUnlock(w http.ResponseWriter, r *http.Request) {
 }
 
 // StackDeployApps runs Phase 2+3: mesh connectivity + application deployment.
-func (h *Handler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	cfg, _, err := h.loadStackConfig(stackName)
@@ -620,7 +625,7 @@ func (h *Handler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
 	status := h.Engine.DeployApps(opCtx, stackName, cfg.Metadata.Blueprint, cfg.Applications, cfg.AppConfig, logSend)
 
 	// Post-deploy-apps hooks
-	h.executeHooks(opCtx, stackName, "post-deploy-apps", status, logSend)
+	h.ExecuteHooks(stackName, "post-deploy-apps", status, logSend)
 
 	// Persist any auto-generated secrets back to the stack config so they
 	// survive re-deploys. The deployer mutates appConfig in place.
@@ -639,7 +644,7 @@ func (h *Handler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetStackLogs returns the log history for a stack (last 20 operations, oldest first).
-func (h *Handler) GetStackLogs(w http.ResponseWriter, r *http.Request) {
+func (h *StackHandler) GetStackLogs(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	row, err := h.Stacks.Get(stackName)
@@ -679,7 +684,7 @@ func (h *Handler) GetStackLogs(w http.ResponseWriter, r *http.Request) {
 // agent certs (10 nodes, .2–.11), and a per-stack auth token for a new stack.
 // Node 0's cert is also stored as the legacy agent_cert in stack_connections
 // for backwards compatibility with the mesh manager and Go programs.
-func (h *Handler) generateNebulaPKI(stackName string) error {
+func (h *StackHandler) generateNebulaPKI(stackName string) error {
 	subnet, err := h.ConnStore.AllocateSubnet()
 	if err != nil {
 		return fmt.Errorf("allocate subnet: %w", err)

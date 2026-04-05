@@ -24,7 +24,7 @@ type HealthResponse struct {
 	Passphrase    ServiceStatus `json:"passphrase"`     // Pulumi stack encryption passphrase set
 }
 
-func (h *Handler) GetHealth(w http.ResponseWriter, r *http.Request) {
+func (h *AdminHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 	resp := HealthResponse{}
 
 	// Encryption key — always loaded (auto-generated or from env/keystore at startup).

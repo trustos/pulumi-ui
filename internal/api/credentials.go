@@ -8,7 +8,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/db"
 )
 
-func (h *Handler) GetCredentials(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) GetCredentials(w http.ResponseWriter, r *http.Request) {
 	status, err := h.Creds.Status()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -26,7 +26,7 @@ func (h *Handler) GetCredentials(w http.ResponseWriter, r *http.Request) {
 //	{ "type": "key",     "key": "...", "value": "..." }
 //
 // Note: OCI credentials are managed via /api/accounts, not here.
-func (h *Handler) PutCredentials(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) PutCredentials(w http.ResponseWriter, r *http.Request) {
 	var body map[string]string
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

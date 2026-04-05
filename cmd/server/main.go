@@ -164,17 +164,22 @@ func main() {
 	eng.SetExternalURL(externalURL)
 	eng.WithMeshManager(meshMgr)
 
-	// HTTP handler
-	h := api.NewHandler(database, creds, ops, stackStore, users, sessions, accounts, passphrases, sshKeys, customBlueprints, eng, registry, connStore)
-	h.Hooks = hookStore
-	h.MeshManager = meshMgr
-	h.ForwardManager = mesh.NewForwardManager(meshMgr)
-	h.NodeCertStore = nodeCertStore
-	h.LogBuffer = logBuf
-	h.AgentBinaries = agentBinaries
-	h.DataDir = dataDir
-	h.KeyFilePath = dataDir + "/encryption.key"
-	h.RestartCh = make(chan struct{}, 1)
+	// Handler groups
+	fwdMgr := mesh.NewForwardManager(meshMgr)
+	restartCh := make(chan struct{}, 1)
+
+	authH := &api.AuthHandler{Users: users, Sessions: sessions}
+	identityH := &api.IdentityHandler{Accounts: accounts, Passphrases: passphrases, SSHKeys: sshKeys, Creds: creds}
+	networkH := &api.NetworkHandler{ForwardManager: fwdMgr, MeshManager: meshMgr, ConnStore: connStore, NodeCertStore: nodeCertStore}
+	platformH := &api.PlatformHandler{Creds: creds, Stacks: stackStore, Passphrases: passphrases, Engine: eng, Hooks: hookStore, MeshManager: meshMgr, ConnStore: connStore, LogBuffer: logBuf, AgentBinaries: agentBinaries}
+	blueprintH := &api.BlueprintHandler{Registry: registry, CustomBlueprints: customBlueprints, Stacks: stackStore, MeshManager: meshMgr, ConnStore: connStore}
+	adminH := &api.AdminHandler{DB: database, Accounts: accounts, Passphrases: passphrases, Creds: creds, Users: users, DataDir: dataDir, KeyFilePath: dataDir + "/encryption.key", RestartCh: restartCh}
+	stackH := &api.StackHandler{
+		Accounts: accounts, Creds: creds, SSHKeys: sshKeys, Passphrases: passphrases,
+		Stacks: stackStore, Ops: ops, Registry: registry, ConnStore: connStore,
+		NodeCertStore: nodeCertStore, Engine: eng, MeshManager: meshMgr, Hooks: hookStore,
+		ExecuteHooks: platformH.ExecuteHooksForStack,
+	}
 
 	// Embedded frontend — serve from the embed.FS sub-tree
 	sub, err := fs.Sub(frontendDist, "frontend/dist")
@@ -184,8 +189,12 @@ func main() {
 	frontendFS := http.FS(sub)
 
 	srv := &http.Server{
-		Addr:         listenAddr,
-		Handler:      api.NewRouter(h, frontendFS),
+		Addr: listenAddr,
+		Handler: api.NewRouter(api.RouterConfig{
+			Auth: authH, Identity: identityH, Stacks: stackH,
+			Blueprints: blueprintH, Network: networkH,
+			Platform: platformH, Admin: adminH,
+		}, frontendFS),
 		ReadTimeout:  0, // intentional — SSE streams are long-lived
 		WriteTimeout: 0,
 	}
@@ -214,7 +223,7 @@ func main() {
 
 	select {
 	case <-stop:
-	case <-h.RestartCh:
+	case <-restartCh:
 	}
 	log.Println("Shutting down...")
 	meshMgr.Stop()

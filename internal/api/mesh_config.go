@@ -67,7 +67,7 @@ firewall:
 // DownloadMeshConfig generates a Nebula config file that allows a user's local
 // machine to join the stack's mesh network. Issues a fresh user certificate
 // signed by the stack's CA.
-func (h *Handler) DownloadMeshConfig(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) DownloadMeshConfig(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	// Get stack connection (CA cert/key, subnet, agent IPs)

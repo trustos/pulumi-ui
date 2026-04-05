@@ -25,10 +25,10 @@ type appDomainEntry struct {
 }
 
 // ListAppDomains returns all domain mappings for a stack's applications.
-func (h *Handler) ListAppDomains(w http.ResponseWriter, r *http.Request) {
+func (h *BlueprintHandler) ListAppDomains(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
-	cfg, _, err := h.loadStackConfig(stackName)
+	cfg, _, err := loadStackConfig(h.Stacks, stackName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -66,7 +66,7 @@ func (h *Handler) ListAppDomains(w http.ResponseWriter, r *http.Request) {
 // SetAppDomain assigns a domain to an application and uploads the Traefik
 // dynamic config to the agent. The config is picked up by Traefik's file
 // provider instantly (watch: true).
-func (h *Handler) SetAppDomain(w http.ResponseWriter, r *http.Request) {
+func (h *BlueprintHandler) SetAppDomain(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 	appKey := chi.URLParam(r, "appKey")
 
@@ -83,7 +83,7 @@ func (h *Handler) SetAppDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find the app's port from the program catalog.
-	cfg, _, err := h.loadStackConfig(stackName)
+	cfg, _, err := loadStackConfig(h.Stacks, stackName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -143,12 +143,12 @@ func (h *Handler) SetAppDomain(w http.ResponseWriter, r *http.Request) {
 }
 
 // RemoveAppDomain removes a domain mapping and deletes the Traefik dynamic config.
-func (h *Handler) RemoveAppDomain(w http.ResponseWriter, r *http.Request) {
+func (h *BlueprintHandler) RemoveAppDomain(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 	appKey := chi.URLParam(r, "appKey")
 
 	// Remove from appConfig.
-	cfg, _, err := h.loadStackConfig(stackName)
+	cfg, _, err := loadStackConfig(h.Stacks, stackName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -174,7 +174,7 @@ func (h *Handler) RemoveAppDomain(w http.ResponseWriter, r *http.Request) {
 }
 
 // uploadToAgent sends a file to the agent via the mesh tunnel.
-func (h *Handler) uploadToAgent(ctx context.Context, stackName, destPath, content string) error {
+func (h *BlueprintHandler) uploadToAgent(ctx context.Context, stackName, destPath, content string) error {
 	tunnel, err := h.MeshManager.GetTunnelForNode(stackName, 0)
 	if err != nil {
 		return fmt.Errorf("mesh tunnel: %w", err)

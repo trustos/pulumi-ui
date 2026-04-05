@@ -10,7 +10,7 @@ import (
 
 // AuthStatus is returned by GET /api/auth/status — no auth required.
 // The frontend uses hasUsers to decide whether to show the register or login page.
-func (h *Handler) AuthStatus(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) AuthStatus(w http.ResponseWriter, r *http.Request) {
 	n, err := h.Users.Count()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -23,7 +23,7 @@ func (h *Handler) AuthStatus(w http.ResponseWriter, r *http.Request) {
 // Register creates a new user account.
 // If users already exist the server returns 409 (only one user for now; multi-user support
 // can be added later by removing this check).
-func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -63,7 +63,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 // Login validates credentials and creates a session.
-func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -95,7 +95,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 // Logout invalidates the current session.
-func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("session"); err == nil {
 		h.Sessions.Delete(c.Value)
 	}
@@ -104,7 +104,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 // Me returns the currently authenticated user.
-func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

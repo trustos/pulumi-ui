@@ -16,7 +16,7 @@ import (
 )
 
 // ListHooks returns all hooks for a stack.
-func (h *Handler) ListHooks(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) ListHooks(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 	hooks, err := h.Hooks.ListForStack(stackName)
 	if err != nil {
@@ -31,7 +31,7 @@ func (h *Handler) ListHooks(w http.ResponseWriter, r *http.Request) {
 }
 
 // CreateHook creates a new lifecycle hook for a stack.
-func (h *Handler) CreateHook(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) CreateHook(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	var body struct {
@@ -76,7 +76,7 @@ func (h *Handler) CreateHook(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteHook removes a lifecycle hook.
-func (h *Handler) DeleteHook(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) DeleteHook(w http.ResponseWriter, r *http.Request) {
 	hookID := chi.URLParam(r, "hookId")
 	if err := h.Hooks.Delete(hookID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -85,10 +85,16 @@ func (h *Handler) DeleteHook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// ExecuteHooksForStack is the HookExecutor bridge — wraps executeHooks with a
+// background context. Used by StackHandler via the injected HookExecutor function.
+func (h *PlatformHandler) ExecuteHooksForStack(stackName, trigger, opStatus string, logSend func(engine.SSEEvent)) {
+	h.executeHooks(context.Background(), stackName, trigger, opStatus, logSend)
+}
+
 // executeHooks runs all hooks for a given stack and trigger in priority order.
 // It streams output via logSend. Returns nil even if individual hooks fail
 // (respecting continueOnError).
-func (h *Handler) executeHooks(ctx context.Context, stackName, trigger, opStatus string, logSend func(engine.SSEEvent)) {
+func (h *PlatformHandler) executeHooks(ctx context.Context, stackName, trigger, opStatus string, logSend func(engine.SSEEvent)) {
 	if h.Hooks == nil {
 		return
 	}
@@ -135,7 +141,7 @@ func (h *Handler) executeHooks(ctx context.Context, stackName, trigger, opStatus
 }
 
 // executeAgentExecHook runs a command on the agent via the mesh tunnel.
-func (h *Handler) executeAgentExecHook(ctx context.Context, stackName string, hook db.Hook, logSend func(engine.SSEEvent)) error {
+func (h *PlatformHandler) executeAgentExecHook(ctx context.Context, stackName string, hook db.Hook, logSend func(engine.SSEEvent)) error {
 	if h.MeshManager == nil {
 		return fmt.Errorf("mesh manager not available")
 	}
@@ -170,7 +176,7 @@ func (h *Handler) executeAgentExecHook(ctx context.Context, stackName string, ho
 }
 
 // executeWebhook sends an HTTP POST to the hook's URL with a JSON payload.
-func (h *Handler) executeWebhook(ctx context.Context, hook db.Hook, stackName, trigger, opStatus string) error {
+func (h *PlatformHandler) executeWebhook(ctx context.Context, hook db.Hook, stackName, trigger, opStatus string) error {
 	if hook.URL == nil || *hook.URL == "" {
 		return fmt.Errorf("no URL specified for webhook hook")
 	}

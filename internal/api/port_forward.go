@@ -26,7 +26,7 @@ type portForwardResponse struct {
 
 // StartPortForward creates a local TCP listener that proxies to a remote port
 // through the Nebula mesh.
-func (h *Handler) StartPortForward(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) StartPortForward(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	var req startForwardRequest
@@ -64,7 +64,7 @@ func (h *Handler) StartPortForward(w http.ResponseWriter, r *http.Request) {
 }
 
 // StopPortForward closes an active port forward.
-func (h *Handler) StopPortForward(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) StopPortForward(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	if h.ForwardManager == nil {
@@ -81,7 +81,7 @@ func (h *Handler) StopPortForward(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListPortForwards returns all active port forwards for a stack.
-func (h *Handler) ListPortForwards(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) ListPortForwards(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	if h.ForwardManager == nil {

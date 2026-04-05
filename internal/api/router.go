@@ -1,211 +1,157 @@
 package api
 
 import (
-	"database/sql"
-	"embed"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/trustos/pulumi-ui/internal/auth"
-	"github.com/trustos/pulumi-ui/internal/blueprints"
-	"github.com/trustos/pulumi-ui/internal/db"
-	"github.com/trustos/pulumi-ui/internal/engine"
-	"github.com/trustos/pulumi-ui/internal/logbuffer"
-	"github.com/trustos/pulumi-ui/internal/mesh"
 	"github.com/trustos/pulumi-ui/internal/oci"
 )
 
-// Handler holds all dependencies wired in main.go.
-type Handler struct {
-	DB               *sql.DB
-	Creds            *db.CredentialStore
-	Ops              *db.OperationStore
-	Stacks           *db.StackStore
-	Users            *db.UserStore
-	Sessions         *db.SessionStore
-	Accounts         *db.AccountStore
-	Passphrases      *db.PassphraseStore
-	SSHKeys          *db.SSHKeyStore
-	CustomBlueprints *db.CustomBlueprintStore
-	Engine           *engine.Engine
-	Registry         *blueprints.BlueprintRegistry
-	ConnStore        *db.StackConnectionStore
-	NodeCertStore    *db.NodeCertStore
-	MeshManager      *mesh.Manager
-	Hooks            *db.HookStore
-	ForwardManager   *mesh.ForwardManager
-	LogBuffer        *logbuffer.Buffer
-	AgentBinaries    embed.FS // embedded agent_linux_{arm64,amd64} binaries
-	DataDir          string
-	KeyFilePath      string
-	RestartCh        chan struct{}
+// RouterConfig holds all handler groups wired in main.go.
+type RouterConfig struct {
+	Auth       *AuthHandler
+	Identity   *IdentityHandler
+	Stacks     *StackHandler
+	Blueprints *BlueprintHandler
+	Network    *NetworkHandler
+	Platform   *PlatformHandler
+	Admin      *AdminHandler
 }
 
-func NewHandler(
-	sqlDB *sql.DB,
-	creds *db.CredentialStore,
-	ops *db.OperationStore,
-	stacks *db.StackStore,
-	users *db.UserStore,
-	sessions *db.SessionStore,
-	accounts *db.AccountStore,
-	passphrases *db.PassphraseStore,
-	sshKeys *db.SSHKeyStore,
-	customBlueprints *db.CustomBlueprintStore,
-	eng *engine.Engine,
-	registry *blueprints.BlueprintRegistry,
-	connStore *db.StackConnectionStore,
-) *Handler {
-	return &Handler{
-		DB:               sqlDB,
-		Creds:            creds,
-		Ops:              ops,
-		Stacks:           stacks,
-		Users:            users,
-		Sessions:         sessions,
-		Accounts:         accounts,
-		Passphrases:      passphrases,
-		SSHKeys:          sshKeys,
-		CustomBlueprints: customBlueprints,
-		Engine:           eng,
-		Registry:         registry,
-		ConnStore:        connStore,
-	}
-}
-
-func NewRouter(h *Handler, frontendFS http.FileSystem) http.Handler {
+func NewRouter(cfg RouterConfig, frontendFS http.FileSystem) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
-	r.Use(h.ForwardSubdomainProxy)
+	r.Use(cfg.Network.ForwardSubdomainProxy)
 	r.Route("/api", func(r chi.Router) {
 		// Agent binary download — no auth (instances download at boot)
-		r.Get("/agent/binary/{os}/{arch}", h.ServeAgentBinary)
-		r.Get("/agent/binary/{os}", h.ServeAgentBinary)
+		r.Get("/agent/binary/{os}/{arch}", cfg.Platform.ServeAgentBinary)
+		r.Get("/agent/binary/{os}", cfg.Platform.ServeAgentBinary)
 
 		// OCI schema — no authentication required
 		r.Get("/oci-schema", oci.SchemaHandler)
 		r.Post("/oci-schema/refresh", oci.SchemaRefreshHandler)
 
 		// Auth — no authentication required
-		r.Get("/auth/status", h.AuthStatus)
-		r.Post("/auth/register", h.Register)
-		r.Post("/auth/login", h.Login)
-		r.Post("/auth/import", h.ImportSetup)
+		r.Get("/auth/status", cfg.Auth.AuthStatus)
+		r.Post("/auth/register", cfg.Auth.Register)
+		r.Post("/auth/login", cfg.Auth.Login)
+		r.Post("/auth/import", cfg.Admin.ImportSetup)
 
 		// Authenticated routes
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAuth(h.Users, h.Sessions))
+			r.Use(auth.RequireAuth(cfg.Auth.Users, cfg.Auth.Sessions))
 
-			r.Post("/auth/logout", h.Logout)
-			r.Get("/auth/me", h.Me)
+			r.Post("/auth/logout", cfg.Auth.Logout)
+			r.Get("/auth/me", cfg.Auth.Me)
 
 			// OCI Accounts
-			r.Get("/accounts", h.ListAccounts)
-			r.Post("/accounts", h.CreateAccount)
-			r.Get("/accounts/export", h.ExportAccounts)
-			r.Post("/accounts/generate-keypair", h.GenerateKeyPair)
-			r.Post("/accounts/import/preview/upload", h.ImportPreviewUpload)
-			r.Post("/accounts/import/preview/zip", h.ImportPreviewZip)
-			r.Post("/accounts/import/confirm/upload", h.ImportConfirmUpload)
-			r.Post("/accounts/import/confirm/zip", h.ImportConfirmZip)
-			r.Get("/accounts/{id}", h.GetAccount)
-			r.Put("/accounts/{id}", h.UpdateAccount)
-			r.Delete("/accounts/{id}", h.DeleteAccount)
-			r.Post("/accounts/{id}/verify", h.VerifyAccount)
-			r.Get("/accounts/{id}/shapes", h.ListShapes)
-			r.Get("/accounts/{id}/images", h.ListImages)
-			r.Get("/accounts/{id}/compartments", h.ListCompartments)
-			r.Get("/accounts/{id}/availability-domains", h.ListAvailabilityDomains)
+			r.Get("/accounts", cfg.Identity.ListAccounts)
+			r.Post("/accounts", cfg.Identity.CreateAccount)
+			r.Get("/accounts/export", cfg.Admin.ExportAccounts)
+			r.Post("/accounts/generate-keypair", cfg.Network.GenerateKeyPair)
+			r.Post("/accounts/import/preview/upload", cfg.Admin.ImportPreviewUpload)
+			r.Post("/accounts/import/preview/zip", cfg.Admin.ImportPreviewZip)
+			r.Post("/accounts/import/confirm/upload", cfg.Admin.ImportConfirmUpload)
+			r.Post("/accounts/import/confirm/zip", cfg.Admin.ImportConfirmZip)
+			r.Get("/accounts/{id}", cfg.Identity.GetAccount)
+			r.Put("/accounts/{id}", cfg.Identity.UpdateAccount)
+			r.Delete("/accounts/{id}", cfg.Identity.DeleteAccount)
+			r.Post("/accounts/{id}/verify", cfg.Identity.VerifyAccount)
+			r.Get("/accounts/{id}/shapes", cfg.Identity.ListShapes)
+			r.Get("/accounts/{id}/images", cfg.Identity.ListImages)
+			r.Get("/accounts/{id}/compartments", cfg.Identity.ListCompartments)
+			r.Get("/accounts/{id}/availability-domains", cfg.Identity.ListAvailabilityDomains)
 
 			// Blueprints (built-in + custom YAML)
-			r.Get("/blueprints", h.ListBlueprints)
-			r.Post("/blueprints", h.CreateBlueprint)
-			r.Post("/blueprints/validate", h.ValidateBlueprintHandler)
-			r.Get("/blueprints/{name}", h.GetBlueprint)
-			r.Put("/blueprints/{name}", h.UpdateBlueprint)
-			r.Delete("/blueprints/{name}", h.DeleteBlueprint)
-			r.Post("/blueprints/{name}/fork", h.ForkBlueprint)
+			r.Get("/blueprints", cfg.Blueprints.ListBlueprints)
+			r.Post("/blueprints", cfg.Blueprints.CreateBlueprint)
+			r.Post("/blueprints/validate", cfg.Blueprints.ValidateBlueprintHandler)
+			r.Get("/blueprints/{name}", cfg.Blueprints.GetBlueprint)
+			r.Put("/blueprints/{name}", cfg.Blueprints.UpdateBlueprint)
+			r.Delete("/blueprints/{name}", cfg.Blueprints.DeleteBlueprint)
+			r.Post("/blueprints/{name}/fork", cfg.Blueprints.ForkBlueprint)
 
 			// Programs — backwards compatibility aliases
-			r.Get("/programs", h.ListBlueprints)
-			r.Post("/programs", h.CreateBlueprint)
-			r.Post("/programs/validate", h.ValidateBlueprintHandler)
-			r.Get("/programs/{name}", h.GetBlueprint)
-			r.Put("/programs/{name}", h.UpdateBlueprint)
-			r.Delete("/programs/{name}", h.DeleteBlueprint)
-			r.Post("/programs/{name}/fork", h.ForkBlueprint)
+			r.Get("/programs", cfg.Blueprints.ListBlueprints)
+			r.Post("/programs", cfg.Blueprints.CreateBlueprint)
+			r.Post("/programs/validate", cfg.Blueprints.ValidateBlueprintHandler)
+			r.Get("/programs/{name}", cfg.Blueprints.GetBlueprint)
+			r.Put("/programs/{name}", cfg.Blueprints.UpdateBlueprint)
+			r.Delete("/programs/{name}", cfg.Blueprints.DeleteBlueprint)
+			r.Post("/programs/{name}/fork", cfg.Blueprints.ForkBlueprint)
 
-			r.Get("/stacks", h.ListStacks)
-			r.Get("/stacks/discover", h.DiscoverRemoteStacks)
-			r.Put("/stacks/{name}", h.PutStack)
-			r.Delete("/stacks/{name}", h.DeleteStack)
-			r.Get("/stacks/{name}/info", h.GetStackInfo)
-			r.Get("/stacks/{name}/yaml", h.ExportStackYAML)
-			r.Post("/stacks/{name}/up", h.StackUp)
-			r.Post("/stacks/{name}/destroy", h.StackDestroy)
-			r.Post("/stacks/{name}/refresh", h.StackRefresh)
-			r.Post("/stacks/{name}/preview", h.StackPreview)
-			r.Post("/stacks/{name}/cancel", h.StackCancel)
-			r.Post("/stacks/{name}/unlock", h.StackUnlock)
-			r.Post("/stacks/{name}/deploy-apps", h.StackDeployApps)
-			r.Get("/stacks/{name}/logs", h.GetStackLogs)
+			r.Get("/stacks", cfg.Stacks.ListStacks)
+			r.Get("/stacks/discover", cfg.Platform.DiscoverRemoteStacks)
+			r.Put("/stacks/{name}", cfg.Stacks.PutStack)
+			r.Delete("/stacks/{name}", cfg.Stacks.DeleteStack)
+			r.Get("/stacks/{name}/info", cfg.Stacks.GetStackInfo)
+			r.Get("/stacks/{name}/yaml", cfg.Stacks.ExportStackYAML)
+			r.Post("/stacks/{name}/up", cfg.Stacks.StackUp)
+			r.Post("/stacks/{name}/destroy", cfg.Stacks.StackDestroy)
+			r.Post("/stacks/{name}/refresh", cfg.Stacks.StackRefresh)
+			r.Post("/stacks/{name}/preview", cfg.Stacks.StackPreview)
+			r.Post("/stacks/{name}/cancel", cfg.Stacks.StackCancel)
+			r.Post("/stacks/{name}/unlock", cfg.Stacks.StackUnlock)
+			r.Post("/stacks/{name}/deploy-apps", cfg.Stacks.StackDeployApps)
+			r.Get("/stacks/{name}/logs", cfg.Stacks.GetStackLogs)
 
 			// Lifecycle hooks
-			r.Get("/stacks/{name}/hooks", h.ListHooks)
-			r.Post("/stacks/{name}/hooks", h.CreateHook)
-			r.Delete("/stacks/{name}/hooks/{hookId}", h.DeleteHook)
+			r.Get("/stacks/{name}/hooks", cfg.Platform.ListHooks)
+			r.Post("/stacks/{name}/hooks", cfg.Platform.CreateHook)
+			r.Delete("/stacks/{name}/hooks/{hookId}", cfg.Platform.DeleteHook)
 
 			// Agent proxy (routes through Nebula mesh)
-			r.Get("/stacks/{name}/agent/health", h.AgentHealth)
-			r.Get("/stacks/{name}/agent/services", h.AgentServices)
-			r.Get("/stacks/{name}/agent/nomad-jobs", h.AgentNomadJobs)
-			r.Post("/stacks/{name}/agent/exec", h.AgentExec)
-			r.Post("/stacks/{name}/agent/upload", h.AgentUpload)
-			r.Get("/stacks/{name}/agent/shell", h.AgentShell)
+			r.Get("/stacks/{name}/agent/health", cfg.Network.AgentHealth)
+			r.Get("/stacks/{name}/agent/services", cfg.Network.AgentServices)
+			r.Get("/stacks/{name}/agent/nomad-jobs", cfg.Network.AgentNomadJobs)
+			r.Post("/stacks/{name}/agent/exec", cfg.Network.AgentExec)
+			r.Post("/stacks/{name}/agent/upload", cfg.Network.AgentUpload)
+			r.Get("/stacks/{name}/agent/shell", cfg.Network.AgentShell)
 
 			// Mesh config download (for local machine Nebula access)
-			r.Get("/stacks/{name}/mesh/config", h.DownloadMeshConfig)
+			r.Get("/stacks/{name}/mesh/config", cfg.Network.DownloadMeshConfig)
 
 			// App domain management (Traefik dynamic config)
-			r.Get("/stacks/{name}/app-domains", h.ListAppDomains)
-			r.Put("/stacks/{name}/app-domains/{appKey}", h.SetAppDomain)
-			r.Delete("/stacks/{name}/app-domains/{appKey}", h.RemoveAppDomain)
+			r.Get("/stacks/{name}/app-domains", cfg.Blueprints.ListAppDomains)
+			r.Put("/stacks/{name}/app-domains/{appKey}", cfg.Blueprints.SetAppDomain)
+			r.Delete("/stacks/{name}/app-domains/{appKey}", cfg.Blueprints.RemoveAppDomain)
 
 			// Port forwarding (TCP proxy through Nebula mesh)
-			r.Get("/stacks/{name}/forward", h.ListPortForwards)
-			r.Post("/stacks/{name}/forward", h.StartPortForward)
-			r.Delete("/stacks/{name}/forward/{id}", h.StopPortForward)
+			r.Get("/stacks/{name}/forward", cfg.Network.ListPortForwards)
+			r.Post("/stacks/{name}/forward", cfg.Network.StartPortForward)
+			r.Delete("/stacks/{name}/forward/{id}", cfg.Network.StopPortForward)
 
 			// Passphrases
-			r.Get("/passphrases", h.ListPassphrases)
-			r.Post("/passphrases", h.CreatePassphrase)
-			r.Get("/passphrases/{id}/value", h.GetPassphraseValue)
-			r.Patch("/passphrases/{id}", h.RenamePassphrase)
-			r.Delete("/passphrases/{id}", h.DeletePassphrase)
+			r.Get("/passphrases", cfg.Identity.ListPassphrases)
+			r.Post("/passphrases", cfg.Identity.CreatePassphrase)
+			r.Get("/passphrases/{id}/value", cfg.Identity.GetPassphraseValue)
+			r.Patch("/passphrases/{id}", cfg.Identity.RenamePassphrase)
+			r.Delete("/passphrases/{id}", cfg.Identity.DeletePassphrase)
 
 			// SSH Keys
-			r.Get("/ssh-keys", h.ListSSHKeys)
-			r.Post("/ssh-keys", h.CreateSSHKey)
-			r.Delete("/ssh-keys/{id}", h.DeleteSSHKey)
-			r.Get("/ssh-keys/{id}/private-key", h.DownloadSSHPrivateKey)
+			r.Get("/ssh-keys", cfg.Identity.ListSSHKeys)
+			r.Post("/ssh-keys", cfg.Identity.CreateSSHKey)
+			r.Delete("/ssh-keys/{id}", cfg.Identity.DeleteSSHKey)
+			r.Get("/ssh-keys/{id}/private-key", cfg.Identity.DownloadSSHPrivateKey)
 
 			// Settings & Credentials
-			r.Get("/settings", h.GetSettings)
-			r.Put("/settings", h.PutSettings)
-			r.Post("/settings/test-s3", h.TestS3Connection)
-			r.Post("/settings/migrate", h.MigrateState)
-			r.Get("/settings/credentials", h.GetCredentials)
-			r.Put("/settings/credentials", h.PutCredentials)
-			r.Get("/settings/health", h.GetHealth)
-			r.Get("/settings/export", h.ExportSetup)
+			r.Get("/settings", cfg.Platform.GetSettings)
+			r.Put("/settings", cfg.Platform.PutSettings)
+			r.Post("/settings/test-s3", cfg.Platform.TestS3Connection)
+			r.Post("/settings/migrate", cfg.Platform.MigrateState)
+			r.Get("/settings/credentials", cfg.Identity.GetCredentials)
+			r.Put("/settings/credentials", cfg.Identity.PutCredentials)
+			r.Get("/settings/health", cfg.Admin.GetHealth)
+			r.Get("/settings/export", cfg.Admin.ExportSetup)
 
 			// Application logs
-			r.Get("/logs", h.GetLogs)
-			r.Get("/logs/stream", h.StreamLogs)
+			r.Get("/logs", cfg.Platform.GetLogs)
+			r.Get("/logs/stream", cfg.Platform.StreamLogs)
 		})
 	})
 

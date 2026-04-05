@@ -28,7 +28,7 @@ type AppSettings struct {
 	S3HasKeys   bool   `json:"s3HasKeys"`
 }
 
-func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	backendType, _, _ := h.Creds.Get(db.KeyBackendType)
 	if backendType == "" {
 		backendType = "local"
@@ -51,7 +51,7 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) PutSettings(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) PutSettings(w http.ResponseWriter, r *http.Request) {
 	var body AppSettings
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -80,7 +80,7 @@ func (h *Handler) PutSettings(w http.ResponseWriter, r *http.Request) {
 
 // TestS3Connection validates connectivity to the OCI Object Storage S3-compatible
 // endpoint by sending a HEAD bucket request with AWS SigV4 authentication.
-func (h *Handler) TestS3Connection(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) TestS3Connection(w http.ResponseWriter, r *http.Request) {
 	bucket, _, _ := h.Creds.Get(db.KeyS3Bucket)
 	ns, _, _ := h.Creds.Get(db.KeyS3Namespace)
 	region, _, _ := h.Creds.Get(db.KeyS3Region)
@@ -223,7 +223,7 @@ func hmacSHA256(key []byte, data string) []byte {
 
 // MigrateState migrates all stack state from local backend to S3 (or vice versa).
 // Streams progress as SSE events and switches the backend type on success.
-func (h *Handler) MigrateState(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) MigrateState(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Direction string `json:"direction"` // "to-s3" or "to-local"
 	}

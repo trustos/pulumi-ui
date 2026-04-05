@@ -21,7 +21,7 @@ var fwdHostRe = regexp.MustCompile(`^(fwd-\d+)--(.+?)\.pulumi\.`)
 // fwd-{id}--{stack}.tenevi.zero and proxies the entire request to the
 // corresponding local port forward. The upstream service sees the request at
 // root / — no path rewriting, HTML injection, or JS patching needed.
-func (h *Handler) ForwardSubdomainProxy(next http.Handler) http.Handler {
+func (h *NetworkHandler) ForwardSubdomainProxy(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Strip port from Host header if present.
 		host := r.Host

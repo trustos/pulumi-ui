@@ -23,7 +23,7 @@ var wsUpgrader = websocket.Upgrader{
 
 // AgentHealth proxies a health check to the agent through the Nebula mesh.
 // Accepts an optional ?node=N query parameter to target a specific node.
-func (h *Handler) AgentHealth(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) AgentHealth(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	var tunnel *mesh.Tunnel
@@ -70,7 +70,7 @@ func (h *Handler) AgentHealth(w http.ResponseWriter, r *http.Request) {
 
 // AgentServices proxies a services check to the agent.
 // Accepts an optional ?node=N query parameter to target a specific node.
-func (h *Handler) AgentServices(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) AgentServices(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	var tunnel *mesh.Tunnel
@@ -104,7 +104,7 @@ func (h *Handler) AgentServices(w http.ResponseWriter, r *http.Request) {
 
 // AgentNomadJobs proxies a Nomad job list request to the agent.
 // Accepts an optional ?node=N query parameter to target a specific node.
-func (h *Handler) AgentNomadJobs(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) AgentNomadJobs(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	var tunnel *mesh.Tunnel
@@ -137,7 +137,7 @@ func (h *Handler) AgentNomadJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 // AgentExec proxies a command execution to the agent, streaming output via SSE.
-func (h *Handler) AgentExec(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) AgentExec(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	tunnel, err := h.MeshManager.GetTunnel(stackName)
@@ -185,7 +185,7 @@ func (h *Handler) AgentExec(w http.ResponseWriter, r *http.Request) {
 }
 
 // AgentUpload proxies a file upload to the agent.
-func (h *Handler) AgentUpload(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) AgentUpload(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	tunnel, err := h.MeshManager.GetTunnel(stackName)
@@ -225,7 +225,7 @@ func (h *Handler) AgentUpload(w http.ResponseWriter, r *http.Request) {
 // AgentShell proxies a WebSocket terminal session to the agent through Nebula.
 // Accepts an optional ?node=N query parameter to connect to a specific node.
 // When omitted, connects via the default single-node tunnel.
-func (h *Handler) AgentShell(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) AgentShell(w http.ResponseWriter, r *http.Request) {
 	stackName := chi.URLParam(r, "name")
 
 	var tunnel *mesh.Tunnel

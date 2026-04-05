@@ -178,7 +178,7 @@ func TestLastOperationType(t *testing.T) {
 	assert.False(t, computeDeployed(ops), "destroy→refresh should not be deployed")
 }
 
-func setupTestHandler(t *testing.T) *Handler {
+func setupTestHandler(t *testing.T) *StackHandler {
 	t.Helper()
 	database, err := db.Open(":memory:")
 	require.NoError(t, err)
@@ -189,7 +189,7 @@ func setupTestHandler(t *testing.T) *Handler {
 	require.NoError(t, err)
 
 	connStore := db.NewStackConnectionStore(database, enc)
-	return &Handler{ConnStore: connStore}
+	return &StackHandler{ConnStore: connStore}
 }
 
 func TestGenerateNebulaPKI_ProducesValidCertAndToken(t *testing.T) {

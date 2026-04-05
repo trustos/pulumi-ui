@@ -7,7 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func (h *Handler) ListPassphrases(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) ListPassphrases(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Passphrases.List()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -29,7 +29,7 @@ func (h *Handler) ListPassphrases(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func (h *Handler) CreatePassphrase(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) CreatePassphrase(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name  string `json:"name"`
 		Value string `json:"value"`
@@ -55,7 +55,7 @@ func (h *Handler) CreatePassphrase(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) RenamePassphrase(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) RenamePassphrase(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var body struct {
 		Name string `json:"name"`
@@ -75,7 +75,7 @@ func (h *Handler) RenamePassphrase(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *Handler) GetPassphraseValue(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) GetPassphraseValue(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	value, err := h.Passphrases.GetValue(id)
 	if err != nil {
@@ -86,7 +86,7 @@ func (h *Handler) GetPassphraseValue(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"value": value})
 }
 
-func (h *Handler) DeletePassphrase(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) DeletePassphrase(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.Passphrases.Delete(id); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)

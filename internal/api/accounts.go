@@ -26,7 +26,7 @@ type accountResponse struct {
 }
 
 // ListAccounts returns all OCI accounts for the authenticated user.
-func (h *Handler) ListAccounts(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) ListAccounts(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	accounts, err := h.Accounts.ListForUser(user.ID)
 	if err != nil {
@@ -46,7 +46,7 @@ func (h *Handler) ListAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 // CreateAccount adds a new OCI account for the authenticated user.
-func (h *Handler) CreateAccount(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 
 	var body struct {
@@ -82,7 +82,7 @@ func (h *Handler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetAccount returns a single OCI account.
-func (h *Handler) GetAccount(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) GetAccount(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
@@ -97,7 +97,7 @@ func (h *Handler) GetAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateAccount replaces the credentials of an existing OCI account.
-func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
@@ -132,7 +132,7 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteAccount removes an OCI account.
-func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
@@ -160,7 +160,7 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // VerifyAccount tests the account's OCI credentials and updates its status.
-func (h *Handler) VerifyAccount(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
@@ -205,7 +205,7 @@ func (h *Handler) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListShapes returns available compute shapes for the account's region.
-func (h *Handler) ListShapes(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) ListShapes(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
@@ -232,7 +232,7 @@ func (h *Handler) ListShapes(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListImages returns Oracle Linux ARM images for the account's region.
-func (h *Handler) ListImages(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) ListImages(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
@@ -259,7 +259,7 @@ func (h *Handler) ListImages(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListCompartments returns active compartments for the account's tenancy.
-func (h *Handler) ListCompartments(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) ListCompartments(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
@@ -286,7 +286,7 @@ func (h *Handler) ListCompartments(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListAvailabilityDomains returns availability domains for the account's region.
-func (h *Handler) ListAvailabilityDomains(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityHandler) ListAvailabilityDomains(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 

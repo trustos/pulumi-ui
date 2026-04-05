@@ -7,7 +7,7 @@ import (
 )
 
 // GetLogs returns the buffered application log entries as JSON.
-func (h *Handler) GetLogs(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	if h.LogBuffer == nil {
 		http.Error(w, "logging not configured", http.StatusServiceUnavailable)
 		return
@@ -18,7 +18,7 @@ func (h *Handler) GetLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // StreamLogs opens an SSE connection that streams new log entries in real time.
-func (h *Handler) StreamLogs(w http.ResponseWriter, r *http.Request) {
+func (h *PlatformHandler) StreamLogs(w http.ResponseWriter, r *http.Request) {
 	if h.LogBuffer == nil {
 		http.Error(w, "logging not configured", http.StatusServiceUnavailable)
 		return

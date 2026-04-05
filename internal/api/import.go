@@ -49,7 +49,7 @@ type importConfirmResult struct {
 // Body: { "content": "<raw config file text>", "keys": { "<key_file_path>": "<pem content>" } }
 // The client is expected to pre-match key files by basename (path keys match the raw key_file
 // values from the config, resolved client-side).
-func (h *Handler) ImportPreviewUpload(w http.ResponseWriter, r *http.Request) {
+func (h *AdminHandler) ImportPreviewUpload(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content string            `json:"content"`
 		Keys    map[string]string `json:"keys"`
@@ -91,7 +91,7 @@ func (h *Handler) ImportPreviewUpload(w http.ResponseWriter, r *http.Request) {
 
 // ImportConfirmUpload handles POST /api/accounts/import/confirm/upload.
 // Body: { "entries": [{ profileName, accountName, tenancyOcid, userOcid, fingerprint, region, privateKey, sshPublicKey }] }
-func (h *Handler) ImportConfirmUpload(w http.ResponseWriter, r *http.Request) {
+func (h *AdminHandler) ImportConfirmUpload(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 
 	var body struct {
@@ -123,7 +123,7 @@ func (h *Handler) ImportConfirmUpload(w http.ResponseWriter, r *http.Request) {
 // ImportPreviewZip handles POST /api/accounts/import/preview/zip.
 // Body: { "zip": "<base64-encoded zip bytes>" }
 // Accepts either the pulumi-ui export ZIP or any ZIP containing a "config" file + .pem files.
-func (h *Handler) ImportPreviewZip(w http.ResponseWriter, r *http.Request) {
+func (h *AdminHandler) ImportPreviewZip(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Zip string `json:"zip"`
 	}
@@ -166,7 +166,7 @@ func (h *Handler) ImportPreviewZip(w http.ResponseWriter, r *http.Request) {
 // ImportConfirmZip handles POST /api/accounts/import/confirm/zip.
 // Body: { "zip": "<base64>", "entries": [{ profileName, accountName, sshPublicKey }] }
 // Re-parses the ZIP to extract private keys, then creates accounts.
-func (h *Handler) ImportConfirmZip(w http.ResponseWriter, r *http.Request) {
+func (h *AdminHandler) ImportConfirmZip(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 
 	var body struct {

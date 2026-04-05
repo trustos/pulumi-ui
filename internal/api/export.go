@@ -17,7 +17,7 @@ var nonAlnum = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 // Returns a ZIP archive containing:
 //   - config        — OCI SDK config file (INI format, one profile per account)
 //   - {name}_key.pem — RSA private key for each account
-func (h *Handler) ExportAccounts(w http.ResponseWriter, r *http.Request) {
+func (h *AdminHandler) ExportAccounts(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 
 	accounts, err := h.Accounts.ListForUser(user.ID)

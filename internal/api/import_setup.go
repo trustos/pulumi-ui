@@ -19,7 +19,7 @@ import (
 // ImportSetup accepts a multipart upload of a database file and encryption key,
 // validates them, replaces the current (empty) database and key file, then
 // triggers a graceful server restart. Only allowed on a fresh instance (no users).
-func (h *Handler) ImportSetup(w http.ResponseWriter, r *http.Request) {
+func (h *AdminHandler) ImportSetup(w http.ResponseWriter, r *http.Request) {
 	// Guard: only allowed when no users exist.
 	n, err := h.Users.Count()
 	if err != nil {

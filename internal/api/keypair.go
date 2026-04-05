@@ -18,7 +18,7 @@ import (
 //   - publicKeyPem: PKIX PEM public key (upload to OCI Console → API Keys → Add API Key)
 //   - fingerprint: MD5 fingerprint in OCI format (aa:bb:cc:...) — auto-fill the fingerprint field
 //   - sshPublicKey: OpenSSH public key (for SSH access to instances)
-func (h *Handler) GenerateKeyPair(w http.ResponseWriter, r *http.Request) {
+func (h *NetworkHandler) GenerateKeyPair(w http.ResponseWriter, r *http.Request) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		http.Error(w, "failed to generate key: "+err.Error(), http.StatusInternalServerError)
