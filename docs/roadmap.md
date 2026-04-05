@@ -323,6 +323,58 @@ Key challenges:
 
 ---
 
+## Mesh Data Sync to S3
+
+### Problem
+After claiming a stack from a shared S3 backend, the claiming instance has config + Pulumi state but no Nebula mesh data (PKI, certs, tokens). The Nodes tab shows "Infrastructure not deployed" and port forwarding/shell don't work.
+
+### Solution
+Sync `stack_connections` + `stack_node_certs` to S3 alongside the config YAML. Private keys encrypted with the stack's Pulumi passphrase (not `PULUMI_UI_ENCRYPTION_KEY`) so instances don't need to share the encryption key.
+
+See `docs/mesh-sync-plan.md` for the full implementation plan.
+
+**Scope: Medium | Dependencies: Stack ownership + claim wizard (done) | Priority: 12**
+
+---
+
+## FE-10 — Stately (XState) + Zod Evaluation
+
+### Problem
+The frontend has several complex stateful flows (claim wizard, stack operations, deploy-apps, SSE streaming) managed with ad-hoc `$state` variables. As flows grow more complex (multi-step wizards, concurrent operations, error recovery), the state management becomes fragile — e.g., the claim wizard needed careful `$effect` tracking to avoid resetting mid-flow when props changed.
+
+API response validation is implicit — TypeScript interfaces define the shape but there's no runtime validation. Malformed responses silently cause `undefined` errors deep in component trees.
+
+### Discussion points
+
+**Stately / XState (state machines):**
+- Formalize complex flows as state machines (claim wizard states: idle → unlocking → unlocked → saving-passphrase → selecting-account → claiming → done)
+- Prevent invalid state transitions (can't claim without unlocking first)
+- Visual debugging via Stately Studio inspector
+- Tradeoff: adds ~30KB bundle size, learning curve for contributors, overkill for simple forms
+- Candidate flows: claim wizard, stack operation lifecycle, deploy-apps, SSE reconnection
+
+**Zod (runtime validation):**
+- Validate API responses at the boundary (`api.ts`) before they reach components
+- Auto-generate TypeScript types from Zod schemas (single source of truth)
+- Catch backend contract changes at the API layer, not deep in the UI
+- Tradeoff: ~15KB bundle, schema duplication risk (Go structs + Zod schemas), migration effort for 89 endpoints
+- Candidate: start with critical types (StackInfo, StackSummary, UnlockResult) and expand gradually
+
+**Combined approach:**
+- Zod for API boundary validation
+- XState for the 3-4 most complex flows
+- Keep simple forms with `$state` (no need to over-engineer)
+
+### Decision criteria
+- How often do we hit state bugs in complex flows?
+- How often do API response shape changes cause silent UI failures?
+- Is the bundle size increase acceptable (~45KB combined)?
+- Can we adopt incrementally without rewriting existing code?
+
+**Scope: Small (evaluation) → Medium (adoption) | Dependencies: none | Priority: 13 (discussion)**
+
+---
+
 ## Execution Order
 
 | # | Theme | Scope | Gate | Status |
@@ -338,6 +390,8 @@ Key challenges:
 | 9 | Cloud-init user scripts | Small | — | pending |
 | 10 | Cross-account nomad cluster | Large | — | pending (future) |
 | 11 | Instance Configuration + Instance Pool | Medium | — | pending (future) |
+| 12 | Mesh data sync to S3 | Medium | — | pending (plan: `docs/mesh-sync-plan.md`) |
+| 13 | FE-10 — Stately (XState) + Zod evaluation | Small | — | pending (discussion) |
 
 See `docs/visual-editor.md` for the visual blueprint editor fix plan (P1/P2/P3/G1 bugs) and property system simplification roadmap.
 See `docs/application-catalog-architecture.md` for the complete agent/mesh architecture.
