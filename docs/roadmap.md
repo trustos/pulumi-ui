@@ -352,7 +352,8 @@ See `docs/application-catalog-architecture.md` for the complete agent/mesh archi
 | BE-3 — Repository interfaces | **done** (`internal/ports/repositories.go` — 10 interfaces) |
 | BE-5 — Thread-safe BlueprintRegistry | **done** (`BlueprintRegistry` struct with `sync.RWMutex`) |
 | FE-2 — OCI Picker extraction | **done** (`OciShapePicker`, `OciImagePicker`, `SshKeyPicker` components) |
-| Port Forwarding | **done** (kubectl-style TCP forwarding through Nebula mesh) |
+| Port Forwarding | **done** (subdomain-based proxy: `fwd-{id}--{stack}.pulumi.{domain}`, HTTP-only) |
+| Subdomain TLS | **pending** — DNS-01 wildcard cert for `*.pulumi.{domain}` needed for HTTPS on forward subdomains. Requires DNS provider API credentials (e.g., Porkbun, Cloudflare) in the user's reverse proxy config. |
 | App Catalog | **done** (YAML blueprint applications + mesh-based deployment) |
 | Agent Phase 1 — Bootstrap pipeline | **done** (PKI, agent cert, token, binary endpoint) |
 | Agent Phase 2 — Nebula mesh | **done** (userspace tunnels, post-deploy discovery, agent proxy) |
