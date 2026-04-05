@@ -32,6 +32,7 @@ type UnlockResult struct {
 	SuggestedAccountID *string `json:"suggestedAccountId,omitempty"`
 	PassphraseID       *string `json:"passphraseId,omitempty"`
 	ConfigYAML         string  `json:"configYaml,omitempty"` // pulumi-ui stack config from S3
+	HasMeshData        bool    `json:"hasMeshData"`          // true if Nebula mesh PKI is available in S3
 }
 
 // UnlockRemoteStack downloads a remote stack's state file from S3, decrypts it
@@ -117,6 +118,9 @@ func (h *PlatformHandler) UnlockRemoteStack(w http.ResponseWriter, r *http.Reque
 	// Fetch pulumi-ui config YAML from S3 (synced during operations).
 	configYAML := fetchConfigFromS3(r.Context(), h.Creds, req.Blueprint, stackName)
 
+	// Check if Nebula mesh PKI data exists in S3 (lightweight HEAD request).
+	hasMesh := meshExistsInS3(r.Context(), h.Creds, req.Blueprint, stackName)
+
 	result := UnlockResult{
 		Valid:              true,
 		ResourceCount:      len(resources),
@@ -124,6 +128,7 @@ func (h *PlatformHandler) UnlockRemoteStack(w http.ResponseWriter, r *http.Reque
 		SuggestedAccountID: suggestedAccountID,
 		PassphraseID:       passphraseID,
 		ConfigYAML:         configYAML,
+		HasMeshData:        hasMesh,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

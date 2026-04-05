@@ -322,6 +322,7 @@
               <div><span class="text-muted-foreground">Account:</span> {accounts.find(a => a.id === selectedAccountId)?.name}</div>
               <div><span class="text-muted-foreground">Passphrase:</span> {passphraseMode === 'select' ? passphrases.find(p => p.id === selectedPassphraseId)?.name : (savedPassphraseId ? savePassphraseName : 'manual (unsaved)')}</div>
               <div><span class="text-muted-foreground">Resources:</span> {unlockResult?.resourceCount ?? '?'}</div>
+              <div><span class="text-muted-foreground">Mesh data:</span> {unlockResult?.hasMeshData ? 'Available (tunnels will work)' : 'Not available'}</div>
             </div>
 
             {#if claimError}

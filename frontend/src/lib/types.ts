@@ -108,6 +108,7 @@ export interface UnlockResult {
   suggestedAccountId: string | null;
   passphraseId: string | null;
   configYaml: string;
+  hasMeshData: boolean;
 }
 
 export interface MeshStatus {

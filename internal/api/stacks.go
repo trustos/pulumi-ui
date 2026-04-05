@@ -187,6 +187,30 @@ func (h *StackHandler) PutStack(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// Import Nebula mesh PKI from S3 if available. This is non-critical —
+		// errors are logged but the claim still succeeds (just without mesh).
+		if h.ConnStore != nil && body.PassphraseID != nil && *body.PassphraseID != "" {
+			if passphrase, err := h.Passphrases.GetValue(*body.PassphraseID); err == nil {
+				conn, nodeCerts, fetchErr := fetchMeshFromS3(r.Context(), h.Creds, passphrase, body.Blueprint, stackName)
+				if fetchErr != nil {
+					log.Printf("[mesh-sync] fetch failed for %s: %v", stackName, fetchErr)
+				} else if conn != nil {
+					conn.StackName = stackName
+					if err := h.ConnStore.Create(conn); err != nil {
+						log.Printf("[mesh-sync] import connection failed for %s: %v", stackName, err)
+					} else if h.NodeCertStore != nil && len(nodeCerts) > 0 {
+						for _, nc := range nodeCerts {
+							nc.StackName = stackName
+						}
+						if err := h.NodeCertStore.CreateAll(nodeCerts); err != nil {
+							log.Printf("[mesh-sync] import node certs failed for %s: %v", stackName, err)
+						}
+					}
+				}
+			}
+		}
+
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -242,6 +266,20 @@ func (h *StackHandler) PutStack(w http.ResponseWriter, r *http.Request) {
 			if err := h.generateNebulaPKI(stackName); err != nil {
 				http.Error(w, "failed to generate agent PKI: "+err.Error(), http.StatusInternalServerError)
 				return
+			}
+			// Sync mesh to S3 immediately so it's available before the first operation.
+			// Without this, there's a gap between create and first successful op where
+			// another instance could discover the stack but not get mesh data.
+			if body.PassphraseID != nil {
+				if passphrase, err := h.Passphrases.GetValue(*body.PassphraseID); err == nil {
+					if conn, _ := h.ConnStore.Get(stackName); conn != nil {
+						var nodeCerts []*db.NodeCert
+						if h.NodeCertStore != nil {
+							nodeCerts, _ = h.NodeCertStore.ListForStack(stackName)
+						}
+						go syncMeshToS3(context.Background(), h.Creds, passphrase, body.Blueprint, stackName, conn, nodeCerts)
+					}
+				}
 			}
 		}
 	}
@@ -586,7 +624,7 @@ func (h *StackHandler) runOperation(w http.ResponseWriter, r *http.Request, oper
 	// Post-operation hooks
 	h.ExecuteHooks(stackName, "post-"+operation, status, logSend)
 
-	// Sync config to S3 so other pulumi-ui instances can claim this stack.
+	// Sync config + mesh to S3 so other pulumi-ui instances can claim this stack.
 	if status == "succeeded" {
 		yamlStr, yamlErr := cfg.ToYAML()
 		if yamlErr != nil {
@@ -594,6 +632,17 @@ func (h *StackHandler) runOperation(w http.ResponseWriter, r *http.Request, oper
 		} else {
 			log.Printf("[config-sync] triggering sync for %s/%s (%d bytes)", cfg.Metadata.Blueprint, stackName, len(yamlStr))
 			go syncConfigToS3(context.Background(), h.Creds, cfg.Metadata.Blueprint, stackName, yamlStr)
+		}
+
+		// Sync Nebula mesh PKI alongside config so claiming instances get tunnel connectivity.
+		if h.ConnStore != nil {
+			if conn, err := h.ConnStore.Get(stackName); err == nil && conn != nil {
+				var nodeCerts []*db.NodeCert
+				if h.NodeCertStore != nil {
+					nodeCerts, _ = h.NodeCertStore.ListForStack(stackName)
+				}
+				go syncMeshToS3(context.Background(), h.Creds, creds.Passphrase, cfg.Metadata.Blueprint, stackName, conn, nodeCerts)
+			}
 		}
 	} else {
 		log.Printf("[config-sync] skipping sync — operation status: %s", status)
