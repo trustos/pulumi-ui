@@ -328,10 +328,10 @@ Key challenges:
 | # | Theme | Scope | Gate | Status |
 |---|---|---|---|---|
 | 1 | BE-2 — Engine deduplication | Small | — | **done** |
-| 2 | BE-4 — Handler decomposition | Large | BE-3 (done) | pending |
-| 3 | BE-6 — OCI Object Storage state backend | Medium | — | pending |
+| 2 | BE-4 — Handler decomposition | Large | BE-3 (done) | **done** |
+| 3 | BE-6 — OCI Object Storage state backend | Medium | — | **done** |
 | 4 | Agent auto-update | Medium | Agent Phase 4 (done) | pending (needs careful design) |
-| 5 | FE-1 — 3-step wizard | Medium | — | pending |
+| 5 | FE-1 — 3-step wizard | Medium | — | **done** (~95%, minor Dashboard button gap) |
 | 6 | FE-4 — Client-side validation | Medium | — | pending |
 | 7 | FE-9 — Node graph editor (Svelte Flow) | Large | — | pending |
 | 8 | Visual editor bugs + polish | Medium | — | pending (see `visual-editor.md`) |
@@ -350,6 +350,9 @@ See `docs/application-catalog-architecture.md` for the complete agent/mesh archi
 |---|---|
 | BE-1 — CredentialService | **done** (`internal/services/credentials.go` with `Resolve()`) |
 | BE-2 — Engine deduplication | **done** (`executeOperation` extracts shared 7-step preamble; -93 lines) |
+| BE-4 — Handler decomposition | **done** (7 focused handler groups: Auth, Identity, Stack, Blueprint, Network, Platform, Admin; -34 lines) |
+| BE-6 — OCI Object Storage state backend | **done** (S3 backend URL, cred injection, settings UI, test connection) |
+| FE-1 — 3-step stack creation wizard | **done** (multi-step dialog with inline passphrase creation) |
 | BE-3 — Repository interfaces | **done** (`internal/ports/repositories.go` — 10 interfaces) |
 | BE-5 — Thread-safe BlueprintRegistry | **done** (`BlueprintRegistry` struct with `sync.RWMutex`) |
 | FE-2 — OCI Picker extraction | **done** (`OciShapePicker`, `OciImagePicker`, `SshKeyPicker` components) |
