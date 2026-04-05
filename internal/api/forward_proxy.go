@@ -13,8 +13,9 @@ import (
 )
 
 // fwdHostRe extracts (forwardID, stackName) from a subdomain like
-// "fwd-1--mystack.tenevi.zero". Strips port if present.
-var fwdHostRe = regexp.MustCompile(`^(fwd-\d+)--(.+?)\.`)
+// "fwd-1--mystack.pulumi.tenevi.zero". The ".pulumi." anchor ensures
+// we only match forward subdomains under the pulumi service domain.
+var fwdHostRe = regexp.MustCompile(`^(fwd-\d+)--(.+?)\.pulumi\.`)
 
 // ForwardSubdomainProxy is a middleware that checks if the Host header matches
 // fwd-{id}--{stack}.tenevi.zero and proxies the entire request to the
