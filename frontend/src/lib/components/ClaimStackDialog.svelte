@@ -60,7 +60,7 @@
   );
   const matchedAccount = $derived(
     unlockResult?.suggestedAccountId
-      ? accounts.find(a => a.id === unlockResult.suggestedAccountId)
+      ? accounts.find(a => a.id === unlockResult!.suggestedAccountId)
       : null
   );
 
