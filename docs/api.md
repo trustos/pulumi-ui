@@ -251,6 +251,14 @@ All agent communication is proxied through the server's userspace Nebula tunnel.
 
 Opens a local TCP listener on `127.0.0.1:<localPort>` that proxies through the Nebula tunnel to `<nebulaIP>:<remotePort>` on the target node. If `localPort` is 0 (default), an ephemeral port is assigned. Used for accessing private services (Nomad UI on 4646, Consul UI on 8500, etc.) without NLB exposure.
 
+#### Accessing forwarded services
+
+**Production (via domain):** Each forward is accessible at `http://fwd-{id}--{stack}.pulumi.{domain}/`. The `ForwardSubdomainProxy` middleware matches the Host header and reverse-proxies to the local listener. Requires wildcard DNS (`*.pulumi.{domain}` → server IP) and a Traefik `HostRegexp` route.
+
+**Localhost dev:** Links point directly to `http://localhost:{localPort}/` — kubectl-style direct TCP access. No proxy or subdomain needed.
+
+WebSocket connections through forwarded ports are supported in both modes (the middleware detects `Upgrade: websocket` and proxies bidirectionally).
+
 ### Mesh Config (requires auth)
 
 | Method | Path | Body | Response |

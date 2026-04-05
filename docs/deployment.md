@@ -322,3 +322,49 @@ nomad var get -namespace default nomad/jobs/pulumi-ui
 | `/data/pulumi-ui.db` | All stacks, accounts, passphrases, SSH keys, users, sessions, operations | Yes |
 | `/data/encryption.key` | AES-256 key for all credential blobs | Yes (file store) |
 | `/data/state/` | Pulumi stack state files | Yes (to resume existing stacks) |
+
+---
+
+## Port Forwarding — DNS Setup
+
+Port forwarding uses subdomain-based proxying in production. Each active forward is accessible at `http://fwd-{id}--{stack}.pulumi.{your-domain}/`.
+
+### DNS requirements
+
+Add a wildcard DNS record for your pulumi-ui domain:
+
+```
+*.pulumi.example.com  CNAME  example.com   (or A record → server IP)
+pulumi.example.com    CNAME  example.com
+```
+
+### Reverse proxy (Traefik example)
+
+The reverse proxy needs two routes pointing to pulumi-ui:
+
+1. **Main UI:** `Host(\`pulumi.example.com\`)` → pulumi-ui
+2. **Forward subdomains:** `HostRegexp(\`^.+\\.pulumi\\.example\\.com$\`)` → pulumi-ui (same backend)
+
+pulumi-ui's `ForwardSubdomainProxy` middleware parses the Host header and routes to the correct local port forward.
+
+### TLS for forward subdomains
+
+Forward subdomains require a wildcard TLS certificate (`*.pulumi.example.com`). Wildcard certs need DNS-01 ACME challenge — HTTP-01 cannot issue wildcards. Configure your reverse proxy's ACME provider with DNS API credentials (e.g., Cloudflare, Porkbun, Route53).
+
+Without wildcard TLS, forward subdomains can serve HTTP only. For ZeroTier/private networks this is acceptable since the overlay encrypts traffic end-to-end.
+
+### ZeroTier / ZeroNSD
+
+For ZeroTier networks using ZeroNSD, add custom wildcard DNS via the `ZERONSD_EXTRA_DNS` environment variable:
+
+```
+ZERONSD_EXTRA_DNS=address=/pulumi.tenevi.zero/10.147.18.8
+```
+
+This uses a dnsmasq frontend inside the ZeroNSD container to handle the wildcard `address=` directive. dnsmasq forwards all non-matching queries to zeronsd transparently.
+
+---
+
+## SQLite Tuning
+
+The database connection includes `_busy_timeout=30000` (30 seconds). This prevents intermittent "database is locked" errors during concurrent writes — e.g., when SSE streaming appends operation logs while agent IP discovery updates the connection record simultaneously. Without the busy timeout, SQLite returns `SQLITE_BUSY` immediately instead of retrying.

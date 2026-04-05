@@ -271,3 +271,63 @@ All agent communication flows through per-stack Nebula encrypted tunnels. No SSH
 3. After registration: session cookie (`HttpOnly`, `SameSite=Lax`, 30-day TTL) is set
 4. All subsequent API calls carry the session cookie automatically
 5. `RequireAuth` middleware validates each request against the `sessions` table
+
+---
+
+## Handler Groups
+
+The API layer is decomposed into 7 focused handler groups, each with minimal dependencies. This replaces a single god-object `Handler` struct.
+
+| Group | Deps | Responsibility |
+|---|---|---|
+| `AuthHandler` | Users, Sessions | Login, register, logout, auth status |
+| `IdentityHandler` | Accounts, Passphrases, SSHKeys, Creds | OCI accounts, passphrases, SSH keys, credential CRUD |
+| `StackHandler` | 12 deps | Stack CRUD, Pulumi operations (up/destroy/refresh/preview), deploy apps |
+| `BlueprintHandler` | Registry, CustomBlueprints, Stacks, MeshManager, ConnStore | Built-in + custom YAML blueprints, app domain management |
+| `NetworkHandler` | ForwardManager, MeshManager, ConnStore, NodeCertStore | Port forwarding, subdomain proxy, agent proxy, mesh config |
+| `PlatformHandler` | Creds, Stacks, Passphrases, Engine, Hooks, MeshManager, ConnStore, LogBuffer, AgentBinaries | Settings, discovery, lifecycle hooks, logs, agent binary |
+| `AdminHandler` | DB, Accounts, Passphrases, Creds, Users, DataDir, KeyFilePath, RestartCh | Health check, export/import setup |
+
+**Wiring:** `cmd/server/main.go` constructs each handler group with its dependencies and passes a `RouterConfig` struct to `NewRouter`. `RouterConfig` holds pointers to all 7 groups.
+
+**Cross-cutting dependencies:**
+- `loadStackConfig` is a package-level function shared by `StackHandler` and `BlueprintHandler`.
+- `ExecuteHooks` is a `HookExecutor` function type — owned by `PlatformHandler`, injected into `StackHandler` at construction time.
+
+**Engine deduplication:** The four Pulumi operations (Up, Destroy, Refresh, Preview) share a 7-step preamble (lock, registry lookup, env vars, cancel context, stack resolution). This is extracted into `executeOperation()` in `internal/engine/engine.go`. Each public method is a thin wrapper passing an operation-specific callback.
+
+---
+
+## Port Forwarding
+
+Port forwarding proxies TCP connections through Nebula mesh tunnels, allowing browser access to services on remote infrastructure nodes.
+
+### Two modes
+
+| Mode | When | URL format | How it works |
+|---|---|---|---|
+| **Subdomain proxy** | Production (accessed via domain) | `http://fwd-{id}--{stack}.pulumi.{domain}/` | Middleware matches Host header, reverse-proxies to `127.0.0.1:{localPort}` |
+| **Direct localhost** | Local development | `http://localhost:{localPort}/` | Browser connects directly to the TCP listener on loopback |
+
+### Subdomain proxy architecture
+
+```
+Browser → fwd-1--stack.pulumi.tenevi.zero
+    → DNS (ZeroNSD wildcard *.pulumi.tenevi.zero → server IP)
+    → Traefik (HostRegexp matches, routes to pulumi-ui)
+    → ForwardSubdomainProxy middleware (extracts fwd ID + stack from Host)
+    → httputil.ReverseProxy to 127.0.0.1:{localPort}
+    → TCP listener proxies through Nebula tunnel to remote node
+```
+
+**Host regex:** `^(fwd-\d+)--(.+?)\.pulumi\.` — the `.pulumi.` anchor ensures only forward subdomains under the service domain are matched. Stack names may contain dashes (e.g., `nocobase-nomad-cluster`); the `--` double-dash separates the forward ID from the stack name.
+
+**Why subdomains, not sub-path proxy:** Sub-path proxying (`/api/.../proxy/`) breaks real SPAs — cookies have path scope issues, WebSocket URLs don't route through the proxy, and absolute-path API calls (`/v1/jobs`) hit the SPA catch-all instead of the upstream. Subdomain proxying puts each forward at root `/`, so the upstream service works natively.
+
+**DNS requirements:**
+- Wildcard DNS record: `*.pulumi.{domain}` pointing to the server
+- For ZeroTier/ZeroNSD: `ZERONSD_EXTRA_DNS` env var with `address=/pulumi.tenevi.zero/10.147.18.8` (dnsmasq wildcard inside the ZeroNSD container)
+
+### SQLite concurrency
+
+The database connection includes `_busy_timeout=30000` (30 seconds). Without this, concurrent writes from SSE streaming (operation log appends) and agent IP updates cause immediate "database is locked" errors. The busy timeout tells SQLite to retry internally for up to 30 seconds before returning SQLITE_BUSY.
