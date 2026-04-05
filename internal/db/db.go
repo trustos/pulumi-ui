@@ -16,7 +16,7 @@ import (
 var migrationsFS embed.FS
 
 func Open(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on")
+	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=30000")
 	if err != nil {
 		return nil, err
 	}

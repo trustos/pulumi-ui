@@ -666,6 +666,14 @@ export async function stopPortForward(stackName: string, id: string): Promise<vo
 }
 
 export function forwardProxyUrl(stackName: string, forwardId: string, path = ''): string {
+  const host = window.location.hostname;
+  const parts = host.split('.');
+  if (parts.length >= 2) {
+    // Subdomain mode: fwd-{id}--{stack}.tenevi.zero
+    const baseDomain = parts.slice(1).join('.');
+    return `${window.location.protocol}//${forwardId}--${stackName}.${baseDomain}/${path}`;
+  }
+  // Fallback for localhost development
   return `/api/stacks/${encodeURIComponent(stackName)}/forward/${encodeURIComponent(forwardId)}/proxy/${path}`;
 }
 
