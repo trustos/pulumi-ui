@@ -670,7 +670,8 @@ export function forwardProxyUrl(stackName: string, forwardId: string, path = '')
   const parts = host.split('.');
   if (parts.length >= 2) {
     // Subdomain under current host: fwd-{id}--{stack}.pulumi.tenevi.zero
-    return `${window.location.protocol}//${forwardId}--${stackName}.${host}/${path}`;
+    // Always HTTP — forward subdomains don't have individual TLS certs
+    return `http://${forwardId}--${stackName}.${host}/${path}`;
   }
   // Fallback for localhost development
   return `/api/stacks/${encodeURIComponent(stackName)}/forward/${encodeURIComponent(forwardId)}/proxy/${path}`;
