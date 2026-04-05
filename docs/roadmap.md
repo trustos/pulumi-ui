@@ -327,7 +327,7 @@ Key challenges:
 
 | # | Theme | Scope | Gate | Status |
 |---|---|---|---|---|
-| 1 | BE-2 — Engine deduplication | Small | — | pending |
+| 1 | BE-2 — Engine deduplication | Small | — | **done** |
 | 2 | BE-4 — Handler decomposition | Large | BE-3 (done) | pending |
 | 3 | BE-6 — OCI Object Storage state backend | Medium | — | pending |
 | 4 | Agent auto-update | Medium | Agent Phase 4 (done) | pending (needs careful design) |
@@ -349,6 +349,7 @@ See `docs/application-catalog-architecture.md` for the complete agent/mesh archi
 | Item | Status |
 |---|---|
 | BE-1 — CredentialService | **done** (`internal/services/credentials.go` with `Resolve()`) |
+| BE-2 — Engine deduplication | **done** (`executeOperation` extracts shared 7-step preamble; -93 lines) |
 | BE-3 — Repository interfaces | **done** (`internal/ports/repositories.go` — 10 interfaces) |
 | BE-5 — Thread-safe BlueprintRegistry | **done** (`BlueprintRegistry` struct with `sync.RWMutex`) |
 | FE-2 — OCI Picker extraction | **done** (`OciShapePicker`, `OciImagePicker`, `SshKeyPicker` components) |
