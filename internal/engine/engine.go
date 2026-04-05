@@ -769,8 +769,20 @@ func looksLikeIP(s string) bool {
 	return true
 }
 
-// Up runs pulumi up for the given stack.
-func (e *Engine) Up(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
+// operationFunc executes the Pulumi operation on a resolved stack.
+// Returns the status string ("succeeded", "failed", "cancelled").
+type operationFunc func(ctx context.Context, stack auto.Stack, prog blueprints.Blueprint, send SSESender) string
+
+// executeOperation handles the shared preamble (lock, registry lookup, env vars,
+// cancel context, stack resolution) and delegates the actual Pulumi call to run.
+func (e *Engine) executeOperation(
+	ctx context.Context,
+	stackName, blueprintName string,
+	cfg map[string]string,
+	creds Credentials,
+	send SSESender,
+	run operationFunc,
+) string {
 	if !e.tryLock(stackName) {
 		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
 		return "conflict"
@@ -810,33 +822,37 @@ func (e *Engine) Up(ctx context.Context, stackName, blueprintName string, cfg ma
 		return "failed"
 	}
 
-	const maxRetries = 3
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		_, err = stack.Up(opCtx, optup.ProgressStreams(&sseWriter{send: send}))
-		if err == nil {
-			break
-		}
-		if opCtx.Err() != nil {
-			send(SSEEvent{Type: "output", Data: "Operation cancelled. Resources that were mid-creation may exist in the cloud but are not fully tracked. Run Refresh to reconcile state, then check the cloud console for any orphaned resources."})
-			return "cancelled"
-		}
-		if attempt < maxRetries && isTransientConflict(err) {
-			send(SSEEvent{Type: "output", Data: fmt.Sprintf("⚠ Transient NLB conflict detected — auto-retrying (%d/%d)...", attempt, maxRetries)})
-			continue
-		}
-		send(SSEEvent{Type: "error", Data: err.Error()})
-		return "failed"
-	}
+	return run(opCtx, stack, prog, send)
+}
 
-	e.discoverAgentAddress(opCtx, stackName, prog, stack, send)
-
-	return "succeeded"
+// Up runs pulumi up for the given stack.
+func (e *Engine) Up(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) string {
+	return e.executeOperation(ctx, stackName, blueprintName, cfg, creds, send,
+		func(opCtx context.Context, stack auto.Stack, prog blueprints.Blueprint, send SSESender) string {
+			const maxRetries = 3
+			var err error
+			for attempt := 1; attempt <= maxRetries; attempt++ {
+				_, err = stack.Up(opCtx, optup.ProgressStreams(&sseWriter{send: send}))
+				if err == nil {
+					break
+				}
+				if opCtx.Err() != nil {
+					send(SSEEvent{Type: "output", Data: "Operation cancelled. Resources that were mid-creation may exist in the cloud but are not fully tracked. Run Refresh to reconcile state, then check the cloud console for any orphaned resources."})
+					return "cancelled"
+				}
+				if attempt < maxRetries && isTransientConflict(err) {
+					send(SSEEvent{Type: "output", Data: fmt.Sprintf("⚠ Transient NLB conflict detected — auto-retrying (%d/%d)...", attempt, maxRetries)})
+					continue
+				}
+				send(SSEEvent{Type: "error", Data: err.Error()})
+				return "failed"
+			}
+			e.discoverAgentAddress(opCtx, stackName, prog, stack, send)
+			return "succeeded"
+		})
 }
 
 // isTransientConflict detects OCI NLB 409 Conflict errors that resolve on retry.
-// OCI Network Load Balancer rejects concurrent mutations with 409, and Pulumi
-// sometimes races backend/backend-set creation despite dependsOn chains
-// (especially in forked programs where template-based dependsOn is lost).
 func isTransientConflict(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "409") ||
@@ -845,172 +861,63 @@ func isTransientConflict(err error) bool {
 }
 
 // Destroy runs pulumi destroy for the given stack.
-func (e *Engine) Destroy(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
-	if !e.tryLock(stackName) {
-		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
-		return "conflict"
-	}
-	defer e.unlock(stackName)
-
-	prog, ok := e.registry.Get(blueprintName)
-	if !ok {
-		send(SSEEvent{Type: "error", Data: "unknown blueprint: " + blueprintName})
-		return "failed"
-	}
-
-	envVars, cleanup, err := e.buildEnvVars(creds)
-	if err != nil {
-		send(SSEEvent{Type: "error", Data: err.Error()})
-		return "failed"
-	}
-	defer cleanup()
-
-	opCtx, cancel := context.WithCancel(ctx)
-	e.mu.Lock()
-	e.cancels[stackName] = cancel
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		delete(e.cancels, stackName)
-		e.mu.Unlock()
-		cancel()
-	}()
-
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, blueprintName, prog, cfg, envVars, creds)
-	if stackCleanup != nil {
-		defer stackCleanup()
-	}
-	if err != nil {
-		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
-		return "failed"
-	}
-
-	_, err = stack.Destroy(opCtx,
-		optdestroy.ProgressStreams(&sseWriter{send: send}),
-		optdestroy.ContinueOnError(),
-	)
-	if err != nil {
-		if opCtx.Err() != nil {
-			send(SSEEvent{Type: "output", Data: "Operation cancelled. Some resources may not have been destroyed. Run Destroy again to retry."})
-			return "cancelled"
-		}
-		send(SSEEvent{Type: "error", Data: err.Error()})
-		return "failed"
-	}
-	return "succeeded"
+func (e *Engine) Destroy(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) string {
+	return e.executeOperation(ctx, stackName, blueprintName, cfg, creds, send,
+		func(opCtx context.Context, stack auto.Stack, _ blueprints.Blueprint, send SSESender) string {
+			_, err := stack.Destroy(opCtx,
+				optdestroy.ProgressStreams(&sseWriter{send: send}),
+				optdestroy.ContinueOnError(),
+			)
+			if err != nil {
+				if opCtx.Err() != nil {
+					send(SSEEvent{Type: "output", Data: "Operation cancelled. Some resources may not have been destroyed. Run Destroy again to retry."})
+					return "cancelled"
+				}
+				send(SSEEvent{Type: "error", Data: err.Error()})
+				return "failed"
+			}
+			return "succeeded"
+		})
 }
 
 // Refresh runs pulumi refresh for the given stack.
-func (e *Engine) Refresh(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
-	if !e.tryLock(stackName) {
-		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
-		return "conflict"
-	}
-	defer e.unlock(stackName)
-
-	prog, ok := e.registry.Get(blueprintName)
-	if !ok {
-		send(SSEEvent{Type: "error", Data: "unknown blueprint: " + blueprintName})
-		return "failed"
-	}
-
-	envVars, cleanup, err := e.buildEnvVars(creds)
-	if err != nil {
-		send(SSEEvent{Type: "error", Data: err.Error()})
-		return "failed"
-	}
-	defer cleanup()
-
-	opCtx, cancel := context.WithCancel(ctx)
-	e.mu.Lock()
-	e.cancels[stackName] = cancel
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		delete(e.cancels, stackName)
-		e.mu.Unlock()
-		cancel()
-	}()
-
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, blueprintName, prog, cfg, envVars, creds)
-	if stackCleanup != nil {
-		defer stackCleanup()
-	}
-	if err != nil {
-		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
-		return "failed"
-	}
-
-	if err := e.recoverPendingOperations(opCtx, stack, send); err != nil {
-		send(SSEEvent{Type: "error", Data: "state recovery: " + err.Error()})
-		return "failed"
-	}
-
-	_, err = stack.Refresh(opCtx,
-		optrefresh.ProgressStreams(&sseWriter{send: send}),
-	)
-	if err != nil {
-		if opCtx.Err() != nil {
-			send(SSEEvent{Type: "output", Data: "Refresh cancelled. State may be partially reconciled. Run Refresh again to complete."})
-			return "cancelled"
-		}
-		send(SSEEvent{Type: "error", Data: err.Error()})
-		return "failed"
-	}
-	return "succeeded"
+func (e *Engine) Refresh(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) string {
+	return e.executeOperation(ctx, stackName, blueprintName, cfg, creds, send,
+		func(opCtx context.Context, stack auto.Stack, _ blueprints.Blueprint, send SSESender) string {
+			if err := e.recoverPendingOperations(opCtx, stack, send); err != nil {
+				send(SSEEvent{Type: "error", Data: "state recovery: " + err.Error()})
+				return "failed"
+			}
+			_, err := stack.Refresh(opCtx,
+				optrefresh.ProgressStreams(&sseWriter{send: send}),
+			)
+			if err != nil {
+				if opCtx.Err() != nil {
+					send(SSEEvent{Type: "output", Data: "Refresh cancelled. State may be partially reconciled. Run Refresh again to complete."})
+					return "cancelled"
+				}
+				send(SSEEvent{Type: "error", Data: err.Error()})
+				return "failed"
+			}
+			return "succeeded"
+		})
 }
 
 // Preview runs pulumi preview for the given stack (dry-run, no changes applied).
-func (e *Engine) Preview(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) (status string) {
-	if !e.tryLock(stackName) {
-		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
-		return "conflict"
-	}
-	defer e.unlock(stackName)
-
-	prog, ok := e.registry.Get(blueprintName)
-	if !ok {
-		send(SSEEvent{Type: "error", Data: "unknown blueprint: " + blueprintName})
-		return "failed"
-	}
-
-	envVars, cleanup, err := e.buildEnvVars(creds)
-	if err != nil {
-		send(SSEEvent{Type: "error", Data: err.Error()})
-		return "failed"
-	}
-	defer cleanup()
-
-	opCtx, cancel := context.WithCancel(ctx)
-	e.mu.Lock()
-	e.cancels[stackName] = cancel
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		delete(e.cancels, stackName)
-		e.mu.Unlock()
-		cancel()
-	}()
-
-	stack, stackCleanup, err := e.resolveStack(opCtx, stackName, blueprintName, prog, cfg, envVars, creds)
-	if stackCleanup != nil {
-		defer stackCleanup()
-	}
-	if err != nil {
-		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
-		return "failed"
-	}
-
-	_, err = stack.Preview(opCtx, optpreview.ProgressStreams(&sseWriter{send: send}))
-	if err != nil {
-		if opCtx.Err() != nil {
-			send(SSEEvent{Type: "output", Data: "Preview cancelled."})
-			return "cancelled"
-		}
-		send(SSEEvent{Type: "error", Data: err.Error()})
-		return "failed"
-	}
-	return "succeeded"
+func (e *Engine) Preview(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials, send SSESender) string {
+	return e.executeOperation(ctx, stackName, blueprintName, cfg, creds, send,
+		func(opCtx context.Context, stack auto.Stack, _ blueprints.Blueprint, send SSESender) string {
+			_, err := stack.Preview(opCtx, optpreview.ProgressStreams(&sseWriter{send: send}))
+			if err != nil {
+				if opCtx.Err() != nil {
+					send(SSEEvent{Type: "output", Data: "Preview cancelled."})
+					return "cancelled"
+				}
+				send(SSEEvent{Type: "error", Data: err.Error()})
+				return "failed"
+			}
+			return "succeeded"
+		})
 }
 
 // IsRunning reports whether a stack operation is currently in flight.
