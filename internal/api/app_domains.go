@@ -125,7 +125,7 @@ func (h *BlueprintHandler) SetAppDomain(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if row, _ := h.Stacks.Get(stackName); row != nil {
-		if err := h.Stacks.Upsert(stackName, row.Blueprint, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID); err != nil {
+		if err := h.Stacks.Upsert(stackName, row.Blueprint, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID, row.CreatedByAccountID); err != nil {
 			log.Printf("[app-domains] WARNING: failed to persist domain for %s/%s: %v", stackName, appKey, err)
 		}
 	}
@@ -158,7 +158,7 @@ func (h *BlueprintHandler) RemoveAppDomain(w http.ResponseWriter, r *http.Reques
 	yamlStr, err := cfg.ToYAML()
 	if err == nil {
 		if row, _ := h.Stacks.Get(stackName); row != nil {
-			h.Stacks.Upsert(stackName, row.Blueprint, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID)
+			h.Stacks.Upsert(stackName, row.Blueprint, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID, row.CreatedByAccountID)
 		}
 	}
 

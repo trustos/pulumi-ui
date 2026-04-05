@@ -9,14 +9,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trustos/pulumi-ui/internal/auth"
 	"github.com/trustos/pulumi-ui/internal/db"
 )
 
 // RemoteStackSummary represents a stack discovered in the S3 backend
 // that does not yet exist in the local database.
 type RemoteStackSummary struct {
-	Name      string `json:"name"`
-	Blueprint string `json:"blueprint"` // Pulumi project name from S3 path
+	Name               string  `json:"name"`
+	Blueprint          string  `json:"blueprint"`           // Pulumi project name from S3 path
+	SuggestedAccountID *string `json:"suggestedAccountId"`  // hint for ClaimStackDialog
 }
 
 // listBucketResult is the minimal XML struct for S3 ListObjectsV2 responses.
@@ -131,6 +133,17 @@ func (h *PlatformHandler) DiscoverRemoteStacks(w http.ResponseWriter, r *http.Re
 		localNames[row.Name] = true
 	}
 
+	// Suggest an account if only one is configured (common single-user case).
+	var suggestedID *string
+	if h.Accounts != nil {
+		user := auth.UserFromContext(r.Context())
+		if user != nil {
+			if accts, err := h.Accounts.ListForUser(user.ID); err == nil && len(accts) == 1 {
+				suggestedID = &accts[0].ID
+			}
+		}
+	}
+
 	// Build result — only stacks not in local DB.
 	remote := make([]RemoteStackSummary, 0)
 	for _, sk := range discovered {
@@ -138,8 +151,9 @@ func (h *PlatformHandler) DiscoverRemoteStacks(w http.ResponseWriter, r *http.Re
 			continue
 		}
 		remote = append(remote, RemoteStackSummary{
-			Name:      sk.stack,
-			Blueprint: sk.project,
+			Name:               sk.stack,
+			Blueprint:          sk.project,
+			SuggestedAccountID: suggestedID,
 		})
 	}
 

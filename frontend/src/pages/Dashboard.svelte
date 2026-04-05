@@ -8,16 +8,17 @@
   import NewStackDialog from '$lib/components/NewStackDialog.svelte';
   import StarterWizard from '$lib/components/StarterWizard.svelte';
   import ClaimStackDialog from '$lib/components/ClaimStackDialog.svelte';
-  import { listStacks, listBlueprints, listAccounts, listPassphrases, discoverRemoteStacks, getSettings } from '$lib/api';
+  import { listStacks, listBlueprints, listAccounts, listPassphrases, listSSHKeys, discoverRemoteStacks, getSettings } from '$lib/api';
   import { navigate } from '$lib/router';
   import { starters } from '$lib/starters';
   import type { StarterCard } from '$lib/starters';
-  import type { BlueprintMeta, StackSummary, OciAccount, Passphrase, RemoteStackSummary } from '$lib/types';
+  import type { BlueprintMeta, StackSummary, OciAccount, Passphrase, SshKey, RemoteStackSummary } from '$lib/types';
 
   let stacks = $state<StackSummary[]>([]);
   let blueprints = $state<BlueprintMeta[]>([]);
   let accounts = $state<OciAccount[]>([]);
   let passphrases = $state<Passphrase[]>([]);
+  let sshKeys = $state<SshKey[]>([]);
   let remoteStacks = $state<RemoteStackSummary[]>([]);
   let dialogOpen = $state(false);
   let starterWizardOpen = $state(false);
@@ -46,6 +47,9 @@
     listPassphrases()
       .then(p => { passphrases = p; })
       .catch(() => { passphrases = []; });
+    listSSHKeys()
+      .then(k => { sshKeys = k; })
+      .catch(() => { sshKeys = []; });
     // Discover remote stacks if S3 backend is active.
     getSettings()
       .then(settings => {
@@ -165,7 +169,7 @@
                 <div class="flex items-center justify-between">
                   <Badge variant="secondary">{remote.blueprint}</Badge>
                   <Button size="sm" variant="outline" onclick={() => openClaimDialog(remote)}>
-                    Claim
+                    Unlock
                   </Button>
                 </div>
               </Card.Content>
@@ -216,7 +220,9 @@
   remoteStack={selectedRemoteStack}
   {accounts}
   {passphrases}
+  {sshKeys}
   onclaimed={handleClaimed}
+  onpassphraseCreated={() => { listPassphrases().then(p => { passphrases = p; }).catch(() => {}); }}
 />
 
 {#if activeStarter}

@@ -88,6 +88,7 @@ export interface StackSummary {
   ociAccountId: string | null;
   passphraseId: string | null;
   sshKeyId: string | null;
+  createdByAccountId: string | null;
   lastOperation: string | null;
   status: string;
   resourceCount: number;
@@ -96,6 +97,17 @@ export interface StackSummary {
 export interface RemoteStackSummary {
   name: string;
   blueprint: string;
+  suggestedAccountId: string | null;
+}
+
+export interface UnlockResult {
+  valid: boolean;
+  resourceCount: number;
+  tenancyOcid: string;
+  lastUpdated: string;
+  suggestedAccountId: string | null;
+  passphraseId: string | null;
+  configYaml: string;
 }
 
 export interface MeshStatus {
@@ -132,6 +144,7 @@ export interface StackInfo {
   ociAccountId: string | null;
   passphraseId: string | null;
   sshKeyId: string | null;
+  createdByAccountId: string | null;
   config: Record<string, string>;
   applications?: Record<string, boolean>;
   appConfig?: Record<string, string>;

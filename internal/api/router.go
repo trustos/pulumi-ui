@@ -87,6 +87,7 @@ func NewRouter(cfg RouterConfig, frontendFS http.FileSystem) http.Handler {
 
 			r.Get("/stacks", cfg.Stacks.ListStacks)
 			r.Get("/stacks/discover", cfg.Platform.DiscoverRemoteStacks)
+			r.Post("/stacks/discover/{name}/unlock", cfg.Platform.UnlockRemoteStack)
 			r.Put("/stacks/{name}", cfg.Stacks.PutStack)
 			r.Delete("/stacks/{name}", cfg.Stacks.DeleteStack)
 			r.Get("/stacks/{name}/info", cfg.Stacks.GetStackInfo)

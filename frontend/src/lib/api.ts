@@ -1,4 +1,4 @@
-import type { BlueprintMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob, Hook, AppSettings, S3TestResult, RemoteStackSummary } from './types';
+import type { BlueprintMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob, Hook, AppSettings, S3TestResult, RemoteStackSummary, UnlockResult } from './types';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -12,11 +12,31 @@ export async function discoverRemoteStacks(): Promise<RemoteStackSummary[]> {
   return res.json();
 }
 
+export async function unlockRemoteStack(
+  name: string,
+  blueprint: string,
+  passphraseId?: string,
+  passphraseValue?: string,
+): Promise<UnlockResult> {
+  const res = await fetch(`/api/stacks/discover/${encodeURIComponent(name)}/unlock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ blueprint, passphraseId, passphraseValue }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text.trim() || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function claimStack(
   name: string,
   blueprint: string,
   ociAccountId: string,
   passphraseId: string,
+  sshKeyId?: string,
+  configYaml?: string,
 ): Promise<void> {
   const res = await fetch(`/api/stacks/${encodeURIComponent(name)}`, {
     method: 'PUT',
@@ -25,6 +45,8 @@ export async function claimStack(
       blueprint,
       ociAccountId,
       passphraseId,
+      sshKeyId: sshKeyId || undefined,
+      configYaml: configYaml || undefined,
       claim: true,
     }),
   });

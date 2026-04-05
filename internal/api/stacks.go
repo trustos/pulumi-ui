@@ -103,25 +103,27 @@ func (h *StackHandler) ListStacks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type StackSummary struct {
-		Name          string  `json:"name"`
-		Blueprint     string  `json:"blueprint"`
-		OciAccountID  *string `json:"ociAccountId"`
-		PassphraseID  *string `json:"passphraseId"`
-		SshKeyID      *string `json:"sshKeyId"`
-		LastOperation *string `json:"lastOperation"`
-		Status        string  `json:"status"`
-		ResourceCount int     `json:"resourceCount"`
+		Name               string  `json:"name"`
+		Blueprint          string  `json:"blueprint"`
+		OciAccountID       *string `json:"ociAccountId"`
+		PassphraseID       *string `json:"passphraseId"`
+		SshKeyID           *string `json:"sshKeyId"`
+		CreatedByAccountID *string `json:"createdByAccountId"`
+		LastOperation      *string `json:"lastOperation"`
+		Status             string  `json:"status"`
+		ResourceCount      int     `json:"resourceCount"`
 	}
 
 	result := make([]StackSummary, 0, len(rows))
 	for _, row := range rows {
 		ops, _ := h.Ops.ListForStack(row.Name, 1, row.CreatedAt)
 		summary := StackSummary{
-			Name:          row.Name,
-			Blueprint:     row.Blueprint,
-			OciAccountID:  row.OciAccountID,
-			PassphraseID:  row.PassphraseID,
-			SshKeyID:      row.SshKeyID,
+			Name:               row.Name,
+			Blueprint:          row.Blueprint,
+			OciAccountID:       row.OciAccountID,
+			PassphraseID:       row.PassphraseID,
+			SshKeyID:           row.SshKeyID,
+			CreatedByAccountID: row.CreatedByAccountID,
 			ResourceCount: 0,
 			Status:        "not deployed",
 		}
@@ -151,6 +153,7 @@ func (h *StackHandler) PutStack(w http.ResponseWriter, r *http.Request) {
 		Applications map[string]bool   `json:"applications,omitempty"`
 		AppConfig    map[string]string `json:"appConfig,omitempty"`
 		Claim        bool              `json:"claim,omitempty"`
+		ConfigYAML   string            `json:"configYaml,omitempty"` // imported from S3 during claim
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -164,16 +167,23 @@ func (h *StackHandler) PutStack(w http.ResponseWriter, r *http.Request) {
 	// Claim mode: register a remote stack in the local DB without blueprint
 	// validation or config rendering. The blueprint may not exist locally.
 	if body.Claim {
-		cfg := &stacks.StackConfig{
-			APIVersion: "pulumi.io/v1",
-			Kind:       "Stack",
-			Metadata: stacks.StackMetadata{
-				Name:      stackName,
-				Blueprint: body.Blueprint,
-			},
+		var yamlStr string
+		if body.ConfigYAML != "" {
+			// Use the config imported from S3 (synced by the creating instance).
+			yamlStr = body.ConfigYAML
+		} else {
+			// No config available — create minimal placeholder.
+			cfg := &stacks.StackConfig{
+				APIVersion: "pulumi.io/v1",
+				Kind:       "Stack",
+				Metadata: stacks.StackMetadata{
+					Name:      stackName,
+					Blueprint: body.Blueprint,
+				},
+			}
+			yamlStr, _ = cfg.ToYAML()
 		}
-		yamlStr, _ := cfg.ToYAML()
-		if err := h.Stacks.Upsert(stackName, body.Blueprint, yamlStr, body.OciAccountID, body.PassphraseID, body.SshKeyID); err != nil {
+		if err := h.Stacks.Upsert(stackName, body.Blueprint, yamlStr, body.OciAccountID, body.PassphraseID, body.SshKeyID, body.OciAccountID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -209,10 +219,13 @@ func (h *StackHandler) PutStack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := h.Stacks.Upsert(stackName, body.Blueprint, yamlStr, body.OciAccountID, body.PassphraseID, body.SshKeyID); err != nil {
+	if err := h.Stacks.Upsert(stackName, body.Blueprint, yamlStr, body.OciAccountID, body.PassphraseID, body.SshKeyID, body.OciAccountID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Sync config to S3 for cross-instance claiming.
+	go syncConfigToS3(context.Background(), h.Creds, body.Blueprint, stackName, yamlStr)
 
 	// Generate Nebula PKI for programs with agent connectivity (first time only).
 	// Applies to both ApplicationProvider (built-in Go programs with catalog)
@@ -268,11 +281,12 @@ func (h *StackHandler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type StackInfo struct {
-		Name         string                 `json:"name"`
-		Blueprint    string                 `json:"blueprint"`
-		OciAccountID *string                `json:"ociAccountId"`
-		PassphraseID *string                `json:"passphraseId"`
-		SshKeyID     *string                `json:"sshKeyId"`
+		Name               string                 `json:"name"`
+		Blueprint          string                 `json:"blueprint"`
+		OciAccountID       *string                `json:"ociAccountId"`
+		PassphraseID       *string                `json:"passphraseId"`
+		SshKeyID           *string                `json:"sshKeyId"`
+		CreatedByAccountID *string                `json:"createdByAccountId"`
 		Config       map[string]string      `json:"config"`
 		Applications map[string]bool        `json:"applications,omitempty"`
 		AppConfig    map[string]string      `json:"appConfig,omitempty"`
@@ -290,11 +304,12 @@ func (h *StackHandler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	info := StackInfo{
-		Name:         stackName,
-		Blueprint:    row.Blueprint,
-		OciAccountID: row.OciAccountID,
-		PassphraseID: row.PassphraseID,
-		SshKeyID:     row.SshKeyID,
+		Name:               stackName,
+		Blueprint:          row.Blueprint,
+		OciAccountID:       row.OciAccountID,
+		PassphraseID:       row.PassphraseID,
+		SshKeyID:           row.SshKeyID,
+		CreatedByAccountID: row.CreatedByAccountID,
 		Config:       cfg.Config,
 		Applications: cfg.Applications,
 		AppConfig:    cfg.AppConfig,
@@ -561,6 +576,13 @@ func (h *StackHandler) runOperation(w http.ResponseWriter, r *http.Request, oper
 	// Post-operation hooks
 	h.ExecuteHooks(stackName, "post-"+operation, status, logSend)
 
+	// Sync config to S3 so other pulumi-ui instances can claim this stack.
+	if status == "succeeded" {
+		if yamlStr, err := cfg.ToYAML(); err == nil {
+			go syncConfigToS3(context.Background(), h.Creds, cfg.Metadata.Blueprint, stackName, yamlStr)
+		}
+	}
+
 	h.Ops.Finish(opID, status)
 	send(engine.SSEEvent{Type: "done", Data: status})
 }
@@ -631,7 +653,7 @@ func (h *StackHandler) StackDeployApps(w http.ResponseWriter, r *http.Request) {
 	// survive re-deploys. The deployer mutates appConfig in place.
 	if yamlStr, marshalErr := cfg.ToYAML(); marshalErr == nil {
 		if row, _ := h.Stacks.Get(stackName); row != nil {
-			if err := h.Stacks.Upsert(stackName, row.Blueprint, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID); err != nil {
+			if err := h.Stacks.Upsert(stackName, row.Blueprint, yamlStr, row.OciAccountID, row.PassphraseID, row.SshKeyID, row.CreatedByAccountID); err != nil {
 				log.Printf("[deploy-apps] WARNING: failed to persist appConfig for %s: %v (auto-generated secrets may be lost on re-deploy)", stackName, err)
 			}
 		}

@@ -67,6 +67,7 @@ type NetworkHandler struct {
 type PlatformHandler struct {
 	Creds         *db.CredentialStore
 	Stacks        *db.StackStore
+	Accounts      *db.AccountStore
 	Passphrases   *db.PassphraseStore
 	Engine        *engine.Engine
 	Hooks         *db.HookStore
