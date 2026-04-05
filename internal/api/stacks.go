@@ -328,13 +328,23 @@ func (h *StackHandler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 
 	info.Deployed, info.WasDeployed = computeDeployedState(ops)
 
+	// Fetch stack state (resource count + outputs) when the stack may have resources.
+	// For claimed stacks with no local "up" history, this also detects deployment state
+	// from the actual Pulumi state file.
 	if info.Status == "succeeded" || info.Status == "failed" {
 		creds, err := h.resolveCredentials(row.OciAccountID, row.PassphraseID, row.SshKeyID)
 		if err == nil {
-			outputs, err := h.Engine.GetStackOutputs(r.Context(), stackName, row.Blueprint, cfg.Config, creds)
+			count, outputs, err := h.Engine.GetStackState(r.Context(), stackName, row.Blueprint, cfg.Config, creds)
 			if err == nil {
+				info.Resources = count
 				for k, v := range outputs {
 					info.Outputs[k] = v.Value
+				}
+				// If ops history says "not deployed" but state has resources,
+				// the stack was deployed elsewhere (claimed stack scenario).
+				if !info.Deployed && count > 0 {
+					info.Deployed = true
+					info.WasDeployed = true
 				}
 			}
 		}

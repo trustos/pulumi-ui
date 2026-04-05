@@ -920,6 +920,51 @@ func (e *Engine) Preview(ctx context.Context, stackName, blueprintName string, c
 		})
 }
 
+// GetStackState resolves the stack and exports its state without running any
+// operation. Returns the resource count and outputs. Used by GetStackInfo to
+// detect deployment state for claimed stacks that have no local "up" history.
+func (e *Engine) GetStackState(ctx context.Context, stackName, blueprintName string, cfg map[string]string, creds Credentials) (resourceCount int, outputs auto.OutputMap, err error) {
+	envVars, cleanup, err := e.buildEnvVars(creds)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer cleanup()
+
+	prog, ok := e.registry.Get(blueprintName)
+	if !ok {
+		return 0, nil, fmt.Errorf("unknown blueprint: %s", blueprintName)
+	}
+
+	stack, stackCleanup, err := e.resolveStack(ctx, stackName, blueprintName, prog, cfg, envVars, creds)
+	if stackCleanup != nil {
+		defer stackCleanup()
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+
+	state, err := stack.Export(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	var dep apitype.DeploymentV3
+	if err := json.Unmarshal(state.Deployment, &dep); err != nil {
+		return 0, nil, err
+	}
+
+	// Count non-provider resources (providers are internal Pulumi bookkeeping).
+	count := 0
+	for _, r := range dep.Resources {
+		if !strings.HasPrefix(string(r.Type), "pulumi:providers:") {
+			count++
+		}
+	}
+
+	outs, _ := stack.Outputs(ctx)
+	return count, outs, nil
+}
+
 // IsRunning reports whether a stack operation is currently in flight.
 func (e *Engine) IsRunning(stackName string) bool {
 	e.mu.Lock()
