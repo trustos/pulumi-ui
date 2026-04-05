@@ -17,11 +17,12 @@ type Session struct {
 }
 
 type SessionStore struct {
-	db *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 }
 
-func NewSessionStore(db *sql.DB) *SessionStore {
-	return &SessionStore{db: db}
+func NewSessionStore(p *DBPair) *SessionStore {
+	return &SessionStore{rdb: p.ReadDB, wdb: p.WriteDB}
 }
 
 func (s *SessionStore) Create(userID string) (*Session, error) {
@@ -35,7 +36,7 @@ func (s *SessionStore) Create(userID string) (*Session, error) {
 		CreatedAt: time.Now().Unix(),
 		ExpiresAt: time.Now().Add(sessionTTL).Unix(),
 	}
-	_, err := s.db.Exec(
+	_, err := s.wdb.Exec(
 		`INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
 		sess.Token, sess.UserID, sess.CreatedAt, sess.ExpiresAt,
 	)
@@ -45,7 +46,7 @@ func (s *SessionStore) Create(userID string) (*Session, error) {
 // GetValid returns a session only if it exists and has not expired.
 func (s *SessionStore) GetValid(token string) (*Session, error) {
 	sess := &Session{}
-	err := s.db.QueryRow(
+	err := s.rdb.QueryRow(
 		`SELECT token, user_id, created_at, expires_at FROM sessions
 		 WHERE token = ? AND expires_at > ?`,
 		token, time.Now().Unix(),
@@ -57,12 +58,12 @@ func (s *SessionStore) GetValid(token string) (*Session, error) {
 }
 
 func (s *SessionStore) Delete(token string) error {
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE token = ?`, token)
+	_, err := s.wdb.Exec(`DELETE FROM sessions WHERE token = ?`, token)
 	return err
 }
 
 // DeleteExpired removes all expired sessions (call periodically or on startup).
 func (s *SessionStore) DeleteExpired() error {
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE expires_at <= ?`, time.Now().Unix())
+	_, err := s.wdb.Exec(`DELETE FROM sessions WHERE expires_at <= ?`, time.Now().Unix())
 	return err
 }

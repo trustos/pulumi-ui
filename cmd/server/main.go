@@ -87,32 +87,32 @@ func main() {
 		log.Fatalf("Cannot create state dir %s: %v", stateDir, err)
 	}
 
-	// Database
-	database, err := db.Open(dataDir + "/pulumi-ui.db")
+	// Database (dual read/write pool)
+	dbPair, err := db.Open(dataDir + "/pulumi-ui.db")
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
-	defer database.Close()
+	defer dbPair.Close()
 
-	if err := db.Migrate(database); err != nil {
+	if err := db.Migrate(dbPair.WriteDB); err != nil {
 		log.Fatalf("Migration failed: %v", err)
 	}
 
 	// Stores
-	creds := db.NewCredentialStore(database, enc)
-	ops := db.NewOperationStore(database)
+	creds := db.NewCredentialStore(dbPair, enc)
+	ops := db.NewOperationStore(dbPair)
 
 	// Mark any operations that were running when the server last stopped as failed.
 	if err := ops.MarkStaleRunning(); err != nil {
 		log.Printf("Warning: could not mark stale operations: %v", err)
 	}
-	stackStore := db.NewStackStore(database)
-	users := db.NewUserStore(database)
-	sessions := db.NewSessionStore(database)
-	accounts := db.NewAccountStore(database, enc)
-	passphrases := db.NewPassphraseStore(database, enc)
-	sshKeys := db.NewSSHKeyStore(database, enc)
-	customBlueprints := db.NewCustomBlueprintStore(database)
+	stackStore := db.NewStackStore(dbPair)
+	users := db.NewUserStore(dbPair)
+	sessions := db.NewSessionStore(dbPair)
+	accounts := db.NewAccountStore(dbPair, enc)
+	passphrases := db.NewPassphraseStore(dbPair, enc)
+	sshKeys := db.NewSSHKeyStore(dbPair, enc)
+	customBlueprints := db.NewCustomBlueprintStore(dbPair)
 
 	// Prune expired sessions on startup
 	sessions.DeleteExpired()
@@ -132,8 +132,8 @@ func main() {
 	}
 
 	// Stack connections + per-node certs
-	connStore := db.NewStackConnectionStore(database, enc)
-	nodeCertStore := db.NewNodeCertStore(database, enc)
+	connStore := db.NewStackConnectionStore(dbPair, enc)
+	nodeCertStore := db.NewNodeCertStore(dbPair, enc)
 
 	// Determine the server's externally reachable URL.
 	// PULUMI_UI_EXTERNAL_URL takes priority; falls back to ipify auto-detection.
@@ -150,7 +150,7 @@ func main() {
 	}
 
 	// Hook store
-	hookStore := db.NewHookStore(database)
+	hookStore := db.NewHookStore(dbPair)
 
 	// Nebula mesh tunnel manager — creates on-demand userspace tunnels to agents
 	meshMgr := mesh.NewManager(connStore)
@@ -173,7 +173,7 @@ func main() {
 	networkH := &api.NetworkHandler{ForwardManager: fwdMgr, MeshManager: meshMgr, ConnStore: connStore, NodeCertStore: nodeCertStore}
 	platformH := &api.PlatformHandler{Creds: creds, Stacks: stackStore, Passphrases: passphrases, Engine: eng, Hooks: hookStore, MeshManager: meshMgr, ConnStore: connStore, LogBuffer: logBuf, AgentBinaries: agentBinaries}
 	blueprintH := &api.BlueprintHandler{Registry: registry, CustomBlueprints: customBlueprints, Stacks: stackStore, MeshManager: meshMgr, ConnStore: connStore}
-	adminH := &api.AdminHandler{DB: database, Accounts: accounts, Passphrases: passphrases, Creds: creds, Users: users, DataDir: dataDir, KeyFilePath: dataDir + "/encryption.key", RestartCh: restartCh}
+	adminH := &api.AdminHandler{DB: dbPair.WriteDB, Accounts: accounts, Passphrases: passphrases, Creds: creds, Users: users, DataDir: dataDir, KeyFilePath: dataDir + "/encryption.key", RestartCh: restartCh}
 	stackH := &api.StackHandler{
 		Accounts: accounts, Creds: creds, SSHKeys: sshKeys, Passphrases: passphrases,
 		Stacks: stackStore, Ops: ops, Registry: registry, ConnStore: connStore,

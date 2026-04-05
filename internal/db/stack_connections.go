@@ -27,12 +27,13 @@ type StackConnection struct {
 }
 
 type StackConnectionStore struct {
-	db  *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 	enc *crypto.Encryptor
 }
 
-func NewStackConnectionStore(db *sql.DB, enc *crypto.Encryptor) *StackConnectionStore {
-	return &StackConnectionStore{db: db, enc: enc}
+func NewStackConnectionStore(p *DBPair, enc *crypto.Encryptor) *StackConnectionStore {
+	return &StackConnectionStore{rdb: p.ReadDB, wdb: p.WriteDB, enc: enc}
 }
 
 // Create inserts a new stack connection with Nebula PKI material.
@@ -54,7 +55,7 @@ func (s *StackConnectionStore) Create(conn *StackConnection) error {
 		}
 	}
 
-	_, err = s.db.Exec(`
+	_, err = s.wdb.Exec(`
 		INSERT INTO stack_connections
 			(stack_name, nebula_ca_cert, nebula_ca_key, nebula_ui_cert, nebula_ui_key,
 			 nebula_subnet, agent_cert, agent_key, agent_token)
@@ -69,7 +70,7 @@ func (s *StackConnectionStore) Get(stackName string) (*StackConnection, error) {
 	var conn StackConnection
 	var encCAKey, encUIKey, encAgentKey []byte
 
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT stack_name, nebula_ca_cert, nebula_ca_key, nebula_ui_cert, nebula_ui_key,
 		       nebula_subnet, agent_cert, agent_key, agent_token, agent_real_ip,
 		       lighthouse_addr, agent_nebula_ip, connected_at, last_seen_at, cluster_info
@@ -106,7 +107,7 @@ func (s *StackConnectionStore) Get(stackName string) (*StackConnection, error) {
 
 // UpdateLighthouse sets the lighthouse address after infrastructure deploy.
 func (s *StackConnectionStore) UpdateLighthouse(stackName, addr string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		UPDATE stack_connections SET lighthouse_addr = ? WHERE stack_name = ?
 	`, addr, stackName)
 	return err
@@ -114,7 +115,7 @@ func (s *StackConnectionStore) UpdateLighthouse(stackName, addr string) error {
 
 // UpdateAgentConnected records agent mesh IP, real IP, and refreshes timestamps.
 func (s *StackConnectionStore) UpdateAgentConnected(stackName, nebulaIP, realIP, clusterInfo string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		UPDATE stack_connections
 		SET agent_nebula_ip = ?, agent_real_ip = ?, last_seen_at = unixepoch(), cluster_info = ?
 		WHERE stack_name = ?
@@ -124,7 +125,7 @@ func (s *StackConnectionStore) UpdateAgentConnected(stackName, nebulaIP, realIP,
 
 // UpdateAgentRealIP stores the instance's public or NLB IP (for Nebula static_host_map).
 func (s *StackConnectionStore) UpdateAgentRealIP(stackName, realIP string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		UPDATE stack_connections SET agent_real_ip = ? WHERE stack_name = ?
 	`, realIP, stackName)
 	return err
@@ -134,7 +135,7 @@ func (s *StackConnectionStore) UpdateAgentRealIP(stackName, realIP string) error
 // the UI no longer shows the agent as connected. The PKI material (certs, keys,
 // subnet) is preserved so a re-deploy can reuse the same Nebula identity.
 func (s *StackConnectionStore) ClearAgentConnection(stackName string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		UPDATE stack_connections
 		SET agent_nebula_ip = NULL, agent_real_ip = NULL,
 		    lighthouse_addr = NULL, last_seen_at = NULL, cluster_info = NULL
@@ -145,7 +146,7 @@ func (s *StackConnectionStore) ClearAgentConnection(stackName string) error {
 
 // UpdateLastSeen refreshes the last_seen_at timestamp (called by periodic health checks).
 func (s *StackConnectionStore) UpdateLastSeen(stackName string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		UPDATE stack_connections SET last_seen_at = unixepoch() WHERE stack_name = ?
 	`, stackName)
 	return err
@@ -153,7 +154,7 @@ func (s *StackConnectionStore) UpdateLastSeen(stackName string) error {
 
 // Delete removes the stack connection.
 func (s *StackConnectionStore) Delete(stackName string) error {
-	_, err := s.db.Exec(`DELETE FROM stack_connections WHERE stack_name = ?`, stackName)
+	_, err := s.wdb.Exec(`DELETE FROM stack_connections WHERE stack_name = ?`, stackName)
 	return err
 }
 
@@ -161,7 +162,7 @@ func (s *StackConnectionStore) Delete(stackName string) error {
 // Returns a subnet string like "10.42.1.0/24".
 func (s *StackConnectionStore) AllocateSubnet() (string, error) {
 	var idx int
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		UPDATE nebula_subnet_counter SET next = next + 1 WHERE id = 1 RETURNING next - 1
 	`).Scan(&idx)
 	if err != nil {

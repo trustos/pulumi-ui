@@ -92,7 +92,39 @@ But pulumi-ui is a **focused infrastructure tool** — its value is in the Pulum
 ### Better incremental improvements
 
 Instead of migrating, address the gaps PocketBase highlights:
-1. **OAuth**: Add `golang.org/x/oauth2` + GitHub/Google providers (~200 lines)
-2. **Multi-user**: Already stubbed (`users` table exists, `UserFromContext` wired) — just add registration flow
-3. **Admin UI**: Not needed — the existing SPA is the admin interface
-4. **Realtime subscriptions**: SSE works fine for operation streaming; record-change subscriptions can be added with a simple pub/sub pattern if needed
+1. **SQLite dual read/write pool + pragma tuning** — biggest perf win (see below)
+2. **OAuth**: Add `golang.org/x/oauth2` + GitHub/Google providers (~200 lines)
+3. **Multi-user**: Already stubbed (`users` table exists, `UserFromContext` wired) — just add registration flow
+4. **Admin UI**: Not needed — the existing SPA is the admin interface
+5. **Realtime subscriptions**: SSE works fine for operation streaming; record-change subscriptions can be added with a simple pub/sub pattern if needed
+
+---
+
+## Performance Comparison
+
+The performance gap is NOT about PocketBase vs chi — it's about **SQLite tuning**. Both use the same pure Go driver (modernc.org/sqlite).
+
+### Where PocketBase has an edge
+
+| Dimension | PocketBase | pulumi-ui | Impact |
+|---|---|---|---|
+| **Connection pool** | 120 read + 1 write (dual pool) | 1 shared connection | **High** — reads block behind writes |
+| **synchronous** | NORMAL | FULL (default) | Medium — faster write commits |
+| **cache_size** | 32MB (`-32000`) | ~2MB (default) | Medium — more pages in RAM |
+| **temp_store** | MEMORY | file (default) | Low-medium — faster temp tables |
+| **busy_timeout** | 10s | 30s | Negligible |
+
+### Where it doesn't matter
+
+- HTTP router (Echo vs chi): ~5-15% synthetic difference, negligible with real work
+- SQLite driver: both use modernc.org/sqlite (pure Go)
+- Streaming: both use SSE
+- Memory: PocketBase adds ~80-120MB framework overhead, irrelevant on any real server
+
+### Actionable: adopt PocketBase's SQLite tuning
+
+1. **Dual read/write connection pool** — separate `ReadDB` (120 conns) from `WriteDB` (1 conn). Route SELECT queries to ReadDB, everything else to WriteDB.
+2. **Pragmas**: `synchronous=NORMAL`, `cache_size=-32000`, `temp_store=MEMORY`
+3. All stores get a `ReadDB` / `WriteDB` pair or a wrapper that routes automatically.
+
+Sources: [PocketBase db_connect.go](https://github.com/pocketbase/pocketbase/blob/master/core/db_connect.go), [cvilsmeier/go-sqlite-bench](https://github.com/cvilsmeier/go-sqlite-bench), [PocketBase FAQ](https://pocketbase.io/faq/)

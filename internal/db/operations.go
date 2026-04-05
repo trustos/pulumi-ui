@@ -16,15 +16,16 @@ type Operation struct {
 }
 
 type OperationStore struct {
-	db *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 }
 
-func NewOperationStore(db *sql.DB) *OperationStore {
-	return &OperationStore{db: db}
+func NewOperationStore(p *DBPair) *OperationStore {
+	return &OperationStore{rdb: p.ReadDB, wdb: p.WriteDB}
 }
 
 func (s *OperationStore) Create(id, stackName, operation string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		INSERT INTO operations (id, stack_name, operation, status)
 		VALUES (?, ?, ?, 'running')
 	`, id, stackName, operation)
@@ -32,14 +33,14 @@ func (s *OperationStore) Create(id, stackName, operation string) error {
 }
 
 func (s *OperationStore) AppendLog(id, line string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		UPDATE operations SET log = log || ? WHERE id = ?
 	`, line+"\n", id)
 	return err
 }
 
 func (s *OperationStore) Finish(id, status string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		UPDATE operations SET status = ?, finished_at = ? WHERE id = ?
 	`, status, time.Now().Unix(), id)
 	return err
@@ -48,7 +49,7 @@ func (s *OperationStore) Finish(id, status string) error {
 // MarkStaleRunning is called on startup to fail any operations that were left
 // in 'running' state by a previous server crash or ungraceful shutdown.
 func (s *OperationStore) MarkStaleRunning() error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		UPDATE operations
 		SET status = 'failed',
 		    finished_at = ?,
@@ -61,7 +62,7 @@ func (s *OperationStore) MarkStaleRunning() error {
 // GetLatestLog returns the most recent operation for a stack, including its full log.
 func (s *OperationStore) GetLatestLog(stackName string) (*Operation, error) {
 	op := &Operation{}
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT id, stack_name, operation, status, log, started_at, finished_at
 		FROM operations WHERE stack_name = ?
 		ORDER BY started_at DESC LIMIT 1
@@ -76,7 +77,7 @@ func (s *OperationStore) GetLatestLog(stackName string) (*Operation, error) {
 // ordered oldest-first. since filters to operations that started on or after the
 // stack's creation time, so a recreated stack with the same name starts with a clean log.
 func (s *OperationStore) ListLogsForStack(stackName string, limit int, since int64) ([]Operation, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT id, stack_name, operation, status, log, started_at, finished_at
 		FROM operations WHERE stack_name = ? AND started_at >= ?
 		ORDER BY started_at DESC LIMIT ?
@@ -101,12 +102,12 @@ func (s *OperationStore) ListLogsForStack(stackName string, limit int, since int
 // DeleteForStack removes all operations (and their logs) for a given stack name.
 // Called when a stack is deleted so a new stack with the same name starts clean.
 func (s *OperationStore) DeleteForStack(stackName string) error {
-	_, err := s.db.Exec(`DELETE FROM operations WHERE stack_name = ?`, stackName)
+	_, err := s.wdb.Exec(`DELETE FROM operations WHERE stack_name = ?`, stackName)
 	return err
 }
 
 func (s *OperationStore) ListForStack(stackName string, limit int, since int64) ([]Operation, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT id, stack_name, operation, status, started_at, finished_at
 		FROM operations WHERE stack_name = ? AND started_at >= ?
 		ORDER BY started_at DESC LIMIT ?

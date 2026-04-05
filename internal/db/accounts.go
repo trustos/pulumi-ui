@@ -40,12 +40,13 @@ func (a *OCIAccount) ToOCICredentials() OCICredentials {
 }
 
 type AccountStore struct {
-	db  *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 	enc *crypto.Encryptor
 }
 
-func NewAccountStore(db *sql.DB, enc *crypto.Encryptor) *AccountStore {
-	return &AccountStore{db: db, enc: enc}
+func NewAccountStore(p *DBPair, enc *crypto.Encryptor) *AccountStore {
+	return &AccountStore{rdb: p.ReadDB, wdb: p.WriteDB, enc: enc}
 }
 
 // Create stores a new OCI account for the given user.
@@ -69,7 +70,7 @@ func (s *AccountStore) Create(userID, name, tenancyName, tenancyOCID, region, us
 
 	id := uuid.New().String()
 	now := time.Now().Unix()
-	_, err = s.db.Exec(`
+	_, err = s.wdb.Exec(`
 		INSERT INTO oci_accounts (id, user_id, name, tenancy_name, tenancy_ocid, region, user_ocid, fingerprint, private_key, ssh_public_key, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, userID, name, tenancyName, tenancyOCID, region, encUserOCID, encFingerprint, encPrivateKey, encSSHPublicKey, now,
@@ -87,7 +88,7 @@ func (s *AccountStore) Create(userID, name, tenancyName, tenancyOCID, region, us
 func (s *AccountStore) Get(id string) (*OCIAccount, error) {
 	a := &OCIAccount{}
 	var encUserOCID, encFingerprint, encPrivateKey, encSSHPublicKey []byte
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT id, user_id, name, tenancy_name, tenancy_ocid, region, user_ocid, fingerprint, private_key, ssh_public_key, status, verified_at, created_at
 		FROM oci_accounts WHERE id = ?`, id,
 	).Scan(&a.ID, &a.UserID, &a.Name, &a.TenancyName, &a.TenancyOCID, &a.Region,
@@ -103,7 +104,7 @@ func (s *AccountStore) Get(id string) (*OCIAccount, error) {
 }
 
 func (s *AccountStore) ListForUser(userID string) ([]OCIAccount, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT a.id, a.user_id, a.name, a.tenancy_name, a.tenancy_ocid, a.region,
 		       a.user_ocid, a.fingerprint, a.private_key, a.ssh_public_key,
 		       a.status, a.verified_at, a.created_at,
@@ -154,7 +155,7 @@ func (s *AccountStore) Update(id, name, tenancyName, tenancyOCID, region, userOC
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`
+	_, err = s.wdb.Exec(`
 		UPDATE oci_accounts SET name=?, tenancy_name=?, tenancy_ocid=?, region=?, user_ocid=?, fingerprint=?, private_key=?, ssh_public_key=?, status='unverified', verified_at=NULL
 		WHERE id=?`,
 		name, tenancyName, tenancyOCID, region, encUserOCID, encFingerprint, encPrivateKey, encSSHPublicKey, id,
@@ -176,7 +177,7 @@ func (s *AccountStore) UpdatePartial(id, name, tenancyName, tenancyOCID, region,
 
 	if privateKey == "" && sshPublicKey == "" {
 		// Skip key updates entirely
-		_, err = s.db.Exec(`
+		_, err = s.wdb.Exec(`
 			UPDATE oci_accounts SET name=?, tenancy_name=?, tenancy_ocid=?, region=?, user_ocid=?, fingerprint=?, status='unverified', verified_at=NULL
 			WHERE id=?`,
 			name, tenancyName, tenancyOCID, region, encUserOCID, encFingerprint, id,
@@ -205,24 +206,24 @@ func (s *AccountStore) UpdatePartial(id, name, tenancyName, tenancyOCID, region,
 }
 
 func (s *AccountStore) SetStatus(id, status string, verifiedAt *int64) error {
-	_, err := s.db.Exec(`UPDATE oci_accounts SET status=?, verified_at=? WHERE id=?`, status, verifiedAt, id)
+	_, err := s.wdb.Exec(`UPDATE oci_accounts SET status=?, verified_at=? WHERE id=?`, status, verifiedAt, id)
 	return err
 }
 
 func (s *AccountStore) SetTenancyName(id, name string) error {
-	_, err := s.db.Exec(`UPDATE oci_accounts SET tenancy_name=? WHERE id=?`, name, id)
+	_, err := s.wdb.Exec(`UPDATE oci_accounts SET tenancy_name=? WHERE id=?`, name, id)
 	return err
 }
 
 // CountStacks returns the number of stacks that reference this account.
 func (s *AccountStore) CountStacks(id string) (int, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM stacks WHERE oci_account_id = ?`, id).Scan(&count)
+	err := s.rdb.QueryRow(`SELECT COUNT(*) FROM stacks WHERE oci_account_id = ?`, id).Scan(&count)
 	return count, err
 }
 
 func (s *AccountStore) Delete(id string) error {
-	_, err := s.db.Exec(`DELETE FROM oci_accounts WHERE id = ?`, id)
+	_, err := s.wdb.Exec(`DELETE FROM oci_accounts WHERE id = ?`, id)
 	return err
 }
 

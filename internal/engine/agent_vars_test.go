@@ -17,7 +17,7 @@ func setupStores(t *testing.T) (*db.StackConnectionStore, *db.NodeCertStore) {
 	database, err := db.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { database.Close() })
-	require.NoError(t, db.Migrate(database))
+	require.NoError(t, db.Migrate(database.WriteDB))
 
 	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	require.NoError(t, err)
@@ -31,7 +31,7 @@ func setupConnStore(t *testing.T) *db.StackConnectionStore {
 	database, err := db.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { database.Close() })
-	require.NoError(t, db.Migrate(database))
+	require.NoError(t, db.Migrate(database.WriteDB))
 
 	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	require.NoError(t, err)

@@ -33,12 +33,13 @@ var AllCredentialKeys = []string{
 }
 
 type CredentialStore struct {
-	db  *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 	enc *crypto.Encryptor
 }
 
-func NewCredentialStore(db *sql.DB, enc *crypto.Encryptor) *CredentialStore {
-	return &CredentialStore{db: db, enc: enc}
+func NewCredentialStore(p *DBPair, enc *crypto.Encryptor) *CredentialStore {
+	return &CredentialStore{rdb: p.ReadDB, wdb: p.WriteDB, enc: enc}
 }
 
 func (s *CredentialStore) Set(key, value string) error {
@@ -46,7 +47,7 @@ func (s *CredentialStore) Set(key, value string) error {
 	if err != nil {
 		return fmt.Errorf("encrypt %s: %w", key, err)
 	}
-	_, err = s.db.Exec(`
+	_, err = s.wdb.Exec(`
 		INSERT INTO credentials (key, value, updated_at)
 		VALUES (?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
@@ -56,7 +57,7 @@ func (s *CredentialStore) Set(key, value string) error {
 
 func (s *CredentialStore) Get(key string) (string, bool, error) {
 	var ciphertext []byte
-	err := s.db.QueryRow(`SELECT value FROM credentials WHERE key = ?`, key).Scan(&ciphertext)
+	err := s.rdb.QueryRow(`SELECT value FROM credentials WHERE key = ?`, key).Scan(&ciphertext)
 	if err == sql.ErrNoRows {
 		return "", false, nil
 	}

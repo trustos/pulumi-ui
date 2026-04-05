@@ -13,7 +13,7 @@ func setupNodeCertTest(t *testing.T) *NodeCertStore {
 	database, err := Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { database.Close() })
-	require.NoError(t, Migrate(database))
+	require.NoError(t, Migrate(database.WriteDB))
 
 	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	require.NoError(t, err)
@@ -127,7 +127,7 @@ func TestNodeCertStore_KeyEncryption(t *testing.T) {
 
 	// Raw DB should not contain the plain-text key.
 	var raw []byte
-	err := s.db.QueryRow(`SELECT nebula_key FROM stack_node_certs WHERE stack_name = ?`, "enc-stack").Scan(&raw)
+	err := s.wdb.QueryRow(`SELECT nebula_key FROM stack_node_certs WHERE stack_name = ?`, "enc-stack").Scan(&raw)
 	require.NoError(t, err)
 	assert.NotEqual(t, plainKey, raw, "key must be encrypted at rest")
 

@@ -18,15 +18,16 @@ type CustomBlueprint struct {
 
 // CustomBlueprintStore handles persistence of user-defined blueprints.
 type CustomBlueprintStore struct {
-	db *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 }
 
-func NewCustomBlueprintStore(db *sql.DB) *CustomBlueprintStore {
-	return &CustomBlueprintStore{db: db}
+func NewCustomBlueprintStore(p *DBPair) *CustomBlueprintStore {
+	return &CustomBlueprintStore{rdb: p.ReadDB, wdb: p.WriteDB}
 }
 
 func (s *CustomBlueprintStore) Create(p CustomBlueprint) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		INSERT INTO custom_blueprints (name, display_name, description, blueprint_yaml)
 		VALUES (?, ?, ?, ?)`,
 		p.Name, p.DisplayName, p.Description, p.BlueprintYAML,
@@ -40,7 +41,7 @@ func (s *CustomBlueprintStore) Create(p CustomBlueprint) error {
 func (s *CustomBlueprintStore) Get(name string) (CustomBlueprint, error) {
 	var p CustomBlueprint
 	var createdAt, updatedAt int64
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT name, display_name, description, blueprint_yaml, created_at, updated_at
 		FROM custom_blueprints WHERE name = ?`, name).
 		Scan(&p.Name, &p.DisplayName, &p.Description, &p.BlueprintYAML, &createdAt, &updatedAt)
@@ -56,7 +57,7 @@ func (s *CustomBlueprintStore) Get(name string) (CustomBlueprint, error) {
 }
 
 func (s *CustomBlueprintStore) List() ([]CustomBlueprint, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT name, display_name, description, blueprint_yaml, created_at, updated_at
 		FROM custom_blueprints ORDER BY name`)
 	if err != nil {
@@ -79,7 +80,7 @@ func (s *CustomBlueprintStore) List() ([]CustomBlueprint, error) {
 }
 
 func (s *CustomBlueprintStore) Update(name string, displayName, description, blueprintYAML string) error {
-	res, err := s.db.Exec(`
+	res, err := s.wdb.Exec(`
 		UPDATE custom_blueprints
 		SET display_name = ?, description = ?, blueprint_yaml = ?, updated_at = unixepoch()
 		WHERE name = ?`,
@@ -96,7 +97,7 @@ func (s *CustomBlueprintStore) Update(name string, displayName, description, blu
 }
 
 func (s *CustomBlueprintStore) Delete(name string) error {
-	res, err := s.db.Exec(`DELETE FROM custom_blueprints WHERE name = ?`, name)
+	res, err := s.wdb.Exec(`DELETE FROM custom_blueprints WHERE name = ?`, name)
 	if err != nil {
 		return fmt.Errorf("delete custom blueprint: %w", err)
 	}

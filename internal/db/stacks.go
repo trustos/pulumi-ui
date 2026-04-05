@@ -17,15 +17,16 @@ type StackRow struct {
 }
 
 type StackStore struct {
-	db *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 }
 
-func NewStackStore(db *sql.DB) *StackStore {
-	return &StackStore{db: db}
+func NewStackStore(p *DBPair) *StackStore {
+	return &StackStore{rdb: p.ReadDB, wdb: p.WriteDB}
 }
 
 func (s *StackStore) Upsert(name, blueprint, configYAML string, ociAccountID, passphraseID, sshKeyID *string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		INSERT INTO stacks (name, blueprint, config_yaml, oci_account_id, passphrase_id, ssh_key_id, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
@@ -42,7 +43,7 @@ func (s *StackStore) Upsert(name, blueprint, configYAML string, ociAccountID, pa
 
 func (s *StackStore) Get(name string) (*StackRow, error) {
 	row := &StackRow{}
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT name, blueprint, config_yaml, oci_account_id, passphrase_id, ssh_key_id, created_at, updated_at
 		FROM stacks WHERE name = ?
 	`, name).Scan(&row.Name, &row.Blueprint, &row.ConfigYAML, &row.OciAccountID, &row.PassphraseID, &row.SshKeyID, &row.CreatedAt, &row.UpdatedAt)
@@ -53,7 +54,7 @@ func (s *StackStore) Get(name string) (*StackRow, error) {
 }
 
 func (s *StackStore) List() ([]StackRow, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT name, blueprint, config_yaml, oci_account_id, passphrase_id, ssh_key_id, created_at, updated_at
 		FROM stacks ORDER BY name
 	`)
@@ -71,18 +72,18 @@ func (s *StackStore) List() ([]StackRow, error) {
 }
 
 func (s *StackStore) Delete(name string) error {
-	_, err := s.db.Exec(`DELETE FROM stacks WHERE name = ?`, name)
+	_, err := s.wdb.Exec(`DELETE FROM stacks WHERE name = ?`, name)
 	return err
 }
 
 func (s *StackStore) CountByPassphrase(id string) (int, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM stacks WHERE passphrase_id = ?`, id).Scan(&count)
+	err := s.rdb.QueryRow(`SELECT COUNT(*) FROM stacks WHERE passphrase_id = ?`, id).Scan(&count)
 	return count, err
 }
 
 func (s *StackStore) CountBySSHKey(id string) (int, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM stacks WHERE ssh_key_id = ?`, id).Scan(&count)
+	err := s.rdb.QueryRow(`SELECT COUNT(*) FROM stacks WHERE ssh_key_id = ?`, id).Scan(&count)
 	return count, err
 }

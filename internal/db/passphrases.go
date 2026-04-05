@@ -17,12 +17,13 @@ type PassphraseRow struct {
 }
 
 type PassphraseStore struct {
-	db  *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 	enc *crypto.Encryptor
 }
 
-func NewPassphraseStore(db *sql.DB, enc *crypto.Encryptor) *PassphraseStore {
-	return &PassphraseStore{db: db, enc: enc}
+func NewPassphraseStore(p *DBPair, enc *crypto.Encryptor) *PassphraseStore {
+	return &PassphraseStore{rdb: p.ReadDB, wdb: p.WriteDB, enc: enc}
 }
 
 func (s *PassphraseStore) Create(name, value string) (*PassphraseRow, error) {
@@ -32,7 +33,7 @@ func (s *PassphraseStore) Create(name, value string) (*PassphraseRow, error) {
 	}
 	id := uuid.New().String()
 	now := time.Now().Unix()
-	_, err = s.db.Exec(
+	_, err = s.wdb.Exec(
 		`INSERT INTO passphrases (id, name, value, created_at) VALUES (?, ?, ?, ?)`,
 		id, name, ciphertext, now,
 	)
@@ -43,7 +44,7 @@ func (s *PassphraseStore) Create(name, value string) (*PassphraseRow, error) {
 }
 
 func (s *PassphraseStore) List() ([]PassphraseRow, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT p.id, p.name, p.created_at, COUNT(st.name) AS stack_count
 		FROM passphrases p
 		LEFT JOIN stacks st ON st.passphrase_id = p.id
@@ -65,7 +66,7 @@ func (s *PassphraseStore) List() ([]PassphraseRow, error) {
 
 func (s *PassphraseStore) GetValue(id string) (string, error) {
 	var ciphertext []byte
-	err := s.db.QueryRow(`SELECT value FROM passphrases WHERE id = ?`, id).Scan(&ciphertext)
+	err := s.rdb.QueryRow(`SELECT value FROM passphrases WHERE id = ?`, id).Scan(&ciphertext)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("passphrase not found")
 	}
@@ -76,7 +77,7 @@ func (s *PassphraseStore) GetValue(id string) (string, error) {
 }
 
 func (s *PassphraseStore) Rename(id, newName string) error {
-	res, err := s.db.Exec(`UPDATE passphrases SET name = ? WHERE id = ?`, newName, id)
+	res, err := s.wdb.Exec(`UPDATE passphrases SET name = ? WHERE id = ?`, newName, id)
 	if err != nil {
 		return err
 	}
@@ -89,16 +90,16 @@ func (s *PassphraseStore) Rename(id, newName string) error {
 
 func (s *PassphraseStore) Delete(id string) error {
 	var count int
-	s.db.QueryRow(`SELECT COUNT(*) FROM stacks WHERE passphrase_id = ?`, id).Scan(&count)
+	s.rdb.QueryRow(`SELECT COUNT(*) FROM stacks WHERE passphrase_id = ?`, id).Scan(&count)
 	if count > 0 {
 		return fmt.Errorf("passphrase is used by %d stack(s) — remove those stacks first", count)
 	}
-	_, err := s.db.Exec(`DELETE FROM passphrases WHERE id = ?`, id)
+	_, err := s.wdb.Exec(`DELETE FROM passphrases WHERE id = ?`, id)
 	return err
 }
 
 func (s *PassphraseStore) HasAny() (bool, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM passphrases`).Scan(&count)
+	err := s.rdb.QueryRow(`SELECT COUNT(*) FROM passphrases`).Scan(&count)
 	return count > 0, err
 }

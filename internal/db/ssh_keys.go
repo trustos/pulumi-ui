@@ -21,12 +21,13 @@ type SSHKey struct {
 }
 
 type SSHKeyStore struct {
-	db  *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 	enc *crypto.Encryptor
 }
 
-func NewSSHKeyStore(db *sql.DB, enc *crypto.Encryptor) *SSHKeyStore {
-	return &SSHKeyStore{db: db, enc: enc}
+func NewSSHKeyStore(p *DBPair, enc *crypto.Encryptor) *SSHKeyStore {
+	return &SSHKeyStore{rdb: p.ReadDB, wdb: p.WriteDB, enc: enc}
 }
 
 // Create stores a new SSH key. privateKey may be empty (public-key-only entry).
@@ -43,7 +44,7 @@ func (s *SSHKeyStore) Create(userID, name, publicKey, privateKey string) (*SSHKe
 		}
 	}
 
-	_, err := s.db.Exec(
+	_, err := s.wdb.Exec(
 		`INSERT INTO ssh_keys (id, user_id, name, public_key, private_key, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		id, userID, name, publicKey, encPriv, now,
 	)
@@ -58,7 +59,7 @@ func (s *SSHKeyStore) Create(userID, name, publicKey, privateKey string) (*SSHKe
 
 // List returns all SSH keys for a user, including how many stacks reference each.
 func (s *SSHKeyStore) List(userID string) ([]SSHKey, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT k.id, k.user_id, k.name, k.public_key,
 		       (k.private_key IS NOT NULL) AS has_private_key,
 		       COUNT(st.name) AS stack_count, k.created_at
@@ -87,7 +88,7 @@ func (s *SSHKeyStore) List(userID string) ([]SSHKey, error) {
 // GetByID returns key metadata (without private key content).
 func (s *SSHKeyStore) GetByID(id string) (*SSHKey, error) {
 	var k SSHKey
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT id, user_id, name, public_key, (private_key IS NOT NULL)
 		FROM ssh_keys WHERE id = ?`, id,
 	).Scan(&k.ID, &k.UserID, &k.Name, &k.PublicKey, &k.HasPrivateKey)
@@ -100,7 +101,7 @@ func (s *SSHKeyStore) GetByID(id string) (*SSHKey, error) {
 // GetPublicKey returns the OpenSSH public key for a given SSH key ID.
 func (s *SSHKeyStore) GetPublicKey(id string) (string, error) {
 	var pub string
-	err := s.db.QueryRow(`SELECT public_key FROM ssh_keys WHERE id = ?`, id).Scan(&pub)
+	err := s.rdb.QueryRow(`SELECT public_key FROM ssh_keys WHERE id = ?`, id).Scan(&pub)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("SSH key not found")
 	}
@@ -110,7 +111,7 @@ func (s *SSHKeyStore) GetPublicKey(id string) (string, error) {
 // GetPrivateKey decrypts and returns the stored private key for download.
 func (s *SSHKeyStore) GetPrivateKey(id string) (name, privateKey string, err error) {
 	var encPriv []byte
-	err = s.db.QueryRow(`SELECT name, private_key FROM ssh_keys WHERE id = ?`, id).Scan(&name, &encPriv)
+	err = s.rdb.QueryRow(`SELECT name, private_key FROM ssh_keys WHERE id = ?`, id).Scan(&name, &encPriv)
 	if err == sql.ErrNoRows {
 		return "", "", fmt.Errorf("SSH key not found")
 	}
@@ -127,10 +128,10 @@ func (s *SSHKeyStore) GetPrivateKey(id string) (name, privateKey string, err err
 // Delete removes an SSH key, refusing if any stacks still reference it.
 func (s *SSHKeyStore) Delete(id string) error {
 	var count int
-	s.db.QueryRow(`SELECT COUNT(*) FROM stacks WHERE ssh_key_id = ?`, id).Scan(&count)
+	s.rdb.QueryRow(`SELECT COUNT(*) FROM stacks WHERE ssh_key_id = ?`, id).Scan(&count)
 	if count > 0 {
 		return fmt.Errorf("SSH key is used by %d stack(s) — unlink it from those stacks first", count)
 	}
-	_, err := s.db.Exec(`DELETE FROM ssh_keys WHERE id = ?`, id)
+	_, err := s.wdb.Exec(`DELETE FROM ssh_keys WHERE id = ?`, id)
 	return err
 }

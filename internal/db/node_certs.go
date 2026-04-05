@@ -19,18 +19,19 @@ type NodeCert struct {
 
 // NodeCertStore manages per-node Nebula certificates in stack_node_certs.
 type NodeCertStore struct {
-	db  *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 	enc *crypto.Encryptor
 }
 
-func NewNodeCertStore(db *sql.DB, enc *crypto.Encryptor) *NodeCertStore {
-	return &NodeCertStore{db: db, enc: enc}
+func NewNodeCertStore(p *DBPair, enc *crypto.Encryptor) *NodeCertStore {
+	return &NodeCertStore{rdb: p.ReadDB, wdb: p.WriteDB, enc: enc}
 }
 
 // CreateAll inserts node certs for a stack in a single transaction.
 // The nebula_key is AES-GCM encrypted before storage.
 func (s *NodeCertStore) CreateAll(certs []*NodeCert) error {
-	tx, err := s.db.Begin()
+	tx, err := s.wdb.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
@@ -60,7 +61,7 @@ func (s *NodeCertStore) CreateAll(certs []*NodeCert) error {
 
 // ListForStack returns all node certs for a stack, sorted by node_index ascending.
 func (s *NodeCertStore) ListForStack(stackName string) ([]*NodeCert, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT stack_name, node_index, nebula_cert, nebula_key, nebula_ip, agent_real_ip
 		FROM stack_node_certs
 		WHERE stack_name = ?
@@ -89,7 +90,7 @@ func (s *NodeCertStore) ListForStack(stackName string) ([]*NodeCert, error) {
 
 // UpdateAgentRealIP stores the public IP discovered for a specific node after deploy.
 func (s *NodeCertStore) UpdateAgentRealIP(stackName string, nodeIndex int, realIP string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		UPDATE stack_node_certs SET agent_real_ip = ? WHERE stack_name = ? AND node_index = ?
 	`, realIP, stackName, nodeIndex)
 	return err
@@ -97,6 +98,6 @@ func (s *NodeCertStore) UpdateAgentRealIP(stackName string, nodeIndex int, realI
 
 // Delete removes all node certs for a stack (called on stack delete).
 func (s *NodeCertStore) Delete(stackName string) error {
-	_, err := s.db.Exec(`DELETE FROM stack_node_certs WHERE stack_name = ?`, stackName)
+	_, err := s.wdb.Exec(`DELETE FROM stack_node_certs WHERE stack_name = ?`, stackName)
 	return err
 }

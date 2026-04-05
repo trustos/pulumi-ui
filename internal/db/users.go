@@ -17,16 +17,17 @@ type User struct {
 }
 
 type UserStore struct {
-	db *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 }
 
-func NewUserStore(db *sql.DB) *UserStore {
-	return &UserStore{db: db}
+func NewUserStore(p *DBPair) *UserStore {
+	return &UserStore{rdb: p.ReadDB, wdb: p.WriteDB}
 }
 
 func (s *UserStore) Count() (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
+	err := s.rdb.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
 	return n, err
 }
 
@@ -41,7 +42,7 @@ func (s *UserStore) Create(username, password string) (*User, error) {
 		PasswordHash: string(hash),
 		CreatedAt:    time.Now().Unix(),
 	}
-	_, err = s.db.Exec(
+	_, err = s.wdb.Exec(
 		`INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)`,
 		u.ID, u.Username, u.PasswordHash, u.CreatedAt,
 	)
@@ -53,7 +54,7 @@ func (s *UserStore) Create(username, password string) (*User, error) {
 
 func (s *UserStore) GetByUsername(username string) (*User, error) {
 	u := &User{}
-	err := s.db.QueryRow(
+	err := s.rdb.QueryRow(
 		`SELECT id, username, password_hash, created_at FROM users WHERE username = ?`,
 		username,
 	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.CreatedAt)
@@ -65,7 +66,7 @@ func (s *UserStore) GetByUsername(username string) (*User, error) {
 
 func (s *UserStore) GetByID(id string) (*User, error) {
 	u := &User{}
-	err := s.db.QueryRow(
+	err := s.rdb.QueryRow(
 		`SELECT id, username, password_hash, created_at FROM users WHERE id = ?`,
 		id,
 	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.CreatedAt)

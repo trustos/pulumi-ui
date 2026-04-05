@@ -22,18 +22,19 @@ type Hook struct {
 }
 
 type HookStore struct {
-	db *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 }
 
-func NewHookStore(db *sql.DB) *HookStore {
-	return &HookStore{db: db}
+func NewHookStore(p *DBPair) *HookStore {
+	return &HookStore{rdb: p.ReadDB, wdb: p.WriteDB}
 }
 
 func (s *HookStore) Create(h *Hook) error {
 	if h.ID == "" {
 		h.ID = uuid.New().String()
 	}
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		INSERT INTO lifecycle_hooks (id, stack_name, trigger, type, priority, continue_on_error, command, node_index, url, source, description)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, h.ID, h.StackName, h.Trigger, h.Type, h.Priority, boolToInt(h.ContinueOnError), h.Command, h.NodeIndex, h.URL, h.Source, h.Description)
@@ -41,7 +42,7 @@ func (s *HookStore) Create(h *Hook) error {
 }
 
 func (s *HookStore) ListForStack(stackName string) ([]Hook, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT id, stack_name, trigger, type, priority, continue_on_error, command, node_index, url, source, description, created_at
 		FROM lifecycle_hooks WHERE stack_name = ?
 		ORDER BY priority ASC
@@ -54,7 +55,7 @@ func (s *HookStore) ListForStack(stackName string) ([]Hook, error) {
 }
 
 func (s *HookStore) ListByTrigger(stackName, trigger string) ([]Hook, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT id, stack_name, trigger, type, priority, continue_on_error, command, node_index, url, source, description, created_at
 		FROM lifecycle_hooks WHERE stack_name = ? AND trigger = ?
 		ORDER BY priority ASC
@@ -67,17 +68,17 @@ func (s *HookStore) ListByTrigger(stackName, trigger string) ([]Hook, error) {
 }
 
 func (s *HookStore) Delete(id string) error {
-	_, err := s.db.Exec(`DELETE FROM lifecycle_hooks WHERE id = ?`, id)
+	_, err := s.wdb.Exec(`DELETE FROM lifecycle_hooks WHERE id = ?`, id)
 	return err
 }
 
 func (s *HookStore) DeleteBySource(stackName, source string) error {
-	_, err := s.db.Exec(`DELETE FROM lifecycle_hooks WHERE stack_name = ? AND source = ?`, stackName, source)
+	_, err := s.wdb.Exec(`DELETE FROM lifecycle_hooks WHERE stack_name = ? AND source = ?`, stackName, source)
 	return err
 }
 
 func (s *HookStore) DeleteForStack(stackName string) error {
-	_, err := s.db.Exec(`DELETE FROM lifecycle_hooks WHERE stack_name = ?`, stackName)
+	_, err := s.wdb.Exec(`DELETE FROM lifecycle_hooks WHERE stack_name = ?`, stackName)
 	return err
 }
 

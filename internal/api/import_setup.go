@@ -92,7 +92,7 @@ func (h *AdminHandler) ImportSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := db.Migrate(importDB); err != nil {
+	if err := db.Migrate(importDB.WriteDB); err != nil {
 		importDB.Close()
 		os.Remove(tmpPath)
 		http.Error(w, "database migration failed: "+err.Error(), http.StatusBadRequest)
@@ -100,7 +100,7 @@ func (h *AdminHandler) ImportSetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var userCount int
-	if err := importDB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&userCount); err != nil {
+	if err := importDB.ReadDB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&userCount); err != nil {
 		importDB.Close()
 		os.Remove(tmpPath)
 		http.Error(w, "failed to query users in uploaded database: "+err.Error(), http.StatusBadRequest)
@@ -122,7 +122,7 @@ func (h *AdminHandler) ImportSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if ok, reason := validateKeyMatchesDB(importDB, enc); !ok {
+	if ok, reason := validateKeyMatchesDB(importDB.ReadDB, enc); !ok {
 		importDB.Close()
 		os.Remove(tmpPath)
 		http.Error(w, reason, http.StatusBadRequest)
