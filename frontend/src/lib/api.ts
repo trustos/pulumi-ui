@@ -665,16 +665,15 @@ export async function stopPortForward(stackName: string, id: string): Promise<vo
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
-export function forwardProxyUrl(stackName: string, forwardId: string, path = ''): string {
-  const host = window.location.hostname; // e.g., "pulumi.tenevi.zero"
+export function forwardProxyUrl(stackName: string, forwardId: string, localPort: number, path = ''): string {
+  const host = window.location.hostname;
   const parts = host.split('.');
   if (parts.length >= 2) {
     // Subdomain under current host: fwd-{id}--{stack}.pulumi.tenevi.zero
-    // Always HTTP — forward subdomains don't have individual TLS certs
     return `http://${forwardId}--${stackName}.${host}/${path}`;
   }
-  // Fallback for localhost development
-  return `/api/stacks/${encodeURIComponent(stackName)}/forward/${encodeURIComponent(forwardId)}/proxy/${path}`;
+  // Localhost dev: direct access to the forwarded port (kubectl-style)
+  return `http://localhost:${localPort}/${path}`;
 }
 
 // App domain management (Traefik dynamic config)

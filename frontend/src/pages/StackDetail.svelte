@@ -882,7 +882,7 @@
                         {#if stoppingForwards.has(infraFwd.id)}
                           <span class="rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-muted-foreground">stopping...</span>
                         {:else}
-                          <a href={forwardProxyUrl(name, infraFwd.id)} target="_blank" rel="noopener" class="rounded bg-primary/10 text-primary px-1.5 py-0.5 text-xs font-mono hover:bg-primary/20 transition-colors">:{infraFwd.localPort}</a>
+                          <a href={forwardProxyUrl(name, infraFwd.id, infraFwd.localPort)} target="_blank" rel="noopener" class="rounded bg-primary/10 text-primary px-1.5 py-0.5 text-xs font-mono hover:bg-primary/20 transition-colors">:{infraFwd.localPort}</a>
                           <button class="text-xs text-muted-foreground hover:text-destructive" onclick={() => { if (infraFwd) doStopForward(infraFwd.id); }}>×</button>
                         {/if}
                       {:else}
@@ -950,7 +950,7 @@
                               <span class="rounded bg-muted px-2 py-1 text-xs font-mono text-muted-foreground">stopping...</span>
                             {:else}
                               <a
-                                href={forwardProxyUrl(name, fwd.id)}
+                                href={forwardProxyUrl(name, fwd.id, fwd.localPort)}
                                 target="_blank"
                                 rel="noopener"
                                 class="rounded bg-primary/10 text-primary px-2 py-1 text-xs font-mono hover:bg-primary/20 transition-colors"
@@ -974,7 +974,7 @@
                           <span class="rounded bg-muted px-2 py-1 text-xs font-mono text-muted-foreground">stopping...</span>
                         {:else}
                           <a
-                            href={forwardProxyUrl(name, fwdForApp.id)}
+                            href={forwardProxyUrl(name, fwdForApp.id, fwdForApp.localPort)}
                             target="_blank"
                             rel="noopener"
                             class="rounded bg-primary/10 text-primary px-2 py-1 text-xs font-mono hover:bg-primary/20 transition-colors"
@@ -1424,7 +1424,7 @@
                           <span class="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">stopping...</span>
                         {:else}
                           <a
-                            href={forwardProxyUrl(name, fwdInfo.id)}
+                            href={forwardProxyUrl(name, fwdInfo.id, fwdInfo.localPort)}
                             target="_blank"
                             rel="noopener"
                             class="rounded bg-primary/10 text-primary px-1.5 py-0.5 font-mono hover:bg-primary/20 transition-colors"
@@ -1450,7 +1450,7 @@
                   {#if stoppingForwards.has(fwd.id)}
                     <span class="text-muted-foreground">stopping...</span>
                   {:else}
-                    <a href={forwardProxyUrl(name, fwd.id)} target="_blank" rel="noopener" class="text-primary hover:underline">fwd:{fwd.remotePort}</a>
+                    <a href={forwardProxyUrl(name, fwd.id, fwd.localPort)} target="_blank" rel="noopener" class="text-primary hover:underline">fwd:{fwd.remotePort}</a>
                     <span class="text-muted-foreground">→</span>
                     <span class="text-muted-foreground">{fwd.remotePort}</span>
                     <button class="ml-0.5 text-muted-foreground hover:text-destructive transition-colors" onclick={() => doStopForward(fwd.id)}>×</button>
