@@ -148,8 +148,12 @@ func signS3Request(req *http.Request, accessKey, secretKey, region string) {
 	amzdate := now.Format("20060102T150405Z")
 	host := req.URL.Host
 
-	// Empty payload hash (SHA-256 of empty string).
-	payloadHash := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	// Use pre-set payload hash if the caller computed it (e.g., PUT with body),
+	// otherwise default to the empty payload hash (GET/DELETE/HEAD).
+	payloadHash := req.Header.Get("x-amz-content-sha256")
+	if payloadHash == "" {
+		payloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	}
 
 	// Set required headers before signing.
 	req.Host = host

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
@@ -36,12 +37,18 @@ func syncConfigToS3(ctx context.Context, creds *db.CredentialStore, project, sta
 	key := fmt.Sprintf(".pulumi/pulumi-ui/%s/%s.yaml", project, stackName)
 	putURL := fmt.Sprintf("%s/%s/%s", endpoint, bucket, key)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL, bytes.NewReader([]byte(configYAML)))
+	body := []byte(configYAML)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL, bytes.NewReader(body))
 	if err != nil {
 		log.Printf("[config-sync] failed to create request for %s: %v", stackName, err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/yaml")
+	// Set the payload hash BEFORE signing — signS3Request uses the x-amz-content-sha256
+	// header value for signature computation. Without this, PUT requests fail with 400
+	// because the signature is computed over an empty payload hash.
+	payloadHash := fmt.Sprintf("%x", sha256.Sum256(body))
+	req.Header.Set("x-amz-content-sha256", payloadHash)
 	signS3Request(req, accessKey, secretKey, region)
 
 	client := &http.Client{Timeout: 10 * time.Second}
