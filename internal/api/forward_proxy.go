@@ -57,11 +57,6 @@ func (h *Handler) ForwardSubdomainProxy(next http.Handler) http.Handler {
 		// HTTP reverse proxy — no path rewriting needed.
 		target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", pf.LocalPort))
 		proxy := httputil.NewSingleHostReverseProxy(target)
-		origDir := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			origDir(req)
-			req.Host = target.Host
-		}
 		proxy.ServeHTTP(w, r)
 	})
 }
