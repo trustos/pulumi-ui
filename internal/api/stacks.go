@@ -578,9 +578,15 @@ func (h *StackHandler) runOperation(w http.ResponseWriter, r *http.Request, oper
 
 	// Sync config to S3 so other pulumi-ui instances can claim this stack.
 	if status == "succeeded" {
-		if yamlStr, err := cfg.ToYAML(); err == nil {
+		yamlStr, yamlErr := cfg.ToYAML()
+		if yamlErr != nil {
+			log.Printf("[config-sync] cfg.ToYAML() failed for %s: %v", stackName, yamlErr)
+		} else {
+			log.Printf("[config-sync] triggering sync for %s/%s (%d bytes)", cfg.Metadata.Blueprint, stackName, len(yamlStr))
 			go syncConfigToS3(context.Background(), h.Creds, cfg.Metadata.Blueprint, stackName, yamlStr)
 		}
+	} else {
+		log.Printf("[config-sync] skipping sync — operation status: %s", status)
 	}
 
 	h.Ops.Finish(opID, status)
