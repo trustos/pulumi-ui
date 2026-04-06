@@ -3,6 +3,7 @@
   import type { ConfigFieldDef } from '$lib/types/blueprint-graph';
   import { Input } from '$lib/components/ui/input';
   import * as Tooltip from '$lib/components/ui/tooltip';
+  import ObjectPropertyEditor from './ObjectPropertyEditor.svelte';
   import {
     parseObjectValue,
     serializeObjectValue,
@@ -301,6 +302,17 @@
                     <option value={opt}>{opt}</option>
                   {/each}
                 </select>
+              {:else if subDef?.properties && Object.keys(subDef.properties).length > 0}
+                <ObjectPropertyEditor
+                  value={val}
+                  onvaluechange={(v: string) => updateArrayItemField(itemIdx, key, v)}
+                  schema={subDef}
+                  {configFields}
+                  {allResourceNames}
+                  {allResourceRefs}
+                  {variableNames}
+                  {readonly}
+                />
               {:else}
                 <Input
                   value={val}
@@ -407,6 +419,17 @@
                 <option value={opt}>{opt}</option>
               {/each}
             </select>
+          {:else if subDef?.properties && Object.keys(subDef.properties).length > 0}
+            <ObjectPropertyEditor
+              value={val}
+              onvaluechange={(v: string) => updateField(key, v)}
+              schema={subDef}
+              {configFields}
+              {allResourceNames}
+              {allResourceRefs}
+              {variableNames}
+              {readonly}
+            />
           {:else}
             <Input
               value={val}
