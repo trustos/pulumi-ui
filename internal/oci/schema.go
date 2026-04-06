@@ -87,6 +87,7 @@ func RefreshSchema() map[string]ResourceSchema {
 		return schemaCache
 	}
 	log.Printf("[oci-schema] refresh: loaded %d resource types from live schema", len(s))
+	mergeEnumsFromFallback(s)
 	saveCache(s)
 	schemaMu.Lock()
 	schemaCache = s
@@ -124,10 +125,12 @@ func loadSchema() (map[string]ResourceSchema, string) {
 	// 1. Disk cache — fastest path, works across restarts without re-running pulumi.
 	if s := loadCache(); len(s) > 0 {
 		log.Printf("[oci-schema] loaded %d resource types from disk cache", len(s))
+		mergeEnumsFromFallback(s)
 		// Refresh in background so the cache stays warm after provider upgrades.
 		go func() {
 			if s := fetchLiveSchema(); len(s) > 0 {
 				log.Printf("[oci-schema] background refresh: updated to %d resource types", len(s))
+				mergeEnumsFromFallback(s)
 				saveCache(s)
 				schemaMu.Lock()
 				schemaCache = s
@@ -140,6 +143,7 @@ func loadSchema() (map[string]ResourceSchema, string) {
 
 	// 2. Live fetch — blocks startup briefly but gives the full provider schema.
 	if s := fetchLiveSchema(); len(s) > 0 {
+		mergeEnumsFromFallback(s)
 		saveCache(s)
 		return s, "live"
 	}
@@ -148,6 +152,40 @@ func loadSchema() (map[string]ResourceSchema, string) {
 	fb := fallbackSchema()
 	log.Printf("[oci-schema] using hardcoded fallback (%d resource types)", len(fb))
 	return fb, "fallback"
+}
+
+// mergeEnumsFromFallback copies Enum values from the fallback schema into a
+// live/cached schema. The live Pulumi schema doesn't expose enum constraints
+// on individual properties, so we overlay them from our curated fallback.
+func mergeEnumsFromFallback(schema map[string]ResourceSchema) {
+	fb := fallbackSchema()
+	for resType, fbRes := range fb {
+		liveRes, ok := schema[resType]
+		if !ok {
+			continue
+		}
+		mergeEnumsIntoProps(liveRes.Inputs, fbRes.Inputs)
+		schema[resType] = liveRes
+	}
+}
+
+func mergeEnumsIntoProps(live, fallback map[string]PropertySchema) {
+	for key, fbProp := range fallback {
+		if len(fbProp.Enum) == 0 {
+			continue
+		}
+		if liveProp, ok := live[key]; ok && len(liveProp.Enum) == 0 {
+			liveProp.Enum = fbProp.Enum
+			live[key] = liveProp
+		}
+		// Recurse into nested properties (e.g., healthChecker.protocol)
+		if fbProp.Properties != nil {
+			if liveProp, ok := live[key]; ok && liveProp.Properties != nil {
+				mergeEnumsIntoProps(liveProp.Properties, fbProp.Properties)
+				live[key] = liveProp
+			}
+		}
+	}
 }
 
 // fetchLiveSchema tries to get the schema from the installed Pulumi OCI provider.
