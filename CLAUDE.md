@@ -301,17 +301,23 @@ Full detail: `docs/roadmap.md`
 
 | Theme | What | Status |
 |---|---|---|
-| BE-2 | Deduplicate Up/Destroy/Refresh/Preview in engine | pending |
-| BE-4 | Decompose God Object Handler (BE-3 done) | pending |
-| BE-6 | OCI Object Storage state backend + state migration | pending |
+| BE-2 | Deduplicate Up/Destroy/Refresh/Preview in engine | **done** |
+| BE-4 | Decompose God Object Handler (BE-3 done) | **done** |
+| BE-6 | OCI Object Storage state backend + state migration | **done** |
+| Mesh Sync | Sync Nebula mesh PKI to S3 for cross-instance portability | **done** |
 | Agent | Auto-update agent binaries through mesh (high-risk, needs careful design) | pending |
-| FE-1 | 3-step stack creation wizard | pending |
+| FE-1 | 3-step stack creation wizard | **done** |
 | FE-4 | Client-side config field validation (reuse visual editor's `typed-value.ts`) | pending |
 | FE-9 | Node graph editor (Svelte Flow) — third editor mode | pending |
 | Visual Editor | Bug fixes: P1-1, P2-1–P2-7, P3-1–P3-4, G1-6 | pending |
 | Cloud-init | User-provided boot scripts (`{{ userInit }}` template function) | pending |
 | Cross-account | Multi-account nomad cluster (pool OCI accounts) | pending (future) |
 | Instance Pool | Instance Configuration + Instance Pool alongside per-instance loop | pending (future) |
+| OPT-1–3 | SQLite production optimizations (batch writes, file logs, throttle) | pending |
+| MT-1–3 | Multi-user foundation (user-scoped resources, audit trail) | pending |
+| MT-4–6 | Organizations + RBAC + per-org encryption | pending |
+| MT-7–10 | Production hardening (rate limits, quotas, OAuth, op queue) | pending |
+| MT-11–12 | Billing + metering (Stripe, usage tracking) | pending (paid SaaS) |
 
 ---
 

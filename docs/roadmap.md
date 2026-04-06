@@ -383,6 +383,215 @@ API response validation is implicit — TypeScript interfaces define the shape b
 
 ---
 
+## Production-Ready SQLite Optimizations
+
+Before multi-tenant, these optimizations increase the single-SQLite capacity from ~10 concurrent users to ~50-100.
+
+### OPT-1: Batch `AppendLog` writes
+**Problem:** Every Pulumi output line calls `Ops.AppendLog` — a serialized write per line. With multiple concurrent operations, this is the primary write bottleneck.
+**Solution:** Buffer log lines in memory (the SSE stream already reads from memory), flush to DB in batches (every 500ms or 50 lines). Reduces write locks by 10-20x during operations.
+**Scope: Small | Priority: High**
+
+### OPT-2: Move operation logs to files
+**Problem:** Operation logs are append-only, write-heavy, and rarely queried — the worst fit for SQLite's single-writer model. They account for ~90% of all DB writes during active operations.
+**Solution:** Write logs to flat files (one per operation, append-only). `LogBuffer` already holds them in memory — just persist to disk on completion. Keep only operation metadata (status, timestamps) in SQLite.
+**Scope: Small | Priority: High**
+
+### OPT-3: Throttle `UpdateLastSeen`
+**Problem:** Called on every agent health check poll. Unnecessary write frequency.
+**Solution:** Throttle to once per minute per stack (in-memory timestamp check before DB write).
+**Scope: Trivial | Priority: Low**
+
+### OPT-4: Database-per-tenant (for multi-tenant)
+**Problem:** Single SQLite file serializes all writes across all tenants. With 50+ concurrent writing tenants, the single writer becomes the bottleneck.
+**Solution:** One `.db` file per organization. Eliminates cross-tenant write contention entirely. Pool of lazy-opened connections per tenant, idle cleanup after inactivity.
+**Scope: Medium | Priority: Only needed at multi-tenant launch**
+
+### Capacity estimates
+
+| Configuration | Concurrent users | Concurrent operations |
+|---|---|---|
+| Current (single SQLite, no batching) | ~10-20 | ~3-5 |
+| + OPT-1 + OPT-2 (batched writes, file logs) | ~50-100 | ~8-10 (limited by CPU/RAM, not DB) |
+| + OPT-4 (database-per-tenant) | ~500+ | ~8-10 per tenant |
+| PostgreSQL (future escape hatch) | Unlimited | Limited by compute |
+
+---
+
+## Multi-Tenant / Multi-User SaaS Roadmap
+
+End goal: organization-ready multi-tenant SaaS. Current state: single-user self-hosted tool.
+
+### Current readiness
+
+| Area | Status | Notes |
+|---|---|---|
+| Auth (session-based, bcrypt) | ✓ Working | Single-user enforced at registration |
+| Frontend multi-user login | ✓ Ready | Supports register/login/logout flows |
+| OCI accounts isolation | ✓ Scoped | `user_id` FK, `ListForUser()` |
+| SSH keys isolation | ✓ Scoped | `user_id` FK, `List(userID)` |
+| Stacks isolation | ✗ **Global** | No `user_id` — all users see all stacks |
+| Passphrases isolation | ✗ **Global** | No `user_id` — shared across users |
+| Custom blueprints isolation | ✗ **Global** | No `user_id` — shared across users |
+| Operations isolation | ✗ **Global** | No `user_id` — no audit of who ran what |
+| Credentials (S3/backend) | ✗ **Global** | Global key-value store, not per-org |
+| Encryption key | ✗ **Global** | Single `PULUMI_UI_ENCRYPTION_KEY` for all data |
+| Organizations/teams | ✗ Missing | No org model, no RBAC, no invitations |
+| Rate limiting | ✗ Missing | No request throttling |
+| Audit trail | ✗ Missing | No user attribution on operations |
+| Quotas/billing | ✗ Missing | No usage tracking or limits |
+
+### Phase 1: Multi-User Foundation (must-have before any shared access)
+
+#### MT-1: User-scoped resources
+Add `user_id` FK to tables that currently lack it. All list/get/update/delete handlers filter by authenticated user.
+
+**Tables to migrate:**
+- `stacks` — add `user_id TEXT REFERENCES users(id)`
+- `passphrases` — add `user_id TEXT REFERENCES users(id)`
+- `custom_blueprints` — add `user_id TEXT REFERENCES users(id)`
+- `operations` — add `user_id TEXT` (who triggered the operation)
+- `lifecycle_hooks` — inherits from stack, but add `user_id` for direct queries
+
+**Handler changes:**
+- `ListStacks` → filter by `user_id`
+- `PutStack` / `DeleteStack` → verify ownership
+- `runOperation` → record `user_id` on operation
+- `ListPassphrases` → filter by `user_id`
+- `ListCustomBlueprints` → filter by `user_id`
+
+**Migration strategy:** Backfill existing records — single-user instances assign all records to the existing user. New records get `user_id` from `auth.UserFromContext(r.Context())`.
+
+**Scope: Medium | Priority: Critical | Gate: None**
+
+#### MT-2: Remove single-user registration limit
+Currently `Register` handler blocks if any user exists. Remove this check to allow multi-user registration.
+
+**Scope: Trivial | Priority: Critical | Gate: MT-1 (isolation must exist first)**
+
+#### MT-3: Audit trail
+Create `audit_log` table: `(id, user_id, action, resource_type, resource_id, details_json, created_at)`. Log all state-changing operations: stack CRUD, account CRUD, credential changes, operation triggers, login/logout.
+
+Add `user_id` to `operations` table so every infrastructure operation records who triggered it.
+
+**Scope: Small | Priority: High | Gate: MT-1**
+
+### Phase 2: Organizations & RBAC
+
+#### MT-4: Organization model
+New tables:
+- `organizations (id, name, slug, created_at)`
+- `org_members (org_id, user_id, role, invited_by, created_at)`
+
+Roles: `owner` (full control + billing), `admin` (manage members + all resources), `operator` (deploy/destroy/refresh), `viewer` (read-only).
+
+Add `org_id` FK to: `stacks`, `oci_accounts`, `passphrases`, `ssh_keys`, `custom_blueprints`, `credentials`.
+
+All resource queries filter by `org_id` derived from the authenticated user's membership. Users can belong to multiple organizations.
+
+**Scope: Large | Priority: High | Gate: MT-1, MT-2**
+
+#### MT-5: Invitation system
+API endpoints: `POST /api/orgs/{id}/invitations` (invite by email), `POST /api/invitations/{token}/accept`.
+
+Email delivery via configurable SMTP or transactional email service (SendGrid, Resend).
+
+**Scope: Medium | Priority: High | Gate: MT-4**
+
+#### MT-6: Per-organization encryption
+**Problem:** Single global `PULUMI_UI_ENCRYPTION_KEY` means one key encrypts all orgs' data — unacceptable for multi-tenant SaaS.
+
+**Solution:** Per-org key derivation. Master key wraps per-org keys:
+```
+org_key = AES-KW(master_key, random_org_key)
+stored: organizations.encrypted_key = wrapped_org_key
+```
+On request: unwrap org key from master key, use for encrypt/decrypt. If master key rotates, re-wrap all org keys (no re-encryption of data).
+
+**Scope: Medium | Priority: High | Gate: MT-4**
+
+### Phase 3: Production Hardening
+
+#### MT-7: Rate limiting
+Middleware-level rate limiting per user/org:
+- Global: 100 req/min per user
+- Operations: 10 deploys/hour per org
+- Auth: 5 login attempts/min per IP
+
+Use token bucket algorithm. Return `429 Too Many Requests` with `Retry-After` header.
+
+**Scope: Small | Priority: Medium | Gate: MT-1**
+
+#### MT-8: Resource quotas
+Per-org quotas stored in `org_quotas` table:
+- Max stacks per org (e.g., 5 free, 50 pro)
+- Max OCI accounts per org
+- Max concurrent operations per org
+- Max custom blueprints per org
+
+Enforced at handler level (check count before create). Admin API to view/update quotas.
+
+**Scope: Small | Priority: Medium | Gate: MT-4**
+
+#### MT-9: OAuth / SSO
+Add OAuth2 providers: GitHub, Google. Use `golang.org/x/oauth2`.
+Later: SAML for enterprise SSO (Okta, Azure AD).
+API token auth for CLI/programmatic access.
+
+**Scope: Medium | Priority: Medium | Gate: MT-4**
+
+#### MT-10: Operation queue
+Currently operations run immediately with no concurrency control. Add a queue:
+- Per-stack: only one operation at a time (already enforced via `Engine.IsRunning`)
+- Per-org: max N concurrent operations (configurable per plan)
+- Global: max M concurrent Pulumi subprocesses (resource protection)
+
+Operations exceeding limits are queued with position feedback via SSE.
+
+**Scope: Medium | Priority: Medium | Gate: MT-8**
+
+### Phase 4: Billing & Metering
+
+#### MT-11: Usage metering
+Track per-org usage:
+- Operations count (up/destroy/refresh per month)
+- Compute hours (operation duration)
+- Active stacks count
+- Storage (state file sizes)
+
+Store in `usage_events` table, aggregate daily.
+
+**Scope: Medium | Priority: Low (only for paid SaaS) | Gate: MT-4**
+
+#### MT-12: Stripe integration
+Subscription management: plans (free/pro/enterprise), payment methods, invoicing.
+Webhook handlers for payment events. Quota enforcement tied to plan tier.
+
+**Scope: Large | Priority: Low (only for paid SaaS) | Gate: MT-8, MT-11**
+
+### Execution order (multi-tenant)
+
+| # | Item | Scope | Gate | Status |
+|---|---|---|---|---|
+| OPT-1 | Batch AppendLog writes | Small | — | pending |
+| OPT-2 | Operation logs to files | Small | — | pending |
+| OPT-3 | Throttle UpdateLastSeen | Trivial | — | pending |
+| MT-1 | User-scoped resources | Medium | — | pending |
+| MT-2 | Multi-user registration | Trivial | MT-1 | pending |
+| MT-3 | Audit trail | Small | MT-1 | pending |
+| MT-4 | Organization model + RBAC | Large | MT-1, MT-2 | pending |
+| MT-5 | Invitation system | Medium | MT-4 | pending |
+| MT-6 | Per-org encryption | Medium | MT-4 | pending |
+| MT-7 | Rate limiting | Small | MT-1 | pending |
+| MT-8 | Resource quotas | Small | MT-4 | pending |
+| MT-9 | OAuth / SSO | Medium | MT-4 | pending |
+| MT-10 | Operation queue | Medium | MT-8 | pending |
+| OPT-4 | Database-per-tenant | Medium | MT-4 | pending (only if needed) |
+| MT-11 | Usage metering | Medium | MT-4 | pending (paid SaaS only) |
+| MT-12 | Stripe integration | Large | MT-8, MT-11 | pending (paid SaaS only) |
+
+---
+
 ## Execution Order
 
 | # | Theme | Scope | Gate | Status |
@@ -400,6 +609,11 @@ API response validation is implicit — TypeScript interfaces define the shape b
 | 11 | Instance Configuration + Instance Pool | Medium | — | pending (future) |
 | 12 | Mesh data sync to S3 | Medium | — | **done** |
 | 13 | FE-10 — Stately (XState) + Zod evaluation | Small | — | pending (discussion) |
+| 14 | SQLite production optimizations (OPT-1–3) | Small | — | pending |
+| 15 | Multi-tenant foundation (MT-1–3) | Medium | — | pending |
+| 16 | Organizations + RBAC (MT-4–6) | Large | #15 | pending |
+| 17 | Production hardening (MT-7–10) | Medium | #16 | pending |
+| 18 | Billing + metering (MT-11–12) | Large | #17 | pending (paid SaaS only) |
 
 See `docs/visual-editor.md` for the visual blueprint editor fix plan (P1/P2/P3/G1 bugs) and property system simplification roadmap.
 See `docs/application-catalog-architecture.md` for the complete agent/mesh architecture.
