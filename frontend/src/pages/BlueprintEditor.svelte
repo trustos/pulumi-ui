@@ -768,7 +768,7 @@
         class="h-8 px-3 text-xs rounded border shrink-0 inline-flex items-center gap-1.5 {agentAccess ? (showAgentOutputsWarning ? 'bg-warning/15 text-warning-foreground border-warning' : 'bg-primary text-primary-foreground border-primary') : 'bg-background text-muted-foreground border-input hover:text-foreground'}"
         onclick={toggleAgentAccess}
       ><span class="inline-block w-1.5 h-1.5 rounded-full {agentAccess ? (showAgentOutputsWarning ? 'bg-warning-foreground' : 'bg-primary-foreground') : 'bg-muted-foreground/50'}"></span>Agent Connect</Tooltip.Trigger>
-      <Tooltip.Content>{showAgentOutputsWarning ? 'Agent Connect is on but IP outputs are missing — see warning below.' : 'Toggle automatic agent bootstrap + networking injection. When ON, the engine injects Nebula mesh, agent, NSG rules, and NLB resources at deploy time.'}</Tooltip.Content>
+      <Tooltip.Content>{showAgentOutputsWarning ? 'Agent Connect is on but IP outputs are missing — see warning below.' : 'Toggle agent connectivity. When ON, scaffolds an NSG with Nebula mesh rules into your blueprint. You can add more NSG rules for custom port exposure. The agent bootstrap is injected at deploy time.'}</Tooltip.Content>
     </Tooltip.Root>
     <div class="flex items-center gap-2 shrink-0">
       {#if saveError}

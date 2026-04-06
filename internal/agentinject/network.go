@@ -65,11 +65,18 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 		return yamlBody, nil
 	}
 
-	// Check if already injected
+	// Check if already injected (deploy-time __agent_* resources).
 	for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
 		if len(resourcesNode.Content[i].Value) > 8 && resourcesNode.Content[i].Value[:8] == "__agent_" {
 			return yamlBody, nil
 		}
+	}
+
+	// Check if user-defined agent networking already exists: any NSG rule
+	// covering UDP port 41820 means the user scaffolded networking in the editor.
+	// Skip injection so the user retains full control over NSG/NLB resources.
+	if hasUserDefinedAgentNSGRule(resourcesNode) {
+		return yamlBody, nil
 	}
 
 	var nsgs, nlbs, computes []discoveredResource
@@ -671,4 +678,50 @@ func toYAMLNode(v interface{}) *yaml.Node {
 	default:
 		return &yaml.Node{Kind: yaml.ScalarNode, Value: fmt.Sprintf("%v", val)}
 	}
+}
+
+// hasUserDefinedAgentNSGRule scans resources for any NSG security rule
+// that opens UDP port 41820 (the Nebula agent port). If found, the user
+// has explicitly defined agent networking in the editor and deploy-time
+// injection should be skipped.
+func hasUserDefinedAgentNSGRule(resourcesNode *yaml.Node) bool {
+	const nsgRuleType = "oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule"
+
+	for i := 0; i < len(resourcesNode.Content)-1; i += 2 {
+		resNode := resourcesNode.Content[i+1]
+		if resNode.Kind != yaml.MappingNode {
+			continue
+		}
+		typeNode := findMapValue(resNode, "type")
+		if typeNode == nil || typeNode.Value != nsgRuleType {
+			continue
+		}
+		props := findMapValue(resNode, "properties")
+		if props == nil {
+			continue
+		}
+		// Check protocol is UDP ("17")
+		proto := findMapValue(props, "protocol")
+		if proto == nil || (proto.Value != "17" && proto.Value != `"17"`) {
+			continue
+		}
+		// Check udpOptions.destinationPortRange includes 41820
+		udpOpts := findMapValue(props, "udpOptions")
+		if udpOpts == nil {
+			continue
+		}
+		portRange := findMapValue(udpOpts, "destinationPortRange")
+		if portRange == nil {
+			continue
+		}
+		minNode := findMapValue(portRange, "min")
+		maxNode := findMapValue(portRange, "max")
+		if minNode == nil || maxNode == nil {
+			continue
+		}
+		if minNode.Value == "41820" || maxNode.Value == "41820" {
+			return true
+		}
+	}
+	return false
 }

@@ -57,11 +57,41 @@ const SUBNET_RESOURCE: ResourceItem = {
   options: { dependsOn: ['agent-route-table'] },
 };
 
+const NSG_RESOURCE: ResourceItem = {
+  kind: 'resource',
+  name: 'agent-nsg',
+  resourceType: 'oci:Core/networkSecurityGroup:NetworkSecurityGroup',
+  properties: [
+    { key: 'compartmentId', value: '{{ .Config.compartmentId }}' },
+    { key: 'vcnId', value: '${agent-vcn.id}' },
+    { key: 'displayName', value: 'agent-nsg' },
+  ],
+  options: { dependsOn: ['agent-subnet'] },
+};
+
+const NSG_RULE_NEBULA: ResourceItem = {
+  kind: 'resource',
+  name: 'agent-nsg-rule-nebula',
+  resourceType: 'oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule',
+  properties: [
+    { key: 'networkSecurityGroupId', value: '${agent-nsg.id}' },
+    { key: 'direction', value: 'INGRESS' },
+    { key: 'protocol', value: '"17"' },
+    { key: 'source', value: '0.0.0.0/0' },
+    { key: 'sourceType', value: 'CIDR_BLOCK' },
+    { key: 'udpOptions', value: '{ destinationPortRange: { min: 41820, max: 41820 } }' },
+    { key: 'description', value: 'Nebula mesh agent (UDP)' },
+  ],
+  options: { dependsOn: ['agent-nsg'] },
+};
+
 const SCAFFOLDED_RESOURCES: ResourceItem[] = [
   VCN_RESOURCE,
   IGW_RESOURCE,
   ROUTE_TABLE_RESOURCE,
   SUBNET_RESOURCE,
+  NSG_RESOURCE,
+  NSG_RULE_NEBULA,
 ];
 
 /**
@@ -121,7 +151,14 @@ export function scaffoldNetworkingGraph(graph: BlueprintGraph): BlueprintGraph {
       p.key === 'createVnicDetails.assignPublicIp' ||
       (p.key === 'createVnicDetails' && p.value.includes('assignPublicIp'))
     );
-    const extraProps = hasPublicIp ? [] : [{ key: 'createVnicDetails.assignPublicIp', value: 'true' }];
+    const hasNsgIds = item.properties.some(p =>
+      p.key === 'createVnicDetails.nsgIds' ||
+      (p.key === 'createVnicDetails' && p.value.includes('nsgIds'))
+    );
+    const extraProps = [
+      ...(hasPublicIp ? [] : [{ key: 'createVnicDetails.assignPublicIp', value: 'true' }]),
+      ...(hasNsgIds ? [] : [{ key: 'createVnicDetails.nsgIds', value: '["${agent-nsg.id}"]' }]),
+    ];
 
     // Dot-notation format: overwrite the subnetId value
     if (hasDotSubnet) {
@@ -155,13 +192,14 @@ export function scaffoldNetworkingGraph(graph: BlueprintGraph): BlueprintGraph {
       return item; // inline vnic already has a non-blank subnetId
     }
 
-    // No createVnicDetails at all: add dot-notation properties
+    // No createVnicDetails at all: add dot-notation properties including nsgIds
     return {
       ...item,
       properties: [
         ...item.properties,
         { key: 'createVnicDetails.subnetId', value: '${agent-subnet.id}' },
-        ...extraProps,
+        { key: 'createVnicDetails.assignPublicIp', value: 'true' },
+        { key: 'createVnicDetails.nsgIds', value: '["${agent-nsg.id}"]' },
       ],
     };
   });
@@ -215,6 +253,31 @@ const NETWORKING_YAML_LINES = [
   '    options:',
   '      dependsOn:',
   '        - ${agent-route-table}',
+  '  agent-nsg:',
+  '    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup',
+  '    properties:',
+  '      compartmentId: {{ .Config.compartmentId }}',
+  '      vcnId: ${agent-vcn.id}',
+  '      displayName: agent-nsg',
+  '    options:',
+  '      dependsOn:',
+  '        - ${agent-subnet}',
+  '  agent-nsg-rule-nebula:',
+  '    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule',
+  '    properties:',
+  '      networkSecurityGroupId: ${agent-nsg.id}',
+  '      direction: INGRESS',
+  '      protocol: "17"',
+  '      source: "0.0.0.0/0"',
+  '      sourceType: CIDR_BLOCK',
+  '      udpOptions:',
+  '        destinationPortRange:',
+  '          min: 41820',
+  '          max: 41820',
+  '      description: Nebula mesh agent (UDP)',
+  '    options:',
+  '      dependsOn:',
+  '        - ${agent-nsg}',
 ];
 
 /**
@@ -228,9 +291,10 @@ export function scaffoldNetworkingYaml(yamlText: string): string {
   const resourcesIdx = lines.findIndex(l => /^resources:\s*$/.test(l));
   if (resourcesIdx < 0) return yamlText;
 
-  // Skip inserting networking block if it already exists.
+  // Skip inserting networking block if it already exists (check VCN or NSG).
   const hasAgentVcn = lines.some(l => /^\s+agent-vcn:\s*$/.test(l));
-  if (!hasAgentVcn) {
+  const hasAgentNsg = lines.some(l => /^\s+agent-nsg:\s*$/.test(l));
+  if (!hasAgentVcn && !hasAgentNsg) {
     lines.splice(resourcesIdx + 1, 0, ...NETWORKING_YAML_LINES);
   }
 
@@ -253,6 +317,8 @@ export function scaffoldNetworkingYaml(yamlText: string): string {
       `${propIndent}createVnicDetails:`,
       `${propIndent}  subnetId: \${agent-subnet.id}`,
       `${propIndent}  assignPublicIp: true`,
+      `${propIndent}  nsgIds:`,
+      `${propIndent}    - \${agent-nsg.id}`,
     );
   }
 

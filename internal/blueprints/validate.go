@@ -1,6 +1,7 @@
 package blueprints
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -422,6 +423,7 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 	hasInstancePool := false
 	hasPublicIP := false
 	hasSubnetRef := false
+	hasAgentNSGRule := false // explicit NSG rule for UDP 41820
 
 	for _, res := range doc.Resources {
 		switch res.Type {
@@ -431,6 +433,10 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 			hasSubnet = true
 		case "oci:Core/networkSecurityGroup:NetworkSecurityGroup":
 			hasNSG = true
+		case "oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule":
+			if isAgentPortRule(res.Properties) {
+				hasAgentNSGRule = true
+			}
 		case "oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer":
 			isPriv := false
 			if v, ok := res.Properties["isPrivate"]; ok {
@@ -530,7 +536,36 @@ func validateAgentAccessContext(rendered string) []ValidationError {
 		}}
 	}
 
+	// Soft warning: if NSG exists but no explicit rule for UDP 41820, the engine
+	// will inject one at deploy time. Recommend making it explicit for visibility.
+	if hasNSG && !hasAgentNSGRule {
+		return []ValidationError{{
+			Level:   LevelAgentAccess,
+			Field:   "meta.agentAccess",
+			Message: "No NSG rule for UDP port 41820 (Nebula agent) found — the engine will inject one at deploy time. Add an explicit rule for full visibility over your networking.",
+		}}
+	}
+
 	return nil
+}
+
+// isAgentPortRule checks if an NSG rule's properties cover UDP port 41820.
+func isAgentPortRule(props map[string]interface{}) bool {
+	proto, _ := props["protocol"].(string)
+	if proto != "17" && proto != `"17"` {
+		return false
+	}
+	udpOpts, ok := props["udpOptions"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	portRange, ok := udpOpts["destinationPortRange"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	min := fmt.Sprintf("%v", portRange["min"])
+	max := fmt.Sprintf("%v", portRange["max"])
+	return min == "41820" || max == "41820"
 }
 
 // validateAgentAccessOutputs checks that at least one IP output is present so
