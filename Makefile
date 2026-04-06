@@ -115,6 +115,22 @@ docker-push: docker
 docker-buildx:
 	docker buildx build --platform linux/amd64,linux/arm64 -t $(IMAGE):$(TAG) --push .
 
+# ── Deploy ────────────────────────────────────────────────────────────────────
+
+NOMAD_JOB      ?= /Users/tenevi/Projects/SelfHosted/NOMAD-CLUSTER/jobs/home/pulumi-ui.nomad.hcl
+CONSUL_DNS_IP  ?= 192.168.23.3
+DNS_FALLBACK   ?= 8.8.8.8
+HOST_IP        ?= $(shell route -n get default 2>/dev/null | awk '/interface:/{print $$2}' | xargs ipconfig getifaddr 2>/dev/null || echo "127.0.0.1")
+NOMAD_VARS     := -var "consul_dns_ip=$(CONSUL_DNS_IP)" -var "dns_fallback=$(DNS_FALLBACK)" -var "host_ip=$(HOST_IP)"
+
+## deploy: Update the Nomad job image tag to the latest git tag and run it
+deploy:
+	@DEPLOY_TAG=$$(git describe --tags --abbrev=0 2>/dev/null || echo "latest"); \
+	 echo "Deploying pulumi-ui $$DEPLOY_TAG ..."; \
+	 perl -i -pe "s|ghcr.io/trustos/pulumi-ui:v[\\d.]+|ghcr.io/trustos/pulumi-ui:$$DEPLOY_TAG|g" $(NOMAD_JOB); \
+	 nomad job run $(NOMAD_VARS) -namespace=home $(NOMAD_JOB); \
+	 echo "Deployed $$DEPLOY_TAG"
+
 # ── Maintenance ───────────────────────────────────────────────────────────────
 
 ## run-bg: Build and run the server in the background
