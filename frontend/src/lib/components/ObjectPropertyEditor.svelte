@@ -278,6 +278,29 @@
                     <button class="text-muted-foreground hover:text-destructive leading-none shrink-0" onclick={() => updateArrayItemField(itemIdx, key, '')} type="button">×</button>
                   {/if}
                 </div>
+              {:else if subDef?.type === 'boolean'}
+                <select
+                  value={stripQuotes(val)}
+                  onchange={(e) => updateArrayItemField(itemIdx, key, (e.currentTarget as HTMLSelectElement).value)}
+                  class="flex w-full rounded-md border border-input bg-transparent px-3 py-1 shadow-sm transition-colors text-xs font-mono h-7 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={readonly}
+                >
+                  <option value="">—</option>
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              {:else if subDef?.enum?.length}
+                <select
+                  value={stripQuotes(val)}
+                  onchange={(e) => updateArrayItemField(itemIdx, key, (e.currentTarget as HTMLSelectElement).value)}
+                  class="flex w-full rounded-md border border-input bg-transparent px-3 py-1 shadow-sm transition-colors text-xs font-mono h-7 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={readonly}
+                >
+                  <option value="">—</option>
+                  {#each subDef.enum as opt}
+                    <option value={opt}>{opt}</option>
+                  {/each}
+                </select>
               {:else}
                 <Input
                   value={val}
@@ -361,6 +384,29 @@
                 <button class="text-muted-foreground hover:text-destructive leading-none shrink-0" onclick={() => updateField(key, '')} type="button">×</button>
               {/if}
             </div>
+          {:else if subDef?.type === 'boolean'}
+            <select
+              value={stripQuotes(val)}
+              onchange={(e) => updateField(key, (e.currentTarget as HTMLSelectElement).value)}
+              class="flex w-full rounded-md border border-input bg-transparent px-3 py-1 shadow-sm transition-colors text-xs font-mono h-7 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={readonly}
+            >
+              <option value="">—</option>
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          {:else if subDef?.enum?.length}
+            <select
+              value={stripQuotes(val)}
+              onchange={(e) => updateField(key, (e.currentTarget as HTMLSelectElement).value)}
+              class="flex w-full rounded-md border border-input bg-transparent px-3 py-1 shadow-sm transition-colors text-xs font-mono h-7 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={readonly}
+            >
+              <option value="">—</option>
+              {#each subDef.enum as opt}
+                <option value={opt}>{opt}</option>
+              {/each}
+            </select>
           {:else}
             <Input
               value={val}
