@@ -230,7 +230,9 @@ describe('scaffoldNetworkingGraph', () => {
     expect(names[1]).toBe('agent-igw');
     expect(names[2]).toBe('agent-route-table');
     expect(names[3]).toBe('agent-subnet');
-    expect(names[4]).toBe('my-instance');
+    expect(names[4]).toBe('agent-nsg');
+    expect(names[5]).toBe('agent-nsg-rule-nebula');
+    expect(names[6]).toBe('my-instance');
   });
 
   it('is idempotent — calling twice does not duplicate resources', () => {

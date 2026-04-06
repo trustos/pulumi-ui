@@ -198,8 +198,7 @@ export function scaffoldNetworkingGraph(graph: BlueprintGraph): BlueprintGraph {
       properties: [
         ...item.properties,
         { key: 'createVnicDetails.subnetId', value: '${agent-subnet.id}' },
-        { key: 'createVnicDetails.assignPublicIp', value: 'true' },
-        { key: 'createVnicDetails.nsgIds', value: '["${agent-nsg.id}"]' },
+        ...extraProps,
       ],
     };
   });
