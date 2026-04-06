@@ -6,7 +6,7 @@
   import ObjectPropertyEditor from './ObjectPropertyEditor.svelte';
   import { cleanValue, parseSimpleArray, serializeSimpleArray, stripHtml, isRefOrTemplate, inferValidationHint, validatePropertyValue } from '$lib/blueprint-graph/typed-value';
 
-  type PropertyKeyItem = { value: string; type: string; required: boolean; description?: string; properties?: Record<string, PropertySchema>; items?: PropertySchema };
+  type PropertyKeyItem = { value: string; type: string; required: boolean; description?: string; enum?: string[]; properties?: Record<string, PropertySchema>; items?: PropertySchema };
 
   // Variables that are arrays — the autocomplete should insert an indexed path
   // rather than the bare variable reference (which would pass the whole array).
@@ -123,6 +123,10 @@
     return getPropertySchemaType(key) === 'boolean';
   }
 
+  function getEnumValues(key: string): string[] | undefined {
+    return propertyKeyItems.find(k => k.value === key)?.enum;
+  }
+
   function isNumberType(key: string): boolean {
     const t = getPropertySchemaType(key);
     return t === 'integer' || t === 'number';
@@ -139,6 +143,8 @@
     if (!item) return null;
     // Arrays and objects have per-item / per-field validation — skip the outer check
     if (item.type === 'array' || item.type === 'object') return null;
+    // Enum properties are constrained by the dropdown — skip free-text validation
+    if (item.enum?.length) return null;
     const hint = inferValidationHint(prop.key, item.type, item.description ?? '');
     return validatePropertyValue(prop.value, hint);
   }
@@ -391,6 +397,31 @@
             <option value="">—</option>
             <option value="true">true</option>
             <option value="false">false</option>
+          </select>
+          {#if !readonly && hasAnySources && cleanValue(prop.value) === ''}
+            <Tooltip.Root>
+              <Tooltip.Trigger
+                class="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-muted-foreground hover:text-foreground rounded hover:bg-muted text-sm leading-none"
+                onclick={() => { sourcePicker = sourcePicker === i ? null : i; sourceFilter = ''; }}
+              >⊕</Tooltip.Trigger>
+              <Tooltip.Content>Insert a config field, variable, or resource reference</Tooltip.Content>
+            </Tooltip.Root>
+            {#if sourcePicker === i}
+              {@render sourcePickerDropdown(i)}
+            {/if}
+          {/if}
+        {:else if getEnumValues(prop.key)?.length && !isRefOrTemplate(prop.value)}
+          <!-- Enum property: select dropdown with allowed values -->
+          <select
+            value={cleanValue(prop.value)}
+            onchange={(e) => updateValue(i, (e.currentTarget as HTMLSelectElement).value)}
+            class="flex w-full rounded-md border border-input bg-transparent px-3 py-1 shadow-sm transition-colors text-xs font-mono h-7 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={readonly}
+          >
+            <option value="">—</option>
+            {#each getEnumValues(prop.key) ?? [] as val}
+              <option value={val}>{val}</option>
+            {/each}
           </select>
           {#if !readonly && hasAnySources && cleanValue(prop.value) === ''}
             <Tooltip.Root>

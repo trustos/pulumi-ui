@@ -16,6 +16,7 @@ type PropertySchema struct {
 	Type        string                    `json:"type"`
 	Required    bool                      `json:"required"`
 	Description string                    `json:"description,omitempty"`
+	Enum        []string                  `json:"enum,omitempty"`
 	Properties  map[string]PropertySchema `json:"properties,omitempty"`
 	Items       *PropertySchema           `json:"items,omitempty"`
 }
@@ -439,9 +440,9 @@ func fallbackSchema() map[string]ResourceSchema {
 				"egressSecurityRules": {Type: "array", Required: false, Items: &PropertySchema{
 					Type: "object",
 					Properties: map[string]PropertySchema{
-						"protocol":        {Type: "string", Required: true, Description: "6=TCP, 17=UDP, all"},
+						"protocol":        {Type: "string", Required: true, Description: "6=TCP, 17=UDP, 1=ICMP, all", Enum: []string{"6", "17", "1", "all"}},
 						"destination":     {Type: "string", Required: true, Description: "Destination CIDR"},
-						"destinationType": {Type: "string", Required: false, Description: "CIDR_BLOCK or SERVICE_CIDR_BLOCK"},
+						"destinationType": {Type: "string", Required: false, Enum: []string{"CIDR_BLOCK", "SERVICE_CIDR_BLOCK"}},
 						"description":     {Type: "string", Required: false},
 						"stateless":       {Type: "boolean", Required: false},
 						"tcpOptions":      {Type: "object", Required: false, Properties: map[string]PropertySchema{
@@ -457,9 +458,9 @@ func fallbackSchema() map[string]ResourceSchema {
 				"ingressSecurityRules": {Type: "array", Required: false, Items: &PropertySchema{
 					Type: "object",
 					Properties: map[string]PropertySchema{
-						"protocol":   {Type: "string", Required: true, Description: "6=TCP, 17=UDP, all"},
+						"protocol":   {Type: "string", Required: true, Description: "6=TCP, 17=UDP, 1=ICMP, all", Enum: []string{"6", "17", "1", "all"}},
 						"source":     {Type: "string", Required: true, Description: "Source CIDR"},
-						"sourceType": {Type: "string", Required: false, Description: "CIDR_BLOCK or SERVICE_CIDR_BLOCK"},
+						"sourceType": {Type: "string", Required: false, Enum: []string{"CIDR_BLOCK", "SERVICE_CIDR_BLOCK"}},
 						"description": {Type: "string", Required: false},
 						"stateless":  {Type: "boolean", Required: false},
 						"tcpOptions": {Type: "object", Required: false, Properties: map[string]PropertySchema{
@@ -486,12 +487,12 @@ func fallbackSchema() map[string]ResourceSchema {
 			Description: "Security rule within an NSG",
 			Inputs: map[string]PropertySchema{
 				"networkSecurityGroupId": {Type: "string", Required: true},
-				"direction":              {Type: "string", Required: true, Description: "INGRESS or EGRESS"},
-				"protocol":               {Type: "string", Required: true, Description: "6=TCP, 17=UDP, all"},
+				"direction":              {Type: "string", Required: true, Description: "INGRESS or EGRESS", Enum: []string{"INGRESS", "EGRESS"}},
+				"protocol":               {Type: "string", Required: true, Description: "6=TCP, 17=UDP, 1=ICMP, all", Enum: []string{"6", "17", "1", "all"}},
 				"source":                 {Type: "string", Required: false},
-				"sourceType":             {Type: "string", Required: false},
+				"sourceType":             {Type: "string", Required: false, Enum: []string{"CIDR_BLOCK", "SERVICE_CIDR_BLOCK", "NETWORK_SECURITY_GROUP"}},
 				"destination":            {Type: "string", Required: false},
-				"destinationType":        {Type: "string", Required: false},
+				"destinationType":        {Type: "string", Required: false, Enum: []string{"CIDR_BLOCK", "SERVICE_CIDR_BLOCK", "NETWORK_SECURITY_GROUP"}},
 				"description":            {Type: "string", Required: false},
 				"tcpOptions": {Type: "object", Required: false, Properties: map[string]PropertySchema{
 					"destinationPortRange": {Type: "object", Required: false, Properties: map[string]PropertySchema{
@@ -515,7 +516,7 @@ func fallbackSchema() map[string]ResourceSchema {
 				"shape":              {Type: "string", Required: true},
 				"displayName":        {Type: "string", Required: false},
 				"sourceDetails": {Type: "object", Required: true, Description: "Boot volume source", Properties: map[string]PropertySchema{
-					"sourceType":        {Type: "string", Required: true, Description: "image or bootVolume"},
+					"sourceType":        {Type: "string", Required: true, Description: "image or bootVolume", Enum: []string{"image", "bootVolume"}},
 					"imageId":           {Type: "string", Required: false, Description: "OCID of the image"},
 					"bootVolumeSizeInGbs": {Type: "string", Required: false, Description: "Size of the boot volume in GB"},
 				}},
@@ -545,7 +546,7 @@ func fallbackSchema() map[string]ResourceSchema {
 		"oci:Core/volumeAttachment:VolumeAttachment": {
 			Description: "Attaches a block volume to an instance",
 			Inputs: map[string]PropertySchema{
-				"attachmentType": {Type: "string", Required: true, Description: "paravirtualized or iscsi"},
+				"attachmentType": {Type: "string", Required: true, Description: "paravirtualized or iscsi", Enum: []string{"paravirtualized", "iscsi"}},
 				"instanceId":     {Type: "string", Required: true},
 				"volumeId":       {Type: "string", Required: true},
 				"displayName":    {Type: "string", Required: false},
@@ -611,7 +612,7 @@ func fallbackSchema() map[string]ResourceSchema {
 				"name":                  {Type: "string", Required: true},
 				"defaultBackendSetName": {Type: "string", Required: true},
 				"port":                  {Type: "integer", Required: true},
-				"protocol":              {Type: "string", Required: true, Description: "TCP or UDP"},
+				"protocol":              {Type: "string", Required: true, Description: "TCP or UDP", Enum: []string{"TCP", "UDP"}},
 			},
 		},
 		"oci:NetworkLoadBalancer/backendSet:BackendSet": {
@@ -619,9 +620,9 @@ func fallbackSchema() map[string]ResourceSchema {
 			Inputs: map[string]PropertySchema{
 				"networkLoadBalancerId": {Type: "string", Required: true},
 				"name":                  {Type: "string", Required: true},
-				"policy":                {Type: "string", Required: true, Description: "FIVE_TUPLE, THREE_TUPLE, TWO_TUPLE"},
+				"policy":                {Type: "string", Required: true, Description: "FIVE_TUPLE, THREE_TUPLE, TWO_TUPLE", Enum: []string{"FIVE_TUPLE", "THREE_TUPLE", "TWO_TUPLE"}},
 				"healthChecker": {Type: "object", Required: true, Properties: map[string]PropertySchema{
-					"protocol":          {Type: "string", Required: true, Description: "TCP, UDP, or HTTP"},
+					"protocol":          {Type: "string", Required: true, Description: "TCP, UDP, or HTTP", Enum: []string{"TCP", "UDP", "HTTP"}},
 					"port":              {Type: "integer", Required: true, Description: "Health check port"},
 					"urlPath":           {Type: "string", Required: false, Description: "URL path for HTTP health checks"},
 					"returnCode":        {Type: "integer", Required: false, Description: "Expected HTTP return code"},
@@ -649,7 +650,7 @@ func fallbackSchema() map[string]ResourceSchema {
 				"compartmentId":   {Type: "string", Required: true},
 				"displayName":     {Type: "string", Required: false},
 				"instanceDetails": {Type: "object", Required: false, Description: "Launch details (instanceType, launchDetails)", Properties: map[string]PropertySchema{
-					"instanceType":  {Type: "string", Required: true, Description: "compute or instanceOptions"},
+					"instanceType":  {Type: "string", Required: true, Description: "compute or instanceOptions", Enum: []string{"compute", "instanceOptions"}},
 					"launchDetails": {Type: "object", Required: false, Description: "Launch configuration for the instances"},
 				}},
 			},

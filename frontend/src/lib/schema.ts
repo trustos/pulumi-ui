@@ -2,6 +2,7 @@ export interface PropertySchema {
   type: string;
   required: boolean;
   description?: string;
+  enum?: string[];
   properties?: Record<string, PropertySchema>;
   items?: PropertySchema;
 }

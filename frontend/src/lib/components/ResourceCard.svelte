@@ -73,8 +73,8 @@
     currentSchema
       ? Object.entries(currentSchema.inputs)
           .sort(([, a], [, b]) => (b.required ? 1 : 0) - (a.required ? 1 : 0))
-          .map(([key, p]) => ({ value: key, type: p.type, required: p.required, description: p.description, properties: p.properties, items: p.items }))
-      : ([] as { value: string; type: string; required: boolean; description?: string; properties?: Record<string, import('$lib/schema').PropertySchema>; items?: import('$lib/schema').PropertySchema }[])
+          .map(([key, p]) => ({ value: key, type: p.type, required: p.required, description: p.description, enum: p.enum, properties: p.properties, items: p.items }))
+      : ([] as { value: string; type: string; required: boolean; description?: string; enum?: string[]; properties?: Record<string, import('$lib/schema').PropertySchema>; items?: import('$lib/schema').PropertySchema }[])
   );
 
   // Extract namespace for display: "oci:Core/vcn:Vcn" → "Vcn"
