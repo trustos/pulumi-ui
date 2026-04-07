@@ -300,15 +300,17 @@ meta:
   agentAccess: true
 ```
 
-When `agentAccess: true`, the engine automatically injects the Nebula mesh + agent bootstrap into compute resources and adds NSG/NLB networking rules for agent connectivity. See the [Agent Bootstrap Injection](#agent-bootstrap-injection) section for details.
+When `agentAccess: true`, the engine automatically injects the Nebula mesh + agent bootstrap into each compute instance's `user_data` at deploy time.
 
-**You can toggle this from the editor UI** — the **Agent Connect** button in the program editor header works in both visual and YAML modes. When enabled, an informational banner lists exactly what will be auto-injected at deploy time:
-- `user_data` — Nebula mesh + agent bootstrap on each compute instance
-- NSG security rules — UDP ingress on port 41820
-- NLB backend set + listener — UDP health check and listener on port 41820
-- NLB backends — links each compute instance to the backend set
+**You can toggle this from the editor UI** — the **Agent Connect** button in the program editor header works in both visual and YAML modes. When enabled:
 
-Injected resources use the `__agent_` prefix to avoid naming collisions with your resources.
+1. **Networking is scaffolded into your blueprint** — the editor adds VCN, subnet, IGW, route table, NSG, and a Nebula UDP rule (port 41820) directly into the YAML. These resources are **visible and editable** — you can add more NSG rules (e.g., TCP 80 for HTTP) or remove unneeded resources.
+2. **Compute instances are wired** to the scaffolded subnet and NSG via `createVnicDetails`.
+3. **At deploy time**, the engine injects the agent bootstrap into `user_data` via multipart MIME. If your blueprint already has an explicit NSG rule for UDP 41820, the engine skips networking injection and respects your configuration.
+
+**Adding custom NSG rules**: After toggling Agent Connect, you can add additional `NetworkSecurityGroupSecurityRule` resources for any ports your application needs. The scaffolded `agent-nsg` is a standard NSG — add rules that reference it.
+
+> **Fallback**: Blueprints without explicit agent networking (e.g., older blueprints) still get deploy-time injection using `__agent_`-prefixed resources for backward compatibility.
 
 The visual editor writes `meta:` automatically when you add groups or descriptions to config fields via the Config Fields panel.
 
@@ -560,7 +562,7 @@ All [Sprig](https://masterminds.github.io/sprig/) functions are available. The m
 
 ## Custom OCI Functions
 
-Four helper functions are built into the template engine specifically for OCI.
+Five helper functions are built into the template engine specifically for OCI.
 
 ### `instanceOcpus`
 
@@ -635,6 +637,34 @@ statements:
   - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}
   - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage policies in tenancy" | quote }}
 ```
+
+### `gzipBase64`
+
+```
+gzipBase64(script string) string
+```
+
+Compresses a shell script with gzip and returns the base64-encoded result, suitable for OCI instance `metadata.user_data`. Use this when you want to embed a custom cloud-init script without using the full `cloudInit` function (which includes Docker/Consul/Nomad setup).
+
+```yaml
+metadata:
+  user_data: {{ gzipBase64 "#!/bin/bash\napt-get update && apt-get install -y nginx" }}
+```
+
+For multi-line scripts, use a Go template variable:
+
+```yaml
+metadata:
+  user_data: |
+    {{ gzipBase64 `#!/bin/bash
+    set -e
+    apt-get update
+    apt-get install -y nginx
+    systemctl enable nginx
+    ` }}
+```
+
+> **Note:** If Agent Connect is enabled, the engine will compose your script with the agent bootstrap via multipart MIME automatically. You do not need to handle agent injection manually.
 
 ---
 
@@ -952,7 +982,7 @@ If your program already sets `user_data` (e.g. via `cloudInit`), the engine wrap
 ### What you need to know
 
 - **Not automatic for all programs** — agent injection is active only when a program implements `ApplicationProvider` (built-in Go programs with an application catalog) or declares `meta.agentAccess: true` (YAML programs opting into agent connectivity). Programs without either are unaffected.
-- **Networking auto-injection** — for YAML programs with `meta.agentAccess: true`, the engine also auto-adds NSG security rules (UDP 41820) and NLB backend set/listener for the agent port. Built-in Go programs manage their own networking.
+- **Networking** — when you toggle Agent Connect in the editor, it scaffolds an NSG + Nebula UDP rule into your blueprint. If you need NLB (multi-node without public IPs), add one manually. The engine only auto-injects networking (`__agent_*` resources) as a fallback for blueprints that lack an explicit NSG rule for UDP 41820.
 - **Per-stack PKI** — each stack gets its own certificate authority. The agent authenticates to pulumi-ui using per-stack Nebula certificates.
 - **Do not hardcode agent/Nebula setup** in your `cloudinit.sh` or YAML templates. The engine handles it when enabled.
 
@@ -1247,7 +1277,7 @@ outputs:
 : OCI NLB rejects concurrent mutations. All NLB child resources (BackendSet, Listener, Backend) must be chained via `dependsOn`. In the visual editor, enable **Serialize operations** on the loop. In YAML, use the `{{ printf "${%s}" $prevNlbResource }}` pattern.
 
 **`Metadata size is X bytes and cannot be larger than 32000 bytes`**
-: The `cloudInit` template function gzip+base64 encodes the script automatically. If you are base64-encoding manually without gzip, the result exceeds the 32 KB OCI metadata limit. Always use `cloudInit` or the engine's agent injection.
+: The `cloudInit` and `gzipBase64` template functions gzip+base64 encode the script automatically. If you are base64-encoding manually without gzip, the result exceeds the 32 KB OCI metadata limit. Always use `cloudInit`, `gzipBase64`, or the engine's agent injection.
 
 **Subnet DNS not resolving**
 : Add `dhcpOptionsId: ${vcn.defaultDhcpOptionsId}` to your subnet resource. Without this, DNS resolution may not work.

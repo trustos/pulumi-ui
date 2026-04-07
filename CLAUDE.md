@@ -35,7 +35,8 @@ internal/api/        HTTP handlers (one file per domain)
   credentials.go     Global credential key-value store
   passphrases.go     Named passphrases (for Pulumi state encryption)
   ssh_keys.go        Named SSH key pairs
-  settings.go        Health endpoint + backend type
+  settings.go        Backend type selection, S3 connection test (SigV4), state migration (SSE)
+  discover.go        Remote stack discovery from S3 backend (ListObjectsV2)
   keypair.go         ED25519 keypair generation
   import.go          Bulk OCI account import
   export.go          Bulk OCI account export
@@ -48,7 +49,7 @@ internal/api/        HTTP handlers (one file per domain)
 cmd/agent/           Standalone agent binary (Nebula mesh + management HTTP API + /shell WebSocket PTY + /nomad-jobs with two-step alloc port lookup)
 
 internal/engine/     Pulumi Automation API wrapper
-  engine.go          Up / Destroy / Refresh / Preview / Cancel / Unlock
+  engine.go          Up / Destroy / Refresh / Preview / Cancel / Unlock / MigrateStacks
   stream.go          SSE helpers
 
 internal/blueprints/ Blueprint registry + blueprint implementations
@@ -59,7 +60,7 @@ internal/blueprints/ Blueprint registry + blueprint implementations
   yaml_blueprint.go  User-defined YAML blueprint wrapper
   yaml_config.go     Parses config: + meta: sections (including meta.applications) from YAML blueprints
   validate.go        6-level YAML blueprint validation pipeline
-  template.go        Go template rendering + cloudInit / instanceOcpus helpers
+  template.go        Go template rendering + cloudInit / instanceOcpus / gzipBase64 helpers
   cloudinit.go       Embeds and renders cloudinit.sh for Go blueprints
   cloudinit.sh       Shell script for bootstrap (Docker, Consul, Nomad)
 
@@ -111,8 +112,8 @@ docs/                Architecture and developer documentation (see index below)
 frontend/            Svelte 5 SPA (src/ is the source; dist/ is embedded)
   src/pages/         Full-page route components
   src/lib/           Shared components, API client, stores, types
-  src/lib/components/ Reusable UI components (ConfigForm, dialogs, pickers, ObjectPropertyEditor)
-  src/lib/blueprint-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking, schema-utils)
+  src/lib/components/ Reusable UI components (ConfigForm, dialogs, pickers, ObjectPropertyEditor, ClaimStackDialog)
+  src/lib/blueprint-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking, schema-utils, user-data)
   src/lib/api.ts     All backend calls — no raw fetch elsewhere
   src/lib/types.ts   TypeScript interfaces matching backend JSON
 ```
@@ -310,7 +311,7 @@ Full detail: `docs/roadmap.md`
 | FE-4 | Client-side config field validation (reuse visual editor's `typed-value.ts`) | pending |
 | FE-9 | Node graph editor (Svelte Flow) — third editor mode | pending |
 | Visual Editor | Bug fixes: P1-1, P2-1–P2-7, P3-1–P3-4, G1-6 | pending |
-| Cloud-init | User-provided boot scripts (`{{ userInit }}` template function) | pending |
+| Cloud-init | User-provided boot scripts (`{{ gzipBase64 }}` done; `{{ userInit }}` for multi-part composition pending) | partial |
 | Cross-account | Multi-account nomad cluster (pool OCI accounts) | pending (future) |
 | Instance Pool | Instance Configuration + Instance Pool alongside per-instance loop | pending (future) |
 | OPT-1–3 | SQLite production optimizations (batch writes, file logs, throttle) | pending |

@@ -115,7 +115,8 @@
       {:else if (path.startsWith('/blueprints/') || path.startsWith('/programs/')) && path.endsWith('/edit') && path !== '/blueprints/docs' && path !== '/programs/docs'}
         {@const base = path.startsWith('/blueprints/') ? '/blueprints/' : '/programs/'}
         {@const editName = path.slice(base.length, -'/edit'.length)}
-        <BlueprintEditor name={editName} />
+        {@const modeParam = new URLSearchParams(window.location.search).get('mode')}
+        <BlueprintEditor name={editName} initialMode={modeParam === 'yaml' ? 'yaml' : 'visual'} />
       {:else if (path.startsWith('/blueprints/') || path.startsWith('/programs/')) && path.endsWith('/fork') && path !== '/blueprints/docs' && path !== '/programs/docs'}
         {@const base = path.startsWith('/blueprints/') ? '/blueprints/' : '/programs/'}
         {@const forkName = path.slice(base.length, -'/fork'.length)}

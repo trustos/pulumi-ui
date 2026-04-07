@@ -28,15 +28,17 @@
   let {
     name = '',
     fork = false,
+    initialMode = 'visual' as 'visual' | 'yaml',
   }: {
     name?: string;
     fork?: boolean;
+    initialMode?: 'visual' | 'yaml';
   } = $props();
 
   const isNew = $derived(!name || name === '__new__');
 
   // ── State ─────────────────────────────────────────────────────────────────
-  let mode = $state<'visual' | 'yaml'>('visual');
+  let mode = $state<'visual' | 'yaml'>(untrack(() => initialMode));
   let syncStatus = $state<'synced' | 'yaml-edited' | 'partial'>('synced');
   let copyLabel = $state('Copy YAML');
   let showGallery = $state(untrack(() => isNew));

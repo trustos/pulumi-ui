@@ -565,7 +565,10 @@ func fallbackSchema() map[string]ResourceSchema {
 					"displayName":     {Type: "string", Required: false},
 					"hostnameLabel":   {Type: "string", Required: false},
 				}},
-				"metadata": {Type: "object", Required: false, Description: "cloud-init userdata etc."},
+				"metadata": {Type: "object", Required: false, Description: "Instance metadata (cloud-init, SSH keys)", Properties: map[string]PropertySchema{
+					"ssh_authorized_keys": {Type: "string", Required: false, Description: "SSH public keys (newline-separated)"},
+					"user_data":           {Type: "string", Required: false, Description: "Cloud-init script (base64-encoded). Upload a shell script or write one inline."},
+				}},
 				"shapeConfig": {Type: "object", Required: false, Description: "Flex shape config (ocpus, memoryInGbs)", Properties: map[string]PropertySchema{
 					"ocpus":        {Type: "number", Required: false, Description: "Number of OCPUs"},
 					"memoryInGbs":  {Type: "number", Required: false, Description: "Total memory in GB"},

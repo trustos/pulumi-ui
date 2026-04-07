@@ -332,7 +332,7 @@ When `agentAccess: true` is set, the YAML blueprint implements `AgentAccessProvi
 
 `RenderTemplate(templateBody, config)` renders a Go-templated YAML body using:
 - **Sprig** (`github.com/Masterminds/sprig/v3`) — same 100+ function library as Helm
-- **Custom OCI helpers**: `instanceOcpus`, `instanceMemoryGb`, `cloudInit`, `groupRef`
+- **Custom OCI helpers**: `instanceOcpus`, `instanceMemoryGb`, `cloudInit`, `groupRef`, `gzipBase64`
 
 `SanitizeYAML(yamlBody)` strips `fn::readFile` directives to prevent user blueprints from reading server filesystem files.
 
@@ -672,6 +672,15 @@ statements:
   - {{ groupRef .Config.adminGroupName .Config.identityDomain "manage dynamic-groups in tenancy" | quote }}
 ```
 
+#### `gzipBase64`
+
+Compresses a shell script with gzip and returns the base64-encoded result, suitable for OCI instance `metadata.user_data`. Use this for custom cloud-init scripts without the full `cloudInit` function:
+
+```yaml
+metadata:
+  user_data: {{ gzipBase64 "#!/bin/bash\napt-get update && apt-get install -y nginx" }}
+```
+
 ### OCI Resource Types
 
 Resource type tokens follow the canonical pattern `oci:[Module]/[subpath]:[Resource]`. Short-form aliases (`oci:core:Vcn`) work at runtime but will not receive schema assistance in the visual editor.
@@ -771,7 +780,7 @@ Levels 1–6 are blocking. Level 7 produces non-blocking warnings.
 | `fn::readFile` lines disappear | Security sanitization | Use config fields for file content |
 | `atoi: parsing ""` | Config field used with `atoi` has no default | Add a numeric `default:` |
 | No property autocomplete | Short-form type used | Use canonical form (`oci:Core/natGateway:NatGateway`) |
-| `Metadata size > 32000 bytes` | Missing gzip before base64 | Use `cloudInit` which handles gzip automatically |
+| `Metadata size > 32000 bytes` | Missing gzip before base64 | Use `cloudInit` or `gzipBase64` which handle gzip automatically |
 
 ### Reference Blueprints
 

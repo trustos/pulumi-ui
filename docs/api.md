@@ -144,7 +144,8 @@ When `generate: true` is sent, the server generates an Ed25519 key pair. The res
 | POST   | `/api/blueprints/validate` | `{ blueprintYaml }`                                     | `{ valid, errors[], warnings[] }` |
 | POST   | `/api/blueprints/{name}/fork` | `{ name, displayName, description }`                 | `CustomBlueprint` (201) |
 | GET    | `/api/stacks`            | —                                                     | `StackSummary[]` |
-| PUT | `/api/stacks/{name}` | `{ blueprint, description?, config, ociAccountId, passphraseId, sshKeyId? }` | `200 OK` |
+| GET    | `/api/stacks/discover`   | —                                                     | `RemoteStackSummary[]` (stacks in S3 not in local DB) |
+| PUT | `/api/stacks/{name}` | `{ blueprint, description?, config, ociAccountId, passphraseId, sshKeyId?, claim? }` | `200 OK` |
 | GET | `/api/stacks/{name}/info` | — | `StackInfo` |
 | GET | `/api/stacks/{name}/yaml` | — | YAML file download |
 | GET | `/api/stacks/{name}/logs` | — | `LogEntry[]` (last 20 operations, oldest first) |
@@ -367,8 +368,10 @@ The `agentAccess` field is `true` when the blueprint opts into automatic agent c
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/api/settings` | — | `{ backendType, stateDir }` |
-| PUT | `/api/settings` | `{ backendType }` | `200 OK` |
+| GET | `/api/settings` | — | `{ backendType, stateDir, s3Bucket?, s3Namespace?, s3Region?, s3HasKeys }` |
+| PUT | `/api/settings` | `{ backendType }` | `200 OK` (validates S3 creds before switching) |
+| POST | `/api/settings/test-s3` | — | `{ ok, error?, endpoint? }` |
+| POST | `/api/settings/migrate` | `{ direction: "to-s3"\|"to-local" }` | SSE stream (per-stack migration progress) |
 | GET | `/api/settings/credentials` | — | `CredentialStatus[]` |
 | PUT | `/api/settings/credentials` | `{ type, ...fields }` | `200 OK` |
 | GET | `/api/settings/health` | — | `HealthResponse` |

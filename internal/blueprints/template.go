@@ -8,6 +8,7 @@ import (
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
+	"github.com/trustos/pulumi-ui/internal/agentinject"
 )
 
 // TemplateContext is passed into every program template at render time.
@@ -23,6 +24,7 @@ func buildFuncMap() template.FuncMap {
 	fm["instanceMemoryGb"] = templateInstanceMemoryGb
 	fm["cloudInit"] = templateCloudInit
 	fm["groupRef"] = templateGroupRef
+	fm["gzipBase64"] = templateGzipBase64
 	return fm
 }
 
@@ -122,4 +124,11 @@ func templateGroupRef(groupName, domain, statement string) string {
 		return fmt.Sprintf("Allow group '%s'/%s to %s", domain, groupName, statement)
 	}
 	return fmt.Sprintf("Allow group %s to %s", groupName, statement)
+}
+
+// templateGzipBase64 compresses a shell script with gzip and returns the
+// base64-encoded result, suitable for OCI instance metadata user_data.
+// Usage in YAML templates: {{ gzipBase64 "#!/bin/bash\napt update" }}
+func templateGzipBase64(script string) string {
+	return agentinject.GzipBase64([]byte(script))
 }

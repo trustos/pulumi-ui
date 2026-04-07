@@ -640,16 +640,52 @@ function tryCollectExpandedArray(text: string): string | null {
  * Returns inline format like `{ key: "val", ... }` or null if no object found.
  */
 function tryCollectExpandedObject(text: string): string | null {
+  return collectObjectAtIndent(text, 8);
+}
+
+/**
+ * Collect an expanded YAML object at a given indentation level, recursing
+ * into nested objects. Returns a compact `{ key: val, nested: { a: b } }`
+ * string, or null if no fields are found.
+ */
+function collectObjectAtIndent(text: string, indent: number): string | null {
   const lines = text.split('\n');
   const fields: Record<string, string> = {};
+  const prefix = ' '.repeat(indent);
+  const childPrefix = ' '.repeat(indent + 2);
 
-  for (const line of lines) {
-    const fieldMatch = line.match(/^        (\w[\w.-]*):\s*(.*)$/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Match a field at exactly the expected indent level
+    const fieldRe = new RegExp(`^${prefix}(\\w[\\w.-]*):\\s*(.*)$`);
+    const fieldMatch = line.match(fieldRe);
     if (fieldMatch) {
-      fields[fieldMatch[1]] = stripYamlQuotes(fieldMatch[2].trim());
+      const key = fieldMatch[1];
+      const inlineVal = fieldMatch[2].trim();
+      if (inlineVal !== '') {
+        // Scalar value on the same line
+        fields[key] = stripYamlQuotes(inlineVal);
+      } else {
+        // Check if next lines contain a nested object (deeper indent)
+        const remaining = lines.slice(i + 1).join('\n');
+        const nested = collectObjectAtIndent(remaining, indent + 2);
+        if (nested) {
+          fields[key] = nested;
+          // Skip the lines consumed by the nested object
+          for (let j = i + 1; j < lines.length; j++) {
+            if (lines[j].startsWith(childPrefix) || lines[j].trim() === '') {
+              i = j;
+            } else {
+              break;
+            }
+          }
+        }
+      }
       continue;
     }
     if (line.trim() === '') continue;
+    // Stop at a line that doesn't match this indent level
+    if (!line.startsWith(prefix)) break;
     break;
   }
   if (Object.keys(fields).length === 0) return null;

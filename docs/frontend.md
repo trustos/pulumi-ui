@@ -240,17 +240,43 @@ Errors (level 5) block saving and are shown in a destructive alert. Warnings (le
 The blueprint editor header contains an **Agent Connect** toggle visible in both visual and YAML modes. When toggled:
 - **Visual mode**: sets `graph.metadata.agentAccess` which the serializer emits as `meta.agentAccess: true`.
 - **YAML mode**: patches the YAML text directly via `insertAgentAccess()` / `removeAgentAccess()` from `$lib/blueprint-graph/agent-access.ts`. These are pure functions extracted for testability (see `agent-access.test.ts`).
-- An informational banner below the mode bar lists all resources auto-injected at deploy time: user_data on compute instances, NSG rules (added to existing or created from VCN), NLB (added to existing or created from subnet), backend sets/listeners/backends.
+- Networking resources (VCN, subnet, IGW, route table, NSG, Nebula UDP rule) are scaffolded directly into the blueprint — visible and editable. The engine only auto-injects networking as a fallback for blueprints without an explicit NSG rule for UDP 41820.
 - State syncs on visual↔YAML mode switches, template selection, fork, and load.
 
 ### Agent Access Networking Scaffold
-When a Level 7 validation error detects that `agentAccess` is enabled but no networking context exists, an **"Add VCN + Subnet"** button appears inline in the validation error panel. Clicking it:
-- Adds `agent-vcn` (VCN) and `agent-subnet` (Subnet) resources to the program.
-- Wires `createVnicDetails.subnetId: ${agent-subnet.id}` on each compute instance.
+When Agent Connect is toggled ON or a Level 7 validation error detects missing networking, the scaffold adds:
+- `agent-vcn` (VCN), `agent-igw` (Internet Gateway), `agent-route-table`, `agent-subnet`
+- `agent-nsg` (NSG) + `agent-nsg-rule-nebula` (UDP 41820 ingress rule)
+- Wires `createVnicDetails.subnetId`, `createVnicDetails.nsgIds`, and `createVnicDetails.assignPublicIp` on each compute instance.
 - Adds `compartmentId` as a config field if not already present.
-- Works in both visual and YAML modes. In visual mode, resources are prepended to the first section. In YAML mode, resources are inserted after `resources:` and the instance is patched inline.
+- Works in both visual and YAML modes.
 
-The logic is extracted into pure functions in `$lib/blueprint-graph/scaffold-networking.ts` (`scaffoldNetworkingGraph` for visual mode, `scaffoldNetworkingYaml` for YAML mode), covered by `scaffold-networking.test.ts` (16 tests).
+Users can add custom NSG rules (e.g., TCP 80) by adding more `NetworkSecurityGroupSecurityRule` resources referencing `agent-nsg`.
+
+The logic is in `$lib/blueprint-graph/scaffold-networking.ts` (`scaffoldNetworkingGraph` for visual mode, `scaffoldNetworkingYaml` for YAML mode), covered by `scaffold-networking.test.ts`.
+
+### Enum Dropdowns
+Properties with constrained values (e.g., `direction: INGRESS|EGRESS`, `protocol: 6|17|all`, `sourceType: CIDR_BLOCK|SERVICE_CIDR_BLOCK`) render as `<select>` dropdowns in both `PropertyEditor` and `ObjectPropertyEditor`. Enum values come from the `enum` field on `PropertySchema`, merged from the curated fallback schema into live/cached schemas.
+
+### Recursive Nested Objects
+`ObjectPropertyEditor` renders nested object properties (e.g., `udpOptions.destinationPortRange` with `min`/`max`) as inline field groups via self-import recursion. Boolean and enum sub-fields render as dropdowns.
+
+### user_data Script Editor
+The `user_data` field inside `metadata` gets a dedicated UI in `ObjectPropertyEditor`:
+- **Upload .sh** button — file picker for `.sh`/`.txt`/`.yaml` files, gzip+base64 encoded client-side
+- **Edit script / Show encoded** toggle — switch between plain-text script editing and raw base64
+- Encoding uses `pako` (gzip in browser) via `$lib/blueprint-graph/user-data.ts`
+- Template expressions (`{{ }}`, `${ }`) bypass the script editor
+
+### ClaimStackDialog
+`ClaimStackDialog.svelte` enables claiming remote stacks discovered from an S3 backend. User assigns an OCI account + passphrase, creating a local DB row via `PUT /api/stacks/{name}` with `claim: true`.
+
+### State Backend Settings
+The Settings page State Backend tab provides full OCI Object Storage (S3-compatible) configuration:
+- S3 credential form (namespace, region, bucket, Customer Secret Keys)
+- "Test Connection" button validates S3 endpoint via SigV4-signed HEAD request
+- "Migrate & Activate" streams per-stack state migration progress via SSE
+- Bidirectional migration (local ↔ S3)
 
 Level 7 validation errors are **non-blocking** — the program can still be saved even if the warning is shown. Only Levels 1–6 block saving. This is enforced by `hasBlockingErrors()` in the backend API handler.
 
@@ -299,9 +325,12 @@ Three tabs:
 - Delete button (disabled when `stackCount > 0`; shows tooltip)
 - Create form: name + passphrase value (reveal toggle)
 
-**State Backend tab** — informational:
-- Shows active backend (local `/data/state` volume)
-- Placeholder for future OCI Object Storage support
+**State Backend tab** — backend selection + S3 configuration:
+- Radio selection between Local Volume and OCI Object Storage (S3-compatible)
+- S3 credential form: namespace, region, bucket, Customer Secret Keys
+- "Test Connection" validates S3 endpoint (AWS SigV4 HEAD bucket request)
+- "Migrate & Activate" migrates all stack state via SSE-streamed progress
+- Bidirectional: migrate to S3 or back to local
 
 **Status tab** — live health check:
 - Encryption Key, Database, OCI Accounts, Pulumi State Backend, Passphrases

@@ -11,8 +11,14 @@
     serializeArrayValue,
   } from '$lib/blueprint-graph/object-value';
   import { stripHtml, cleanValue as stripQuotes } from '$lib/blueprint-graph/typed-value';
+  import { encodeUserData, decodeUserData, isTemplateOrRef } from '$lib/blueprint-graph/user-data';
+  import { Textarea } from '$lib/components/ui/textarea';
 
   type ResourceRefItem = { name: string; attrs: string[] };
+
+  // user_data script editor state
+  let userDataScriptMode = $state(false); // true = show decoded script, false = show encoded
+  let fileInput: HTMLInputElement | undefined = $state();
 
   let {
     value = '',
@@ -419,6 +425,53 @@
                 <option value={opt}>{opt}</option>
               {/each}
             </select>
+          {:else if key === 'user_data' && !isTemplateOrRef(val)}
+            <!-- user_data: script editor with upload + inline editing -->
+            <div class="space-y-1 w-full">
+              <div class="flex items-center gap-2">
+                <button
+                  class="text-[10px] text-muted-foreground hover:text-foreground border border-dashed rounded px-1.5 py-0.5"
+                  type="button"
+                  onclick={() => fileInput?.click()}
+                >Upload .sh</button>
+                <input
+                  bind:this={fileInput}
+                  type="file"
+                  accept=".sh,.txt,.yaml,.yml"
+                  class="hidden"
+                  onchange={(e) => {
+                    const f = (e.currentTarget as HTMLInputElement).files?.[0];
+                    if (!f) return;
+                    f.text().then(t => { updateField(key, encodeUserData(t)); userDataScriptMode = true; });
+                    (e.currentTarget as HTMLInputElement).value = '';
+                  }}
+                />
+                <button
+                  class="text-[10px] text-muted-foreground hover:text-foreground border border-dashed rounded px-1.5 py-0.5"
+                  type="button"
+                  onclick={() => { userDataScriptMode = !userDataScriptMode; }}
+                >{userDataScriptMode ? 'Show encoded' : 'Edit script'}</button>
+              </div>
+              {#if userDataScriptMode}
+                {@const decoded = decodeUserData(val)}
+                <Textarea
+                  value={decoded ?? ''}
+                  oninput={(e) => updateField(key, encodeUserData((e.currentTarget as HTMLTextAreaElement).value))}
+                  placeholder="#!/bin/bash&#10;# Your cloud-init script here..."
+                  rows={6}
+                  class="font-mono text-xs resize-y"
+                  disabled={readonly}
+                />
+              {:else}
+                <Input
+                  value={val}
+                  oninput={(e) => updateField(key, (e.currentTarget as HTMLInputElement).value)}
+                  placeholder="Base64-encoded cloud-init script"
+                  class="h-7 text-xs font-mono w-full"
+                  {readonly}
+                />
+              {/if}
+            </div>
           {:else if subDef?.properties && Object.keys(subDef.properties).length > 0}
             <ObjectPropertyEditor
               value={val}
