@@ -258,9 +258,7 @@ func (h *StackHandler) PutStack(w http.ResponseWriter, r *http.Request) {
 	// Sync config to S3 for cross-instance claiming.
 	go syncConfigToS3(context.Background(), h.Creds, body.Blueprint, stackName, yamlStr)
 
-	// Generate Nebula PKI for programs with agent connectivity (first time only).
-	// Applies to both ApplicationProvider (built-in Go programs with catalog)
-	// and AgentAccessProvider (YAML programs with meta.agentAccess: true).
+	// Generate or clean up Nebula PKI based on agent connectivity status.
 	shouldGeneratePKI := false
 	if _, ok := prog.(blueprints.ApplicationProvider); ok {
 		shouldGeneratePKI = true
@@ -268,6 +266,18 @@ func (h *StackHandler) PutStack(w http.ResponseWriter, r *http.Request) {
 	if aap, ok := prog.(blueprints.AgentAccessProvider); ok && aap.AgentAccess() {
 		shouldGeneratePKI = true
 	}
+
+	// Clean up residual PKI when agent access is toggled OFF.
+	if !shouldGeneratePKI && h.ConnStore != nil {
+		if existing, _ := h.ConnStore.Get(stackName); existing != nil {
+			log.Printf("[stack] cleaning up residual agent PKI for stack %s (agentAccess disabled)", stackName)
+			_ = h.ConnStore.Delete(stackName)
+			if h.NodeCertStore != nil {
+				_ = h.NodeCertStore.Delete(stackName)
+			}
+		}
+	}
+
 	if shouldGeneratePKI && h.ConnStore != nil {
 		if existing, _ := h.ConnStore.Get(stackName); existing == nil {
 			if err := h.generateNebulaPKI(stackName); err != nil {
@@ -405,51 +415,51 @@ func (h *StackHandler) GetStackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Mesh status from stack_connections
-	if h.ConnStore != nil {
-		if conn, err := h.ConnStore.Get(stackName); err == nil && conn != nil {
-			// If infrastructure is not deployed, any stored agent runtime fields
-			// (IPs, lighthouse) are stale. Clear them lazily — this handles stacks
-			// destroyed before ClearAgentConnection was in the destroy path, and
-			// the destroy→refresh case where the last op is "refresh" not "destroy".
-			if !info.Deployed {
-				if conn.AgentNebulaIP != nil || conn.AgentRealIP != nil {
-					_ = h.ConnStore.ClearAgentConnection(stackName)
+	// Mesh status and nodes — only populate when agent access is enabled.
+	// Residual PKI from a previous agent toggle should not surface in the UI.
+	if info.AgentAccess {
+		if h.ConnStore != nil {
+			if conn, err := h.ConnStore.Get(stackName); err == nil && conn != nil {
+				// If infrastructure is not deployed, any stored agent runtime fields
+				// (IPs, lighthouse) are stale. Clear them lazily.
+				if !info.Deployed {
+					if conn.AgentNebulaIP != nil || conn.AgentRealIP != nil {
+						_ = h.ConnStore.ClearAgentConnection(stackName)
+					}
+					conn.AgentNebulaIP = nil
+					conn.AgentRealIP = nil
+					conn.LighthouseAddr = nil
+					conn.LastSeenAt = nil
+					conn.ClusterInfo = nil
 				}
-				conn.AgentNebulaIP = nil
-				conn.AgentRealIP = nil
-				conn.LighthouseAddr = nil
-				conn.LastSeenAt = nil
-				conn.ClusterInfo = nil
+				mesh := &MeshStatus{
+					Connected:      conn.AgentNebulaIP != nil,
+					LighthouseAddr: conn.LighthouseAddr,
+					AgentNebulaIP:  conn.AgentNebulaIP,
+					AgentRealIP:    conn.AgentRealIP,
+					NebulaSubnet:   conn.NebulaSubnet,
+					LastSeenAt:     conn.LastSeenAt,
+				}
+				info.Mesh = mesh
 			}
-			mesh := &MeshStatus{
-				Connected:      conn.AgentNebulaIP != nil,
-				LighthouseAddr: conn.LighthouseAddr,
-				AgentNebulaIP:  conn.AgentNebulaIP,
-				AgentRealIP:    conn.AgentRealIP,
-				NebulaSubnet:   conn.NebulaSubnet,
-				LastSeenAt:     conn.LastSeenAt,
-			}
-			info.Mesh = mesh
 		}
-	}
 
-	// Per-node cert data — only include nodes that have been deployed (have a real IP).
-	// Node certs are pre-generated in batches of 10; undeployed slots have no real IP.
-	if h.NodeCertStore != nil {
-		if nodeCerts, err := h.NodeCertStore.ListForStack(stackName); err == nil {
-			var nodes []NodeInfo
-			for _, nc := range nodeCerts {
-				if nc.AgentRealIP != nil && *nc.AgentRealIP != "" {
-					nodes = append(nodes, NodeInfo{
-						NodeIndex:   nc.NodeIndex,
-						NebulaIP:    nc.NebulaIP,
-						AgentRealIP: nc.AgentRealIP,
-					})
+		// Per-node cert data — only include nodes that have been deployed (have a real IP).
+		if h.NodeCertStore != nil {
+			if nodeCerts, err := h.NodeCertStore.ListForStack(stackName); err == nil {
+				var nodes []NodeInfo
+				for _, nc := range nodeCerts {
+					if nc.AgentRealIP != nil && *nc.AgentRealIP != "" {
+						nodes = append(nodes, NodeInfo{
+							NodeIndex:   nc.NodeIndex,
+							NebulaIP:    nc.NebulaIP,
+							AgentRealIP: nc.AgentRealIP,
+						})
+					}
 				}
-			}
-			if len(nodes) > 0 {
-				info.Nodes = nodes
+				if len(nodes) > 0 {
+					info.Nodes = nodes
+				}
 			}
 		}
 	}
