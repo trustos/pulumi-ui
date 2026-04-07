@@ -389,6 +389,11 @@ func checkRefValues(props map[string]interface{}, resName string, defined map[st
 				}
 			}
 		case map[string]interface{}:
+			// Skip Pulumi intrinsic functions (fn::toBase64, fn::invoke, etc.)
+			// Their values may contain bash ${} variables that aren't Pulumi refs.
+			if strings.HasPrefix(propKey, "fn::") {
+				continue
+			}
 			checkRefValues(v, resName, defined, errs)
 		}
 	}
