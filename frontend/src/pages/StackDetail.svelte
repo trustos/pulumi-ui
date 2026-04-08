@@ -10,7 +10,9 @@
   import * as Tooltip from '$lib/components/ui/tooltip';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { navigate } from '$lib/router';
-  import { getStackInfo, deleteStack, streamOperation, cancelOperation, getStackLogs, unlockStack, listAccounts, listBlueprints, streamDeployApps, getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward, forwardProxyUrl, putStack, setAppDomain, removeAppDomain, listHooks, createHook, deleteHook } from '$lib/api';
+  import { getStackInfo, deleteStack, cancelOperation, getStackLogs, unlockStack, listAccounts, listBlueprints, getAgentHealth, getAgentServices, getNomadJobs, agentShellUrl, listPortForwards, startPortForward, stopPortForward, forwardProxyUrl, putStack, setAppDomain, removeAppDomain, listHooks, createHook, deleteHook } from '$lib/api';
+  import { useMachine } from '@xstate/svelte';
+  import { stackMachine } from '$lib/machines/stack-machine';
   import type { StackInfo, OciAccount, BlueprintMeta, ApplicationDef, AgentHealth, AgentService, NomadJob, PortForward, Hook } from '$lib/types';
   import * as Select from '$lib/components/ui/select';
   import EditStackDialog from '$lib/components/EditStackDialog.svelte';
@@ -18,26 +20,43 @@
 
   let { name }: { name: string } = $props();
 
+  // ── XState machine for operation lifecycle ──────────────────────────────
+  // Manages: idle → running → (cancelling | deployingApps) → idle
+  // Replaces: isRunning, currentOp, logLines, cancelFn, isDeployingApps,
+  //           deployAppLines, deployAppCancelFn, pendingAutoDeployApps, autoDeployTriggered
+  const { snapshot: machineState, send } = useMachine(stackMachine, {
+    input: { stackName: name },
+  });
+
+  // Derived values from the machine — these replace the old $state booleans.
+  // $machineState is a Svelte store provided by @xstate/svelte.
+  const isRunning = $derived($machineState.matches('running') || $machineState.matches('cancelling'));
+  const isDeployingApps = $derived($machineState.matches('deployingApps'));
+  const currentOp = $derived($machineState.context.currentOp);
+  // Combine persisted (historical) logs with live machine logs.
+  // When the machine is idle, show persisted logs. When running, show machine's live stream.
+  let persistedLogs = $state<Array<{ type: string; data: string; timestamp: string }>>([]);
+  const logLines = $derived(
+    $machineState.context.logLines.length > 0
+      ? $machineState.context.logLines
+      : persistedLogs
+  );
+
+  // ── Regular state (not managed by the machine) ─────────────────────────
   let info = $state<StackInfo | null>(null);
   let loadError = $state('');
-  let isRunning = $state(false);
-  let logLines = $state<Array<{ type: string; data: string; timestamp: string }>>([]);
   let logContainer = $state<HTMLDivElement | undefined>();
-  let cancelFn = $state<(() => void) | null>(null);
   let unlockError = $state('');
   let unlockState = $state<'idle' | 'loading' | 'done'>('idle');
   let accounts = $state<OciAccount[]>([]);
   let blueprints = $state<BlueprintMeta[]>([]);
   let editOpen = $state(false);
   let copyState = $state<'idle' | 'copied'>('idle');
-  let currentOp = $state<'up' | 'refresh' | 'destroy' | 'preview' | ''>('');
   let destroyConfirmOpen = $state(false);
   let cancelConfirmOpen = $state(false);
   let removeConfirmOpen = $state(false);
   let activeTab = $state('logs');
-  let isDeployingApps = $state(false);
   let deployAppLines = $state<Array<{ type: string; data: string; timestamp: string }>>([]);
-  let deployAppCancelFn = $state<(() => void) | null>(null);
 
   // Interactive app catalog state
   let editApps = $state<Record<string, boolean>>({});
@@ -314,13 +333,11 @@
   async function loadInfo() {
     try {
       info = await getStackInfo(name);
-      if (info.running && !isRunning) {
-        isRunning = true;
-        pollUntilDone();
-      } else if (!info.running && isRunning && !cancelFn) {
-        isRunning = false;
-        await loadPersistedLogs();
-      }
+      // Note: info.running reflects server-side state. The XState machine
+      // is the source of truth for client-side operation tracking. If an
+      // operation was started from another session, info.running will be
+      // true but the machine stays in 'idle'. This is acceptable — the
+      // UI just shows the latest status after the operation completes.
     } catch (err) {
       loadError = err instanceof Error ? err.message : String(err);
     }
@@ -414,21 +431,9 @@
     }
   }
 
-  function pollUntilDone() {
-    const interval = setInterval(async () => {
-      try {
-        const latest = await getStackInfo(name);
-        info = latest;
-        await loadPersistedLogs();
-        if (!latest.running) {
-          isRunning = false;
-          clearInterval(interval);
-        }
-      } catch {
-        clearInterval(interval);
-      }
-    }, 2000);
-  }
+  // pollUntilDone removed — the XState machine is now the source of truth
+  // for operation lifecycle. External operations (started from another session)
+  // are detected on next loadInfo() refresh.
 
   async function loadPersistedLogs() {
     try {
@@ -444,7 +449,7 @@
           result.push({ type: 'done', data: `─── ${entry.status} ───`, timestamp: ts });
         }
       }
-      logLines = result;
+      persistedLogs = result;
     } catch {
       // silently ignore — logs are best-effort
     }
@@ -502,9 +507,17 @@
     }
   });
 
-  // Auto-deploy: when navigated with ?autoDeploy=true, start up immediately
-  // then chain deploy-apps on success
-  let pendingAutoDeployApps = $state(false);
+  // Reload stack info when the machine returns to idle after an operation.
+  // This replaces the loadInfo() calls that were in each onDone callback.
+  $effect(() => {
+    if ($machineState.matches('idle') && $machineState.context.lastStatus) {
+      loadInfo();
+      loadPersistedLogs();
+    }
+  });
+
+  // Auto-deploy: when navigated with ?autoDeploy=true, start up with chainApps.
+  // The machine handles the auto-chain from 'up' → deploy-apps on success.
   let autoDeployTriggered = $state(false);
 
   $effect(() => {
@@ -512,13 +525,11 @@
       const params = new URLSearchParams(window.location.search);
       if (params.get('autoDeploy') === 'true') {
         autoDeployTriggered = true;
-        pendingAutoDeployApps = true;
-        // Remove the query param so refresh doesn't re-trigger
         const url = new URL(window.location.href);
         url.searchParams.delete('autoDeploy');
         window.history.replaceState({}, '', url.toString());
-        // Start the deploy
-        doStartOperation('up');
+        // chainApps: true tells the machine to auto-deploy apps after successful 'up'
+        doStartOperation('up', true);
       }
     }
   });
@@ -534,62 +545,18 @@
     doStartOperation(op);
   }
 
-  function doStartOperation(op: 'up' | 'refresh' | 'destroy' | 'preview') {
-    isRunning = true;
-    currentOp = op;
+  function doStartOperation(op: 'up' | 'refresh' | 'destroy' | 'preview', chainApps = false) {
     activeTab = 'logs';
-
-    logLines = [...logLines, {
-      type: 'separator',
-      data: `─── Starting: ${op} ───`,
-      timestamp: new Date().toISOString(),
-    }];
-
-    const cancel = streamOperation(
-      name,
-      op,
-      (event) => {
-        logLines = [...logLines, event];
-      },
-      (status) => {
-        isRunning = false;
-        cancelFn = null;
-        const wasOp = currentOp;
-        currentOp = '';
-        logLines = [...logLines, {
-          type: 'done',
-          data: `─── Operation ${status} ───`,
-          timestamp: new Date().toISOString(),
-        }];
-        loadInfo();
-
-        // Auto-chain: after successful 'up', deploy apps if pending
-        if (wasOp === 'up' && status === 'succeeded' && pendingAutoDeployApps) {
-          pendingAutoDeployApps = false;
-          logLines = [...logLines, {
-            type: 'separator',
-            data: '─── Auto-deploying applications... ───',
-            timestamp: new Date().toISOString(),
-          }];
-          // Small delay to let agent start
-          setTimeout(() => startDeployApps(), 2000);
-        }
-      }
-    );
-    cancelFn = cancel;
+    send({ type: 'START_OP', op, chainApps });
   }
 
   function handleCancel() {
     cancelConfirmOpen = true;
   }
 
-  async function doCancel() {
+  function doCancel() {
     cancelConfirmOpen = false;
-    cancelFn?.();
-    await cancelOperation(name);
-    isRunning = false;
-    cancelFn = null;
-    currentOp = '';
+    send({ type: 'CANCEL' });
   }
 
   async function handleUnlock() {
@@ -617,26 +584,8 @@
 
   function startDeployApps() {
     if (isDeployingApps || isRunning) return;
-    isDeployingApps = true;
-    deployAppLines = [{ type: 'separator', data: '─── Deploy Applications ───', timestamp: new Date().toISOString() }];
-    activeTab = 'applications';
-
-    const cancel = streamDeployApps(
-      name,
-      (event) => { deployAppLines = [...deployAppLines, event]; },
-      (status) => {
-        isDeployingApps = false;
-        deployAppCancelFn = null;
-        deployAppLines = [...deployAppLines, {
-          type: 'done',
-          data: `─── ${status} ───`,
-          timestamp: new Date().toISOString(),
-        }];
-        loadInfo();
-        loadPersistedLogs();
-      }
-    );
-    deployAppCancelFn = cancel;
+    activeTab = 'logs';
+    send({ type: 'DEPLOY_APPS' });
   }
 
   function lineColor(event: { type: string; data: string }): string {
@@ -838,7 +787,7 @@
           </DropdownMenu.Root>
           <Tooltip.Root>
             <Tooltip.Trigger>
-              <Button variant="ghost" size="sm" onclick={() => { logLines = []; }}>
+              <Button variant="ghost" size="sm" onclick={() => { persistedLogs = []; }}>
                 Clear
               </Button>
             </Tooltip.Trigger>
@@ -1090,7 +1039,7 @@
               </Button>
             {/if}
             {#if isDeployingApps}
-              <Button variant="outline" size="sm" onclick={() => { deployAppCancelFn?.(); }}>Cancel</Button>
+              <Button variant="outline" size="sm" onclick={() => { send({ type: 'CANCEL' }); }}>Cancel</Button>
             {/if}
             {#if appSaveError}
               <span class="text-xs text-destructive">{appSaveError}</span>
