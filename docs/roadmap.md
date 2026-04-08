@@ -605,7 +605,7 @@ Webhook handlers for payment events. Quota enforcement tied to plan tier.
 | 7 | FE-9 — Node graph editor (Svelte Flow) | Large | — | pending |
 | 8 | Visual editor bugs + polish | Medium | — | pending (see `visual-editor.md`) |
 | 9 | Cloud-init user scripts | Small | — | pending |
-| 10 | Cross-account nomad cluster | Large | — | pending (future) |
+| 10 | Cross-account nomad cluster (Deployment Groups + DRG) | Large | — | **done** |
 | 11 | Instance Configuration + Instance Pool | Medium | — | pending (future) |
 | 12 | Mesh data sync to S3 | Medium | — | **done** |
 | 13 | FE-10 — Stately (XState) + Zod evaluation | Small | — | pending (discussion) |
@@ -646,6 +646,14 @@ See `docs/application-catalog-architecture.md` for the complete agent/mesh archi
 | NLB serialization fix | **done** (dependsOn chains for 409 prevention) |
 | Level 6 dependsOn validation | **done** |
 | Built-in blueprint fork support | **done** (`POST /api/blueprints/{name}/fork`) |
+| S3 State Backend (BE-6) | **done** (OCI Object Storage, SigV4, state migration, remote stack discovery) |
+| Remote stack discovery + claim | **done** (ListObjectsV2, ClaimStackDialog, per-stack state delete) |
+| Deployment Groups | **done** (multi-account orchestrated deployment: 3-phase SSE, output wiring, per-account config) |
+| Multi-account Nomad blueprint | **done** (DRG hub-and-spoke, cross-tenancy IAM, gossip encryption, primary/worker roles) |
+| Enum dropdown support | **done** (PropertySchema.Enum, ObjectPropertyEditor, fallback-to-live merge) |
+| Visible agent networking | **done** (NSG + rule scaffolded in editor, engine skips if user-defined) |
+| ConfigField hidden + options | **done** (hidden fields for orchestrator auto-wiring, options for select dropdowns) |
+| Pre-destroy hook fixes | **done** (configField defaults, OCI CLI PATH) |
 
 ---
 

@@ -278,6 +278,27 @@ The Settings page State Backend tab provides full OCI Object Storage (S3-compati
 - "Migrate & Activate" streams per-stack state migration progress via SSE
 - Bidirectional migration (local ↔ S3)
 
+### Deployment Group Wizard
+`DeploymentGroupWizard.svelte` creates multi-account deployment groups in 3 steps:
+- **Step 1**: Group name, passphrase, select 2+ accounts with primary/worker role assignment
+- **Step 2**: Per-account configuration tabs — each tab renders a full `ConfigForm` with OCI pickers (shape, image, SSH key) loaded from that account's API. Tab indicators (green dot) show which accounts are configured.
+- **Step 3**: Review — pipeline visualization (primary → workers → IAM re-up), stack names, account assignments
+
+Blueprints must declare `meta.multiAccount` to appear in the wizard. Fields with `hidden: true` in `meta.fields` are excluded from the config form (auto-wired by the orchestrator).
+
+### Deployment Group Detail
+`DeploymentGroupDetail.svelte` at `/groups/{id}`:
+- Pipeline visualization with clickable stack cards (role badge + account name)
+- "Deploy Cluster" button streams 3-phase SSE deployment with auto-scroll log
+- Stack list with links to individual stack detail pages
+- Delete group via shadcn Dialog confirmation
+
+### Hidden Config Fields
+Fields with `hidden: true` in the blueprint's `meta.fields` are omitted from `ConfigForm`'s `groupedFields()`. Used for auto-wired orchestrator fields (drgOcid, gossipKey, primaryPrivateIp, etc.).
+
+### Config Field Options
+Fields with `options: [...]` in `meta.fields` render as `<select>` dropdowns in ConfigForm (e.g., `role: ["primary", "worker"]`). Parsed from `pulumiMetaField.Options` in the backend.
+
 Level 7 validation errors are **non-blocking** — the program can still be saved even if the warning is shown. Only Levels 1–6 block saving. This is enforced by `hasBlockingErrors()` in the backend API handler.
 
 ### Resource Rename Propagation

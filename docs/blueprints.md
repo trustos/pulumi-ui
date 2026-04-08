@@ -681,6 +681,66 @@ metadata:
   user_data: {{ gzipBase64 "#!/bin/bash\napt-get update && apt-get install -y nginx" }}
 ```
 
+### Multi-Account Deployment (`meta.multiAccount`)
+
+Blueprints can support coordinated multi-account deployments via deployment groups. Declare roles, deployment order, and output-to-config wiring in `meta.multiAccount`:
+
+```yaml
+meta:
+  multiAccount:
+    roles:
+      - key: primary
+        label: "Primary (Server)"
+        min: 1
+        max: 1
+      - key: worker
+        label: "Worker (Client)"
+        min: 1
+        max: 3
+    deployOrder: [primary, worker]
+    wiring:
+      - fromRole: primary
+        toRole: worker
+        mappings:
+          - output: drgOcid
+            config: drgOcid
+          - output: instancePrivateIp
+            config: primaryPrivateIp
+        accountMappings:
+          - accountField: tenancyOcid
+            config: primaryTenancyOcid
+      - fromRole: worker
+        toRole: primary
+        collectMappings:
+          - accountField: tenancyOcid
+            config: workerTenancyOcids
+            separator: ","
+    perRoleConfig:
+      - key: vcnCidr
+        pattern: "10.{index}.0.0/16"
+```
+
+The deployment group wizard reads this metadata to present role selection, auto-generate CIDRs, and wire outputs between stacks. Fields referenced in wiring should be marked `hidden: true` in `meta.fields`.
+
+### Config Field Options and Hidden Fields
+
+`meta.fields` supports `options` (for select dropdowns) and `hidden` (for orchestrator-managed fields):
+
+```yaml
+meta:
+  fields:
+    role:
+      ui_type: select
+      options: ["primary", "worker"]
+    drgOcid:
+      hidden: true
+    primaryPrivateIp:
+      hidden: true
+```
+
+- `options: [...]` renders the field as a `<select>` dropdown with the given values
+- `hidden: true` excludes the field from all config forms (regular stacks and groups). The field is still in the config and set by the orchestrator at deploy time.
+
 ### OCI Resource Types
 
 Resource type tokens follow the canonical pattern `oci:[Module]/[subpath]:[Resource]`. Short-form aliases (`oci:core:Vcn`) work at runtime but will not receive schema assistance in the visual editor.

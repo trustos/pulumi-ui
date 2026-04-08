@@ -372,6 +372,20 @@ The `agentAccess` field is `true` when the blueprint opts into automatic agent c
 | PUT | `/api/settings` | `{ backendType }` | `200 OK` (validates S3 creds before switching) |
 | POST | `/api/settings/test-s3` | — | `{ ok, error?, endpoint? }` |
 | POST | `/api/settings/migrate` | `{ direction: "to-s3"\|"to-local" }` | SSE stream (per-stack migration progress) |
+
+### Deployment Groups (requires auth)
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/groups` | — | `GroupSummary[]` |
+| POST | `/api/groups` | `{ name, blueprint, members: [{accountId, role, config?}], config, passphraseId }` | `{ id, name }` (201) |
+| GET | `/api/groups/{id}` | — | `GroupSummary` with members |
+| POST | `/api/groups/{id}/deploy` | — | SSE stream (3-phase: primary → workers → IAM re-up) |
+| DELETE | `/api/groups/{id}` | — | `200 OK` (stacks remain) |
+
+Deploy phases: (1) primary stack deploys, outputs captured; (2) worker configs auto-filled from primary outputs, deployed in parallel; (3) primary re-ups with collected worker tenancy OCIDs for cross-tenancy IAM policies.
+
+### Settings & Credentials (requires auth)
 | GET | `/api/settings/credentials` | — | `CredentialStatus[]` |
 | PUT | `/api/settings/credentials` | `{ type, ...fields }` | `200 OK` |
 | GET | `/api/settings/health` | — | `HealthResponse` |

@@ -45,6 +45,8 @@ internal/api/        HTTP handlers (one file per domain)
   mesh_config.go     Nebula mesh config download for user local machine access (GET /api/stacks/{name}/mesh/config)
   mesh_sync.go       Mesh PKI sync to S3 for cross-instance portability (syncMeshToS3, fetchMeshFromS3, meshExistsInS3)
   port_forward.go    kubectl-style TCP port forwarding through Nebula mesh (start/stop/list)
+  deployment_groups.go  Deployment group CRUD (create group + member stacks, list, get, delete)
+  group_deploy.go    Orchestrated multi-account deployment (3-phase SSE: primary → workers → IAM re-up)
 
 cmd/agent/           Standalone agent binary (Nebula mesh + management HTTP API + /shell WebSocket PTY + /nomad-jobs with two-step alloc port lookup)
 
@@ -94,9 +96,10 @@ internal/db/         SQLite stores (one file per domain)
   ssh_keys.go        SSH key pair store
   custom_blueprints.go User-defined YAML blueprint persistence
   stack_connections.go Nebula mesh state per stack (PKI, subnet, lighthouse, agent cert/key/token/realIP)
+  deployment_groups.go Deployment group + membership store (multi-account orchestration)
   users.go           User accounts
   sessions.go        Session tokens
-  migrations/        Numbered SQL migration files (001–012)
+  migrations/        Numbered SQL migration files (001–016)
 
 internal/stacks/     Stack YAML envelope (StackConfig struct)
 internal/auth/       Session middleware
@@ -112,7 +115,8 @@ docs/                Architecture and developer documentation (see index below)
 frontend/            Svelte 5 SPA (src/ is the source; dist/ is embedded)
   src/pages/         Full-page route components
   src/lib/           Shared components, API client, stores, types
-  src/lib/components/ Reusable UI components (ConfigForm, dialogs, pickers, ObjectPropertyEditor, ClaimStackDialog)
+  src/lib/components/ Reusable UI components (ConfigForm, dialogs, pickers, ObjectPropertyEditor, ClaimStackDialog, DeploymentGroupWizard)
+  src/pages/DeploymentGroupDetail.svelte  Group detail page with pipeline view + deploy orchestration
   src/lib/blueprint-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking, schema-utils, user-data)
   src/lib/api.ts     All backend calls — no raw fetch elsewhere
   src/lib/types.ts   TypeScript interfaces matching backend JSON
@@ -312,7 +316,7 @@ Full detail: `docs/roadmap.md`
 | FE-9 | Node graph editor (Svelte Flow) — third editor mode | pending |
 | Visual Editor | Bug fixes: P1-1, P2-1–P2-7, P3-1–P3-4, G1-6 | pending |
 | Cloud-init | User-provided boot scripts (`{{ gzipBase64 }}` done; `{{ userInit }}` for multi-part composition pending) | partial |
-| Cross-account | Multi-account nomad cluster (pool OCI accounts) | pending (future) |
+| Cross-account | Multi-account nomad cluster (pool OCI accounts) via deployment groups + DRG | **done** |
 | Instance Pool | Instance Configuration + Instance Pool alongside per-instance loop | pending (future) |
 | OPT-1–3 | SQLite production optimizations (batch writes, file logs, throttle) | pending |
 | MT-1–3 | Multi-user foundation (user-scoped resources, audit trail) | pending |
