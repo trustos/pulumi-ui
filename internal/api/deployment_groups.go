@@ -25,8 +25,9 @@ type CreateGroupRequest struct {
 }
 
 type CreateGroupMemberReq struct {
-	AccountID string `json:"accountId"`
-	Role      string `json:"role"`
+	AccountID string            `json:"accountId"`
+	Role      string            `json:"role"`
+	Config    map[string]string `json:"config,omitempty"` // per-member config overrides (merged with shared config)
 }
 
 // GroupSummary is the JSON response for listing groups.
@@ -197,10 +198,16 @@ func (h *PlatformHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 			workerIdx++
 		}
 
-		// Build per-stack config from shared config + role-specific overrides.
+		// Build per-stack config: shared defaults → per-member overrides → auto-filled.
 		stackConfig := make(map[string]string)
 		for k, v := range body.Config {
 			stackConfig[k] = v
+		}
+		// Per-member config overrides shared values (e.g., different image/shape per account).
+		for k, v := range m.Config {
+			if v != "" {
+				stackConfig[k] = v
+			}
 		}
 		stackConfig["role"] = role
 		stackConfig["gossipKey"] = gossipKey

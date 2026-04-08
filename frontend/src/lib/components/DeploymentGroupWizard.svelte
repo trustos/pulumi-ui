@@ -4,9 +4,10 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
-  import { createGroup } from '$lib/api';
+  import ConfigForm from './ConfigForm.svelte';
+  import { createGroup, listGroups } from '$lib/api';
   import { navigate } from '$lib/router';
-  import type { BlueprintMeta, OciAccount, Passphrase, MultiAccountMeta } from '$lib/types';
+  import type { BlueprintMeta, OciAccount, Passphrase, MultiAccountMeta, ConfigField } from '$lib/types';
 
   let {
     open = $bindable(false),
@@ -32,8 +33,30 @@
   type MemberAssignment = { accountId: string; role: string };
   let members = $state<MemberAssignment[]>([]);
 
-  // Step 2: Shared config
-  let sharedConfig = $state<Record<string, string>>({});
+  // Step 2: Per-member configs (keyed by accountId)
+  let memberConfigs = $state<Record<string, Record<string, string>>>({});
+  let activeTab = $state('');
+
+  // Config fields visible in the per-account form (exclude hidden + auto-wired)
+  const visibleFields = $derived<ConfigField[]>(
+    (blueprint?.configFields ?? []).filter(f => !f.hidden)
+  );
+
+  // Check if group name already exists
+  let existingGroupNames = $state<string[]>([]);
+  $effect(() => {
+    listGroups().then(gs => {
+      existingGroupNames = gs.map(g => g.name);
+    }).catch(() => {});
+  });
+  const nameConflict = $derived(existingGroupNames.includes(groupName.trim()));
+
+  const hasPrimary = $derived(members.some(m => m.role === 'primary'));
+  const canProceedStep1 = $derived(members.length >= 2 && hasPrimary && groupName.trim() !== '' && selectedPassphraseId !== '' && !nameConflict);
+
+  const passphraseTrigger = $derived(
+    passphrases.find(p => p.id === selectedPassphraseId)?.name ?? 'Select a passphrase...'
+  );
 
   // Initialize config defaults from blueprint
   $effect(() => {
@@ -42,7 +65,19 @@
       for (const f of blueprint.configFields) {
         if (f.default) defaults[f.key] = f.default;
       }
-      sharedConfig = defaults;
+      // Initialize configs for all members
+      for (const m of members) {
+        if (!memberConfigs[m.accountId]) {
+          memberConfigs[m.accountId] = { ...defaults };
+        }
+      }
+    }
+  });
+
+  // Set active tab to first member when entering step 2
+  $effect(() => {
+    if (step === 2 && members.length > 0 && !activeTab) {
+      activeTab = members[0].accountId;
     }
   });
 
@@ -57,15 +92,21 @@
     const idx = members.findIndex(m => m.accountId === accountId);
     if (idx >= 0) {
       members = members.filter(m => m.accountId !== accountId);
+      const { [accountId]: _, ...rest } = memberConfigs;
+      memberConfigs = rest;
     } else {
-      // First member defaults to primary, rest to worker
       const role = members.length === 0 ? 'primary' : 'worker';
       members = [...members, { accountId, role }];
+      // Init config with defaults
+      const defaults: Record<string, string> = {};
+      for (const f of blueprint.configFields) {
+        if (f.default) defaults[f.key] = f.default;
+      }
+      memberConfigs = { ...memberConfigs, [accountId]: defaults };
     }
   }
 
   function setRole(accountId: string, role: string) {
-    // If setting to primary, unset previous primary
     if (role === 'primary') {
       members = members.map(m => ({
         ...m,
@@ -76,39 +117,6 @@
     }
   }
 
-  // Check if group name already exists
-  let existingGroupNames = $state<string[]>([]);
-  $effect(() => {
-    import('$lib/api').then(api => api.listGroups()).then(gs => {
-      existingGroupNames = gs.map(g => g.name);
-    }).catch(() => {});
-  });
-  const nameConflict = $derived(existingGroupNames.includes(groupName.trim()));
-
-  const hasPrimary = $derived(members.some(m => m.role === 'primary'));
-  const canProceedStep1 = $derived(members.length >= 2 && hasPrimary && groupName.trim() !== '' && selectedPassphraseId !== '' && !nameConflict);
-
-  // Config fields that should NOT be shown (auto-filled by the orchestrator)
-  const hiddenFields = new Set(['role', 'drgOcid', 'primaryPrivateIp', 'primaryTenancyOcid', 'gossipKey', 'workerTenancyOcids', 'peerCidrs']);
-  // Fields that get per-role overrides
-  const perRoleFields = $derived(new Set((multiAccount?.perRoleConfig ?? []).map(p => p.key)));
-  // Visible shared fields
-  const visibleFields = $derived(
-    (blueprint?.configFields ?? []).filter(f => !hiddenFields.has(f.key) && !perRoleFields.has(f.key))
-  );
-  // Required visible fields that are empty
-  const missingRequired = $derived(
-    visibleFields.filter(f => f.required && !(sharedConfig[f.key]?.trim()))
-  );
-  const canProceedStep2 = $derived(missingRequired.length === 0);
-
-  const passphraseTrigger = $derived(
-    passphrases.find(p => p.id === selectedPassphraseId)?.name ?? 'Select a passphrase...'
-  );
-
-  // Derive per-role CIDRs once (used in Step 2 and Step 3)
-  const perRoleCidrs = $derived(computePerRoleCidrs());
-
   function getAccountName(id: string): string {
     return accounts.find(a => a.id === id)?.name ?? id;
   }
@@ -117,10 +125,8 @@
     return accounts.find(a => a.id === id)?.region ?? '';
   }
 
-  // Generate per-role CIDRs for review — uses sequential global index
-  // (primary=0, workers=1,2,3) to avoid CIDR collisions.
-  function computePerRoleCidrs(): { stackName: string; role: string; accountId: string; overrides: Record<string, string> }[] {
-    // Sort: primary first, then workers — matches backend CreateGroup order
+  // Generate per-role CIDRs — primary=0, workers=1,2,3
+  const perRoleCidrs = $derived((() => {
     const sorted = [...members].sort((a, b) => {
       if (a.role === 'primary') return -1;
       if (b.role === 'primary') return 1;
@@ -137,6 +143,15 @@
       }
       return { stackName, role: m.role, accountId: m.accountId, overrides };
     });
+  })());
+
+  function handleMemberConfigSubmit(accountId: string, values: Record<string, string>) {
+    memberConfigs = { ...memberConfigs, [accountId]: values };
+    // Auto-advance to next tab
+    const currentIdx = members.findIndex(m => m.accountId === accountId);
+    if (currentIdx < members.length - 1) {
+      activeTab = members[currentIdx + 1].accountId;
+    }
   }
 
   async function handleCreate() {
@@ -146,8 +161,12 @@
       const result = await createGroup({
         name: groupName.trim(),
         blueprint: blueprint.name,
-        members: members.map(m => ({ accountId: m.accountId, role: m.role })),
-        config: sharedConfig,
+        members: members.map(m => ({
+          accountId: m.accountId,
+          role: m.role,
+          config: memberConfigs[m.accountId] ?? {},
+        })),
+        config: {}, // shared config is empty — all config is per-member now
         passphraseId: selectedPassphraseId,
       });
       open = false;
@@ -164,6 +183,8 @@
     if (!open) {
       step = 1;
       members = [];
+      memberConfigs = {};
+      activeTab = '';
       error = '';
     }
   });
@@ -176,7 +197,7 @@
         {#if step === 1}
           Select Accounts & Roles
         {:else if step === 2}
-          Configure Cluster
+          Configure Per Account
         {:else}
           Review & Create
         {/if}
@@ -252,30 +273,38 @@
         </div>
 
       {:else if step === 2}
-        <!-- Step 2: Shared configuration -->
+        <!-- Step 2: Per-account configuration with tabs -->
         <div class="space-y-3">
-          {#each visibleFields as field (field.key)}
-            {@const isEmpty = field.required && !(sharedConfig[field.key]?.trim())}
-            <div class="space-y-1">
-              <label class="text-xs text-muted-foreground" for="cfg-{field.key}">
-                {field.label || field.key}{#if field.required}<span class="text-destructive">*</span>{/if}
-              </label>
-              <Input
-                id="cfg-{field.key}"
-                value={sharedConfig[field.key] ?? ''}
-                oninput={(e) => { sharedConfig[field.key] = (e.currentTarget as HTMLInputElement).value; }}
-                placeholder={field.description ?? field.key}
-                class={isEmpty ? 'border-destructive' : ''}
+          <!-- Tab bar -->
+          <div class="flex border-b">
+            {#each members as m (m.accountId)}
+              <button
+                class="px-3 py-2 text-sm transition-colors border-b-2 {activeTab === m.accountId ? 'border-primary text-foreground font-medium' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+                onclick={() => { activeTab = m.accountId; }}
+              >
+                <span>{getAccountName(m.accountId)}</span>
+                <Badge variant={m.role === 'primary' ? 'default' : 'secondary'} class="text-[10px] ml-1">{m.role}</Badge>
+              </button>
+            {/each}
+          </div>
+
+          <!-- Per-account ConfigForm -->
+          {#each members as m (m.accountId)}
+            {#if activeTab === m.accountId}
+              <ConfigForm
+                fields={visibleFields}
+                accountId={m.accountId}
+                initialValues={memberConfigs[m.accountId] ?? {}}
+                onSubmit={(values) => handleMemberConfigSubmit(m.accountId, values)}
+                submitLabel="Save & Next"
               />
-              {#if field.description}
-                <p class="text-[10px] text-muted-foreground">{field.description}</p>
-              {/if}
-            </div>
+            {/if}
           {/each}
 
+          <!-- Per-role CIDRs (auto-generated, read-only) -->
           {#if (multiAccount?.perRoleConfig ?? []).length > 0}
             <div class="border-t pt-3">
-              <p class="text-sm font-medium mb-2">Per-account overrides (auto-generated)</p>
+              <p class="text-xs font-medium text-muted-foreground mb-2">Auto-generated per-account CIDRs</p>
               <div class="space-y-1">
                 {#each perRoleCidrs as item}
                   <div class="flex items-center gap-2 text-xs">
@@ -302,7 +331,7 @@
 
           <p class="text-sm font-medium">Stacks to create:</p>
           <div class="space-y-1">
-            {#each perRoleCidrs as item, i}
+            {#each perRoleCidrs as item}
               <div class="flex items-center gap-2 p-2 border rounded text-sm">
                 <Badge variant={item.role === 'primary' ? 'default' : 'secondary'} class="text-[10px]">{item.role}</Badge>
                 <span class="font-mono flex-1">{item.stackName}</span>
@@ -342,7 +371,7 @@
         {#if step === 1}
           <Button disabled={!canProceedStep1} onclick={() => { step = 2; }}>Next</Button>
         {:else if step === 2}
-          <Button disabled={!canProceedStep2} onclick={() => { step = 3; }}>Review</Button>
+          <Button onclick={() => { step = 3; }}>Review</Button>
         {:else}
           <Button disabled={saving} onclick={handleCreate}>
             {saving ? 'Creating...' : 'Create & Open'}

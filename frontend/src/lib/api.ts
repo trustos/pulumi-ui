@@ -782,7 +782,7 @@ export async function getGroup(id: string): Promise<DeploymentGroupSummary> {
 export async function createGroup(body: {
   name: string;
   blueprint: string;
-  members: { accountId: string; role: string }[];
+  members: { accountId: string; role: string; config?: Record<string, string> }[];
   config: Record<string, string>;
   passphraseId: string;
 }): Promise<{ id: string; name: string }> {
