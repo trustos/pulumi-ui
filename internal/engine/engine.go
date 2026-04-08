@@ -2,16 +2,11 @@ package engine
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1053,11 +1048,13 @@ func (e *Engine) recoverPendingOperations(ctx context.Context, stack auto.Stack,
 // The local backend stores locks under .pulumi/locks/organization/<project>/<stack>/,
 // and the project name varies (e.g. "pulumi-ui" for Go programs, the YAML name: field
 // for YAML programs). We scan all project directories to find the stack.
+// Unlock removes Pulumi lock files for the given stack. Uses the Pulumi
+// Automation API's stack.Cancel() which handles any backend (local or S3)
+// through Pulumi's own lock management.
 func (e *Engine) Unlock(stackName string) error {
-	// Try local filesystem locks first.
+	// For local backend: remove lock files directly (fast path, no Pulumi process needed).
 	orgDir := filepath.Join(e.stateDir, ".pulumi", "locks", "organization")
-	projects, err := os.ReadDir(orgDir)
-	if err == nil {
+	if projects, err := os.ReadDir(orgDir); err == nil {
 		for _, proj := range projects {
 			if !proj.IsDir() {
 				continue
@@ -1068,93 +1065,67 @@ func (e *Engine) Unlock(stackName string) error {
 				continue
 			}
 			if err != nil {
-				log.Printf("[unlock] error reading lock dir %s: %v", lockDir, err)
 				continue
 			}
 			for _, entry := range entries {
-				if err := os.Remove(filepath.Join(lockDir, entry.Name())); err != nil && !os.IsNotExist(err) {
-					log.Printf("[unlock] error removing lock file %s: %v", entry.Name(), err)
-				}
+				_ = os.Remove(filepath.Join(lockDir, entry.Name()))
+				log.Printf("[unlock] removed local lock: %s/%s", stackName, entry.Name())
 			}
 		}
 	}
 
-	// Try S3 locks if the backend is S3.
-	if e.credStore == nil {
-		return nil
-	}
-	bt, _, _ := e.credStore.Get(db.KeyBackendType)
-	if bt != "s3" {
-		return nil
-	}
-	bucket, _, _ := e.credStore.Get(db.KeyS3Bucket)
-	ns, _, _ := e.credStore.Get(db.KeyS3Namespace)
-	region, _, _ := e.credStore.Get(db.KeyS3Region)
-	ak, _, _ := e.credStore.Get(db.KeyS3AccessKeyID)
-	sk, _, _ := e.credStore.Get(db.KeyS3SecretAccessKey)
-	if bucket == "" || ns == "" || region == "" || ak == "" || sk == "" {
-		return nil
-	}
+	// For S3 backend: use Pulumi Automation API stack.Cancel() which
+	// handles lock removal on any backend transparently.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	endpoint := fmt.Sprintf("https://%s.compat.objectstorage.%s.oraclecloud.com", ns, region)
-
-	// List all lock files for this stack across all projects.
-	prefix := fmt.Sprintf(".pulumi/locks/organization/")
-	listURL := fmt.Sprintf("%s/%s?list-type=2&prefix=%s", endpoint, bucket, prefix)
-	req, err := http.NewRequest(http.MethodGet, listURL, nil)
-	if err != nil {
-		return nil
+	backendURL := e.backendURL()
+	envVars := map[string]string{
+		"PULUMI_CONFIG_PASSPHRASE": "", // not needed for cancel
 	}
-	signS3Request(req, ak, sk, region)
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("[unlock] S3 list locks failed: %v", err)
-		return nil
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
-
-	// Parse XML response for lock files matching this stack.
-	type listResult struct {
-		Contents []struct{ Key string } `xml:"Contents"`
-	}
-	var result listResult
-	if err := xml.Unmarshal(body, &result); err != nil {
-		return nil
-	}
-
-	deleted := 0
-	for _, obj := range result.Contents {
-		// Match: .pulumi/locks/organization/<project>/<stackName>/<uuid>.json
-		if !strings.Contains(obj.Key, "/"+stackName+"/") || !strings.HasSuffix(obj.Key, ".json") {
-			continue
+	// S3 backend needs AWS credentials.
+	if e.credStore != nil {
+		if ak, _, _ := e.credStore.Get(db.KeyS3AccessKeyID); ak != "" {
+			envVars["AWS_ACCESS_KEY_ID"] = ak
 		}
-		delURL := fmt.Sprintf("%s/%s/%s", endpoint, bucket, obj.Key)
-		delReq, err := http.NewRequest(http.MethodDelete, delURL, nil)
+		if sk, _, _ := e.credStore.Get(db.KeyS3SecretAccessKey); sk != "" {
+			envVars["AWS_SECRET_ACCESS_KEY"] = sk
+		}
+	}
+
+	// Try each known project name — the project is part of the lock path
+	// but we don't know which project this stack belongs to without querying the DB.
+	// Try common project names + the stack's own name as project.
+	projectNames := []string{stackName}
+	// Also scan the registry for blueprint names (they're used as project names).
+	if e.registry != nil {
+		for _, bp := range e.registry.List() {
+			projectNames = append(projectNames, bp.Name)
+		}
+	}
+
+	for _, projName := range projectNames {
+		noop := func(ctx *pulumi.Context) error { return nil }
+		stack, err := auto.SelectStackInlineSource(ctx, stackName, projName, noop,
+			auto.WorkDir(os.TempDir()),
+			auto.EnvVars(envVars),
+			auto.Project(workspace.Project{
+				Name:    tokens.PackageName(projName),
+				Runtime: workspace.NewProjectRuntimeInfo("go", nil),
+				Backend: &workspace.ProjectBackend{URL: backendURL},
+			}),
+		)
 		if err != nil {
+			continue // stack doesn't exist under this project name
+		}
+		if err := stack.Cancel(ctx); err != nil {
+			log.Printf("[unlock] cancel %s/%s: %v", projName, stackName, err)
 			continue
 		}
-		signS3Request(delReq, ak, sk, region)
-		delResp, err := client.Do(delReq)
-		if err != nil {
-			continue
-		}
-		delResp.Body.Close()
-		if delResp.StatusCode == http.StatusNoContent || delResp.StatusCode == http.StatusOK {
-			deleted++
-			log.Printf("[unlock] deleted S3 lock: %s", obj.Key)
-		}
+		log.Printf("[unlock] cancelled lock for %s/%s via Pulumi API", projName, stackName)
+		return nil
 	}
 
-	if deleted > 0 {
-		log.Printf("[unlock] removed %d S3 lock(s) for stack %s", deleted, stackName)
-	}
 	return nil
 }
 
@@ -1380,74 +1351,4 @@ func (e *Engine) DeployApps(ctx context.Context, stackName, blueprintName string
 	}
 
 	return "succeeded"
-}
-
-// signS3Request applies AWS Signature V4 to an S3 request.
-// Minimal copy from internal/api/settings.go — avoids circular import.
-func signS3Request(req *http.Request, accessKey, secretKey, region string) {
-	now := time.Now().UTC()
-	datestamp := now.Format("20060102")
-	amzdate := now.Format("20060102T150405Z")
-	host := req.URL.Host
-	payloadHash := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-
-	req.Host = host
-	req.Header.Set("x-amz-date", amzdate)
-	req.Header.Set("x-amz-content-sha256", payloadHash)
-
-	canonicalURI := req.URL.Path
-	if canonicalURI == "" {
-		canonicalURI = "/"
-	}
-	canonicalHeaders := fmt.Sprintf("host:%s\nx-amz-content-sha256:%s\nx-amz-date:%s\n", host, payloadHash, amzdate)
-	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
-
-	// Sort query string params
-	qs := ""
-	if q := req.URL.Query(); len(q) > 0 {
-		keys := make([]string, 0, len(q))
-		for k := range q {
-			keys = append(keys, k)
-		}
-		sortStrings(keys)
-		parts := make([]string, 0, len(q))
-		for _, k := range keys {
-			for _, v := range q[k] {
-				parts = append(parts, k+"="+v)
-			}
-		}
-		qs = strings.Join(parts, "&")
-	}
-
-	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
-		req.Method, canonicalURI, qs, canonicalHeaders, signedHeaders, payloadHash)
-
-	credentialScope := fmt.Sprintf("%s/%s/s3/aws4_request", datestamp, region)
-	hasher := sha256.New()
-	hasher.Write([]byte(canonicalRequest))
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
-		amzdate, credentialScope, hex.EncodeToString(hasher.Sum(nil)))
-
-	kDate := hmacSHA256([]byte("AWS4"+secretKey), datestamp)
-	kRegion := hmacSHA256(kDate, region)
-	kService := hmacSHA256(kRegion, "s3")
-	kSigning := hmacSHA256(kService, "aws4_request")
-	sig := hex.EncodeToString(hmacSHA256(kSigning, stringToSign))
-
-	req.Header.Set("Authorization", fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
-		accessKey, credentialScope, signedHeaders, sig))
-}
-
-func hmacSHA256(key []byte, data string) []byte {
-	h := hmac.New(sha256.New, key)
-	h.Write([]byte(data))
-	return h.Sum(nil)
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }
