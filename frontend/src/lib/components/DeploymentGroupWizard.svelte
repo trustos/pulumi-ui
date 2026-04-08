@@ -276,30 +276,37 @@
         <!-- Step 2: Per-account configuration with tabs -->
         <div class="space-y-3">
           <!-- Tab bar -->
-          <div class="flex border-b">
+          <div class="flex border-b overflow-x-auto">
             {#each members as m (m.accountId)}
+              {@const configured = !!memberConfigs[m.accountId] && Object.keys(memberConfigs[m.accountId]).length > 0}
               <button
-                class="px-3 py-2 text-sm transition-colors border-b-2 {activeTab === m.accountId ? 'border-primary text-foreground font-medium' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+                class="px-3 py-2 text-sm transition-colors border-b-2 shrink-0 {activeTab === m.accountId ? 'border-primary text-foreground font-medium' : 'border-transparent text-muted-foreground hover:text-foreground'}"
                 onclick={() => { activeTab = m.accountId; }}
               >
                 <span>{getAccountName(m.accountId)}</span>
                 <Badge variant={m.role === 'primary' ? 'default' : 'secondary'} class="text-[10px] ml-1">{m.role}</Badge>
+                {#if configured}
+                  <span class="inline-block w-1.5 h-1.5 rounded-full bg-green-500 ml-1" title="Configured"></span>
+                {/if}
               </button>
             {/each}
           </div>
 
           <!-- Per-account ConfigForm -->
-          {#each members as m (m.accountId)}
+          {#each members as m, idx (m.accountId)}
             {#if activeTab === m.accountId}
               <ConfigForm
                 fields={visibleFields}
                 accountId={m.accountId}
                 initialValues={memberConfigs[m.accountId] ?? {}}
                 onSubmit={(values) => handleMemberConfigSubmit(m.accountId, values)}
-                submitLabel="Save & Next"
+                submitLabel={idx < members.length - 1 ? 'Save & Next Account' : 'Save Configuration'}
               />
             {/if}
           {/each}
+          <p class="text-[10px] text-muted-foreground">
+            Configure each account's settings using the tabs above. Click "Review" when all accounts are configured.
+          </p>
 
           <!-- Per-role CIDRs (auto-generated, read-only) -->
           {#if (multiAccount?.perRoleConfig ?? []).length > 0}
