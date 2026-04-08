@@ -327,7 +327,7 @@
   {/if}
 </div>
 
-<NewStackDialog bind:open={dialogOpen} programs={blueprints} {accounts} bind:passphrases />
+<NewStackDialog bind:open={dialogOpen} programs={blueprints} {accounts} bind:passphrases onMultiAccount={(bp) => openGroupWizard(bp)} />
 
 <ClaimStackDialog
   bind:open={claimDialogOpen}

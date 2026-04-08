@@ -14,11 +14,13 @@
         programs,
         accounts = [],
         passphrases = $bindable([]),
+        onMultiAccount,
     }: {
         open: boolean;
         programs: BlueprintMeta[];
         accounts: OciAccount[];
         passphrases: Passphrase[];
+        onMultiAccount?: (blueprint: BlueprintMeta) => void;
     } = $props();
 
     let step = $state<1 | 2 | 3>(1);
@@ -83,6 +85,12 @@
 
     function goToStep2() {
         if (canProceed()) {
+            // Multi-account blueprints redirect to the Deployment Group Wizard
+            if (selectedProgram?.multiAccount && onMultiAccount) {
+                open = false;
+                onMultiAccount(selectedProgram);
+                return;
+            }
             configFormKey++;
             step = 2;
         }
