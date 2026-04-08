@@ -68,9 +68,11 @@ type pulumiMetaGroup struct {
 }
 
 type pulumiMetaField struct {
-	UIType      string `yaml:"ui_type"`
-	Description string `yaml:"description"`
-	Label       string `yaml:"label"`
+	UIType      string   `yaml:"ui_type"`
+	Description string   `yaml:"description"`
+	Label       string   `yaml:"label"`
+	Options     []string `yaml:"options"`
+	Hidden      bool     `yaml:"hidden"`
 }
 
 // ParseConfigFields parses the config: section of a Pulumi YAML body and
@@ -153,9 +155,11 @@ func ParseConfigFields(yamlBody string) ([]ConfigField, string, error) {
 		gKey := groupByField[key]
 		gLabel := groupLabelByKey[gKey]
 
-		// Description and label from meta.fields take precedence over auto-derived values.
+		// Description, label, options, and hidden from meta.fields take precedence.
 		description := ""
 		label := keyToLabel(key)
+		var options []string
+		hidden := false
 		if doc.Meta != nil {
 			if mf, ok := doc.Meta.Fields[key]; ok {
 				if mf.Description != "" {
@@ -164,6 +168,10 @@ func ParseConfigFields(yamlBody string) ([]ConfigField, string, error) {
 				if mf.Label != "" {
 					label = mf.Label
 				}
+				if len(mf.Options) > 0 {
+					options = mf.Options
+				}
+				hidden = mf.Hidden
 			}
 		}
 
@@ -174,8 +182,10 @@ func ParseConfigFields(yamlBody string) ([]ConfigField, string, error) {
 			Required:    fieldType == "ssh-public-key" && cf.Default == "",
 			Default:     cf.Default,
 			Description: description,
+			Options:     options,
 			Group:       gKey,
 			GroupLabel:  gLabel,
+			Hidden:      hidden,
 		})
 	}
 

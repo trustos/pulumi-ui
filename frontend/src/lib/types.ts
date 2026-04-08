@@ -33,6 +33,7 @@ export interface ConfigField {
   group?: string;
   groupLabel?: string;
   secret?: boolean;
+  hidden?: boolean;
 }
 
 export type ApplicationTier = 'bootstrap' | 'workload';

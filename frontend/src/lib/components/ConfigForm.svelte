@@ -47,6 +47,7 @@
     const order: string[] = [];
     const map: Record<string, { label: string; fields: typeof fields }> = {};
     for (const f of fields) {
+      if (f.hidden) continue; // Skip auto-wired fields hidden from the config form
       const key = f.group ?? '';
       if (!map[key]) {
         order.push(key);

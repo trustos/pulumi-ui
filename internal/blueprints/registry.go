@@ -19,6 +19,7 @@ type ConfigField struct {
 	Group       string   `json:"group,omitempty"`      // stable group key, e.g. "iam"
 	GroupLabel  string   `json:"groupLabel,omitempty"` // display heading, e.g. "IAM & Permissions"
 	Secret      bool     `json:"secret,omitempty"`     // true = Consul KV auto-managed credential
+	Hidden      bool     `json:"hidden,omitempty"`     // true = hidden from regular config form (auto-wired by orchestrator)
 }
 
 // MultiAccountRole defines a role in a multi-account deployment group.

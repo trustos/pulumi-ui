@@ -55,6 +55,18 @@ meta:
     role:
       ui_type: select
       options: ["primary", "worker"]
+    drgOcid:
+      hidden: true
+    primaryPrivateIp:
+      hidden: true
+    primaryTenancyOcid:
+      hidden: true
+    gossipKey:
+      hidden: true
+    workerTenancyOcids:
+      hidden: true
+    peerCidrs:
+      hidden: true
     imageId:
       ui_type: oci-image
     shape:
