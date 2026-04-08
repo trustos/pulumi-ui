@@ -76,8 +76,17 @@
     }
   }
 
+  // Check if group name already exists
+  let existingGroupNames = $state<string[]>([]);
+  $effect(() => {
+    import('$lib/api').then(api => api.listGroups()).then(gs => {
+      existingGroupNames = gs.map(g => g.name);
+    }).catch(() => {});
+  });
+  const nameConflict = $derived(existingGroupNames.includes(groupName.trim()));
+
   const hasPrimary = $derived(members.some(m => m.role === 'primary'));
-  const canProceedStep1 = $derived(members.length >= 2 && hasPrimary && groupName.trim() !== '' && selectedPassphraseId !== '');
+  const canProceedStep1 = $derived(members.length >= 2 && hasPrimary && groupName.trim() !== '' && selectedPassphraseId !== '' && !nameConflict);
 
   // Config fields that should NOT be shown (auto-filled by the orchestrator)
   const hiddenFields = new Set(['role', 'drgOcid', 'primaryPrivateIp', 'primaryTenancyOcid', 'gossipKey', 'workerTenancyOcids', 'peerCidrs']);
@@ -87,10 +96,18 @@
   const visibleFields = $derived(
     (blueprint?.configFields ?? []).filter(f => !hiddenFields.has(f.key) && !perRoleFields.has(f.key))
   );
+  // Required visible fields that are empty
+  const missingRequired = $derived(
+    visibleFields.filter(f => f.required && !(sharedConfig[f.key]?.trim()))
+  );
+  const canProceedStep2 = $derived(missingRequired.length === 0);
 
   const passphraseTrigger = $derived(
     passphrases.find(p => p.id === selectedPassphraseId)?.name ?? 'Select a passphrase...'
   );
+
+  // Derive per-role CIDRs once (used in Step 2 and Step 3)
+  const perRoleCidrs = $derived(computePerRoleCidrs());
 
   function getAccountName(id: string): string {
     return accounts.find(a => a.id === id)?.name ?? id;
@@ -102,7 +119,7 @@
 
   // Generate per-role CIDRs for review — uses sequential global index
   // (primary=0, workers=1,2,3) to avoid CIDR collisions.
-  function getPerRoleCidrs(): { stackName: string; role: string; accountId: string; overrides: Record<string, string> }[] {
+  function computePerRoleCidrs(): { stackName: string; role: string; accountId: string; overrides: Record<string, string> }[] {
     // Sort: primary first, then workers — matches backend CreateGroup order
     const sorted = [...members].sort((a, b) => {
       if (a.role === 'primary') return -1;
@@ -175,7 +192,10 @@
         <div class="space-y-2">
           <div class="space-y-1">
             <label class="text-sm font-medium" for="group-name">Group Name</label>
-            <Input id="group-name" bind:value={groupName} placeholder="e.g. nomad-cluster-1" />
+            <Input id="group-name" bind:value={groupName} placeholder="e.g. nomad-cluster-1" class={nameConflict ? 'border-destructive' : ''} />
+            {#if nameConflict}
+              <p class="text-[10px] text-destructive">A group with this name already exists.</p>
+            {/if}
           </div>
 
           <div class="space-y-1">
@@ -235,14 +255,21 @@
         <!-- Step 2: Shared configuration -->
         <div class="space-y-3">
           {#each visibleFields as field (field.key)}
+            {@const isEmpty = field.required && !(sharedConfig[field.key]?.trim())}
             <div class="space-y-1">
-              <label class="text-xs text-muted-foreground" for="cfg-{field.key}">{field.label || field.key}</label>
+              <label class="text-xs text-muted-foreground" for="cfg-{field.key}">
+                {field.label || field.key}{#if field.required}<span class="text-destructive">*</span>{/if}
+              </label>
               <Input
                 id="cfg-{field.key}"
                 value={sharedConfig[field.key] ?? ''}
                 oninput={(e) => { sharedConfig[field.key] = (e.currentTarget as HTMLInputElement).value; }}
                 placeholder={field.description ?? field.key}
+                class={isEmpty ? 'border-destructive' : ''}
               />
+              {#if field.description}
+                <p class="text-[10px] text-muted-foreground">{field.description}</p>
+              {/if}
             </div>
           {/each}
 
@@ -250,7 +277,7 @@
             <div class="border-t pt-3">
               <p class="text-sm font-medium mb-2">Per-account overrides (auto-generated)</p>
               <div class="space-y-1">
-                {#each getPerRoleCidrs() as item}
+                {#each perRoleCidrs as item}
                   <div class="flex items-center gap-2 text-xs">
                     <Badge variant={item.role === 'primary' ? 'default' : 'secondary'} class="text-[10px]">{item.role}</Badge>
                     <span class="font-mono text-muted-foreground">{item.stackName}</span>
@@ -275,7 +302,7 @@
 
           <p class="text-sm font-medium">Stacks to create:</p>
           <div class="space-y-1">
-            {#each getPerRoleCidrs() as item, i}
+            {#each perRoleCidrs as item, i}
               <div class="flex items-center gap-2 p-2 border rounded text-sm">
                 <Badge variant={item.role === 'primary' ? 'default' : 'secondary'} class="text-[10px]">{item.role}</Badge>
                 <span class="font-mono flex-1">{item.stackName}</span>
@@ -315,7 +342,7 @@
         {#if step === 1}
           <Button disabled={!canProceedStep1} onclick={() => { step = 2; }}>Next</Button>
         {:else if step === 2}
-          <Button onclick={() => { step = 3; }}>Review</Button>
+          <Button disabled={!canProceedStep2} onclick={() => { step = 3; }}>Review</Button>
         {:else}
           <Button disabled={saving} onclick={handleCreate}>
             {saving ? 'Creating...' : 'Create & Open'}

@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS deployment_groups (
 
 CREATE TABLE IF NOT EXISTS stack_group_membership (
     group_id      TEXT NOT NULL REFERENCES deployment_groups(id) ON DELETE CASCADE,
-    stack_name    TEXT NOT NULL,
+    stack_name    TEXT NOT NULL REFERENCES stacks(name) ON DELETE CASCADE,
     role          TEXT NOT NULL,
     deploy_order  INTEGER NOT NULL DEFAULT 0,
     account_id    TEXT,

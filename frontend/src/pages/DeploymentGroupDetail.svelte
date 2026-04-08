@@ -18,6 +18,14 @@
   let deployError = $state('');
   let deleteOpen = $state(false);
   let deleting = $state(false);
+  let logContainer: HTMLDivElement | undefined = $state();
+
+  // Auto-scroll deploy log to bottom when new lines arrive
+  $effect(() => {
+    if (deployLog.length && logContainer) {
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
+  });
 
   async function load() {
     loading = true;
@@ -194,7 +202,7 @@
           <Card.Title class="text-base">Deploy Log</Card.Title>
         </Card.Header>
         <Card.Content>
-          <div class="bg-muted rounded p-3 font-mono text-xs max-h-96 overflow-y-auto space-y-0.5">
+          <div bind:this={logContainer} class="bg-muted rounded p-3 font-mono text-xs max-h-96 overflow-y-auto space-y-0.5">
             {#each deployLog as line}
               <p class={line.startsWith('ERROR:') ? 'text-destructive' : line.startsWith('═══') ? 'font-bold text-foreground' : 'text-muted-foreground'}>{line}</p>
             {/each}
