@@ -115,6 +115,7 @@ meta:
           priority: 50
           description: "Empty and delete OCI backup bucket"
           command: |
+            export PATH=$PATH:/root/.local/bin:/usr/local/bin
             export OCI_CLI_AUTH=instance_principal
             NAMESPACE=$(oci os ns get --query "data" --raw-output)
             BUCKET="[[.bucketName]]"

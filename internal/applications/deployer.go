@@ -513,7 +513,7 @@ func (d *Deployer) registerAppHooks(
 		}
 
 		for _, h := range app.Hooks {
-			cmd := renderHookCommand(h.Command, app.Key, appConfig)
+			cmd := renderHookCommand(h.Command, app.Key, appConfig, app.ConfigFields)
 			hook := &db.Hook{
 				StackName:       stackName,
 				Trigger:         h.Trigger,
@@ -536,16 +536,23 @@ func (d *Deployer) registerAppHooks(
 // renderHookCommand renders a hook command template using [[ ]] delimiters,
 // substituting app config values. Keys are stored as "appKey.fieldKey" in
 // appConfig; the template receives just the fieldKey part.
-func renderHookCommand(cmdTemplate, appKey string, appConfig map[string]string) string {
+func renderHookCommand(cmdTemplate, appKey string, appConfig map[string]string, configFields []blueprints.ConfigField) string {
 	if cmdTemplate == "" {
 		return ""
 	}
 	data := make(map[string]string)
+	// Apply defaults from config field definitions first.
+	for _, cf := range configFields {
+		if cf.Default != "" {
+			data[cf.Key] = cf.Default
+		}
+	}
+	// Override with actual appConfig values (stored as "appKey.fieldKey").
 	prefix := appKey + "."
 	for k, v := range appConfig {
 		if strings.HasPrefix(k, prefix) {
 			fieldKey := strings.TrimPrefix(k, prefix)
-			if !strings.HasPrefix(fieldKey, "_") {
+			if !strings.HasPrefix(fieldKey, "_") && v != "" {
 				data[fieldKey] = v
 			}
 		}
