@@ -32,12 +32,13 @@ type CreateGroupMemberReq struct {
 
 // GroupSummary is the JSON response for listing groups.
 type GroupSummary struct {
-	ID        string         `json:"id"`
-	Name      string         `json:"name"`
-	Blueprint string         `json:"blueprint"`
-	Status    string         `json:"status"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Blueprint string            `json:"blueprint"`
+	Status    string            `json:"status"`
 	Members   []GroupMemberView `json:"members"`
-	CreatedAt int64          `json:"createdAt"`
+	DeployLog string            `json:"deployLog,omitempty"`
+	CreatedAt int64             `json:"createdAt"`
 }
 
 type GroupMemberView struct {
@@ -108,6 +109,7 @@ func (h *PlatformHandler) GetGroup(w http.ResponseWriter, r *http.Request) {
 		Blueprint: g.Blueprint,
 		Status:    g.Status,
 		Members:   views,
+		DeployLog: g.DeployLog,
 		CreatedAt: g.CreatedAt,
 	})
 }

@@ -19,15 +19,16 @@ var migrationsFS embed.FS
 // DBPair holds separate connection pools for reads and writes.
 // SQLite allows concurrent readers with WAL mode, but only one writer at a time.
 // Separating the pools prevents reads from queueing behind writes.
+// The write pool is wrapped with ResilientWriter for automatic lock retry.
 type DBPair struct {
-	ReadDB  *sql.DB // concurrent readers (up to 120)
-	WriteDB *sql.DB // single writer (serialized)
+	ReadDB  *sql.DB          // concurrent readers (up to 120)
+	WriteDB *ResilientWriter // single writer (serialized) with lock retry
 }
 
 // Close closes both database connections.
 func (p *DBPair) Close() error {
 	rerr := p.ReadDB.Close()
-	werr := p.WriteDB.Close()
+	werr := p.WriteDB.DB.Close()
 	if werr != nil {
 		return werr
 	}
@@ -46,12 +47,13 @@ func Open(path string) (*DBPair, error) {
 	if path == ":memory:" {
 		path = "file::memory:?cache=shared"
 	}
-	dsn := path + "&_journal_mode=WAL&_foreign_keys=on&_busy_timeout=10000" +
-		"&_synchronous=NORMAL&_cache_size=-32000&_temp_store=MEMORY"
+	pragmas := "_journal_mode=WAL&_foreign_keys=on&_busy_timeout=10000" +
+		"&_synchronous=NORMAL&_cache_size=-32000&_temp_store=MEMORY" +
+		"&_journal_size_limit=200000000" // 200MB WAL file cap
+	dsn := path + "&" + pragmas
 	// If path doesn't have query params yet, fix the separator.
 	if !strings.Contains(path, "?") {
-		dsn = path + "?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=10000" +
-			"&_synchronous=NORMAL&_cache_size=-32000&_temp_store=MEMORY"
+		dsn = path + "?" + pragmas
 	}
 
 	writeDB, err := sql.Open("sqlite", dsn)
@@ -69,10 +71,11 @@ func Open(path string) (*DBPair, error) {
 	readDB.SetMaxOpenConns(120)
 	readDB.SetMaxIdleConns(10)
 
-	return &DBPair{ReadDB: readDB, WriteDB: writeDB}, nil
+	return &DBPair{ReadDB: readDB, WriteDB: &ResilientWriter{DB: writeDB}}, nil
 }
 
-func Migrate(db *sql.DB) error {
+func Migrate(w *ResilientWriter) error {
+	db := w.DB
 	files, _ := fs.Glob(migrationsFS, "migrations/*.sql")
 	sort.Strings(files) // lexicographic = version order
 

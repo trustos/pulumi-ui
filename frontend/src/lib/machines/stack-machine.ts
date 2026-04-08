@@ -284,6 +284,12 @@ export const stackMachine = setup({
      */
     externalRunning: {
       on: {
+        CANCEL: {
+          // Fire-and-forget cancel — polling will detect when the op actually stops.
+          actions: ({ context }) => {
+            cancelOperation(context.stackName).catch(() => {});
+          },
+        },
         EXTERNAL_OP_ENDED: 'idle',
       },
     },

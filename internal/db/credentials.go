@@ -34,7 +34,7 @@ var AllCredentialKeys = []string{
 
 type CredentialStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 	enc *crypto.Encryptor
 }
 

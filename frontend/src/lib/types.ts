@@ -103,6 +103,7 @@ export interface DeploymentGroupSummary {
   blueprint: string;
   status: string;
   members: GroupMemberView[];
+  deployLog?: string;
   createdAt: number;
 }
 

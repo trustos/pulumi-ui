@@ -20,7 +20,7 @@ type NodeCert struct {
 // NodeCertStore manages per-node Nebula certificates in stack_node_certs.
 type NodeCertStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 	enc *crypto.Encryptor
 }
 

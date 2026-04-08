@@ -63,8 +63,11 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 		data, _ := json.Marshal(ev)
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
+		// Persist each event for log recovery across page navigations.
+		h.Groups.AppendDeployLog(groupID, string(data))
 	}
 
+	h.Groups.ClearDeployLog(groupID)
 	h.Groups.UpdateStatus(groupID, "deploying")
 
 	// Separate members by role.

@@ -298,6 +298,7 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 	// correct name and runtime, so we must not override it with auto.Project().
 	envVars["PULUMI_BACKEND_URL"] = e.backendURL()
 
+
 	stack, err := auto.UpsertStackLocalSource(ctx, stackName, tempDir,
 		auto.EnvVars(envVars),
 	)

@@ -12,6 +12,7 @@ type DeploymentGroup struct {
 	Blueprint    string
 	Status       string // configuring, deploying, deployed, partial, failed
 	SharedConfig *string
+	DeployLog    string
 	CreatedAt    int64
 	UpdatedAt    int64
 }
@@ -27,7 +28,7 @@ type GroupMember struct {
 
 type DeploymentGroupStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 }
 
 func NewDeploymentGroupStore(p *DBPair) *DeploymentGroupStore {
@@ -45,9 +46,9 @@ func (s *DeploymentGroupStore) Create(g *DeploymentGroup) error {
 func (s *DeploymentGroupStore) Get(id string) (*DeploymentGroup, error) {
 	g := &DeploymentGroup{}
 	err := s.rdb.QueryRow(`
-		SELECT id, name, blueprint, status, shared_config, created_at, updated_at
+		SELECT id, name, blueprint, status, shared_config, deploy_log, created_at, updated_at
 		FROM deployment_groups WHERE id = ?
-	`, id).Scan(&g.ID, &g.Name, &g.Blueprint, &g.Status, &g.SharedConfig, &g.CreatedAt, &g.UpdatedAt)
+	`, id).Scan(&g.ID, &g.Name, &g.Blueprint, &g.Status, &g.SharedConfig, &g.DeployLog, &g.CreatedAt, &g.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -57,9 +58,9 @@ func (s *DeploymentGroupStore) Get(id string) (*DeploymentGroup, error) {
 func (s *DeploymentGroupStore) GetByName(name string) (*DeploymentGroup, error) {
 	g := &DeploymentGroup{}
 	err := s.rdb.QueryRow(`
-		SELECT id, name, blueprint, status, shared_config, created_at, updated_at
+		SELECT id, name, blueprint, status, shared_config, deploy_log, created_at, updated_at
 		FROM deployment_groups WHERE name = ?
-	`, name).Scan(&g.ID, &g.Name, &g.Blueprint, &g.Status, &g.SharedConfig, &g.CreatedAt, &g.UpdatedAt)
+	`, name).Scan(&g.ID, &g.Name, &g.Blueprint, &g.Status, &g.SharedConfig, &g.DeployLog, &g.CreatedAt, &g.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -84,6 +85,22 @@ func (s *DeploymentGroupStore) List() ([]DeploymentGroup, error) {
 		groups = append(groups, g)
 	}
 	return groups, nil
+}
+
+// AppendDeployLog appends a JSON-encoded SSE event line to the deploy log.
+func (s *DeploymentGroupStore) AppendDeployLog(id, line string) error {
+	_, err := s.wdb.Exec(`
+		UPDATE deployment_groups SET deploy_log = deploy_log || ? WHERE id = ?
+	`, line+"\n", id)
+	return err
+}
+
+// ClearDeployLog resets the deploy log for a new deployment.
+func (s *DeploymentGroupStore) ClearDeployLog(id string) error {
+	_, err := s.wdb.Exec(`
+		UPDATE deployment_groups SET deploy_log = '' WHERE id = ?
+	`, id)
+	return err
 }
 
 func (s *DeploymentGroupStore) UpdateStatus(id, status string) error {

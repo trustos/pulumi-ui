@@ -18,7 +18,7 @@ type PassphraseRow struct {
 
 type PassphraseStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 	enc *crypto.Encryptor
 }
 

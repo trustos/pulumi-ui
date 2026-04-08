@@ -28,7 +28,7 @@ type StackConnection struct {
 
 type StackConnectionStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 	enc *crypto.Encryptor
 }
 

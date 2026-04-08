@@ -18,7 +18,7 @@ type User struct {
 
 type UserStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 }
 
 func NewUserStore(p *DBPair) *UserStore {

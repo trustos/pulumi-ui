@@ -23,7 +23,7 @@
   // ── XState machine for operation lifecycle ──────────────────────────────
   // Manages: idle → running → (cancelling | deployingApps) → idle
   // Replaces: isRunning, currentOp, logLines, cancelFn, isDeployingApps,
-  //           deployAppLines, deployAppCancelFn, pendingAutoDeployApps, autoDeployTriggered
+  //           deployAppCancelFn, pendingAutoDeployApps, autoDeployTriggered
   const { snapshot: machineState, send } = useMachine(stackMachine, {
     // @ts-ignore — name is stable for this component instance (new instance per route)
     get input() { return { stackName: name }; },
@@ -57,7 +57,6 @@
   let cancelConfirmOpen = $state(false);
   let removeConfirmOpen = $state(false);
   let activeTab = $state('logs');
-  let deployAppLines = $state<Array<{ type: string; data: string; timestamp: string }>>([]);
 
   // Interactive app catalog state
   let editApps = $state<Record<string, boolean>>({});
@@ -518,6 +517,14 @@
       loadInfo();
       loadPersistedLogs();
     }
+  });
+
+  // Poll for external operation completion (every 5s).
+  // loadInfo() already sends EXTERNAL_OP_ENDED when !info.running.
+  $effect(() => {
+    if (!$machineState.matches('externalRunning')) return;
+    const interval = setInterval(() => { loadInfo(); }, 5000);
+    return () => clearInterval(interval);
   });
 
   // Auto-deploy: when navigated with ?autoDeploy=true, start up with chainApps.
@@ -1225,18 +1232,6 @@
           </Dialog.Content>
         </Dialog.Root>
 
-        <!-- Deploy apps log -->
-        {#if deployAppLines.length > 0}
-          <div class="mt-4 flex-1 bg-zinc-950 rounded-lg border border-zinc-800 overflow-y-auto max-w-3xl">
-            <div class="p-4 font-mono text-xs leading-relaxed">
-              {#each deployAppLines as event}
-                <div class="{lineColor(event)}" style="overflow-wrap: anywhere;">
-                  {event.data}
-                </div>
-              {/each}
-            </div>
-          </div>
-        {/if}
         {/if}
       </Tabs.Content>
     {/if}

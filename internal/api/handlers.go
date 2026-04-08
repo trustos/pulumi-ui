@@ -1,7 +1,6 @@
 package api
 
 import (
-	"database/sql"
 	"embed"
 
 	"github.com/trustos/pulumi-ui/internal/blueprints"
@@ -81,7 +80,7 @@ type PlatformHandler struct {
 
 // AdminHandler manages health checks, export/import setup.
 type AdminHandler struct {
-	DB          *sql.DB
+	DB          *db.ResilientWriter
 	Accounts    *db.AccountStore
 	Passphrases *db.PassphraseStore
 	Creds       *db.CredentialStore

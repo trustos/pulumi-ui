@@ -41,7 +41,7 @@ func (a *OCIAccount) ToOCICredentials() OCICredentials {
 
 type AccountStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 	enc *crypto.Encryptor
 }
 

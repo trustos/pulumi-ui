@@ -19,7 +19,7 @@ type StackRow struct {
 
 type StackStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 }
 
 func NewStackStore(p *DBPair) *StackStore {

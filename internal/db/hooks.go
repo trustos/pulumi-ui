@@ -23,7 +23,7 @@ type Hook struct {
 
 type HookStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 }
 
 func NewHookStore(p *DBPair) *HookStore {

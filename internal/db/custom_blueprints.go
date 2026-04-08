@@ -19,7 +19,7 @@ type CustomBlueprint struct {
 // CustomBlueprintStore handles persistence of user-defined blueprints.
 type CustomBlueprintStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 }
 
 func NewCustomBlueprintStore(p *DBPair) *CustomBlueprintStore {

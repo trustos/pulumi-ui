@@ -4,22 +4,80 @@
     import { Badge } from "$lib/components/ui/badge";
     import * as Card from "$lib/components/ui/card";
     import * as Dialog from "$lib/components/ui/dialog";
-    import { getGroup, deployGroup, deleteGroup, listAccounts } from "$lib/api";
-    import { readSSEStream } from "$lib/sse-stream";
+    import { getGroup, listAccounts } from "$lib/api";
+    import { useMachine } from "@xstate/svelte";
+    import { groupDeployMachine } from "$lib/machines/group-deploy-machine";
     import { navigate } from "$lib/router";
     import type { DeploymentGroupSummary, OciAccount } from "$lib/types";
+    import type { SSEEvent } from "$lib/sse-stream";
 
     let { id = "" }: { id?: string } = $props();
 
+    // ── XState machine for deploy/delete lifecycle ──────────────────────
+    // Manages: idle → deploying (3 phases) → idle, idle → deleting → deleted
+    // Replaces: deploying, deployLog (live), deployError, deleting
+    const { snapshot: machineState, send } = useMachine(groupDeployMachine, {
+        get input() { return { groupId: id }; },
+    });
+
+    // Derived from machine
+    const deploying = $derived(
+        $machineState.matches('deploying') || $machineState.matches('externalDeploying')
+    );
+    const deleting = $derived($machineState.matches('deleting'));
+    const currentPhase = $derived($machineState.context.currentPhase);
+    const deployError = $derived($machineState.context.error);
+    const liveLog = $derived($machineState.context.logEvents);
+
+    // ── Regular state (not managed by the machine) ──────────────────────
     let group = $state<DeploymentGroupSummary | null>(null);
     let accounts = $state<OciAccount[]>([]);
     let loading = $state(true);
-    let deploying = $state(false);
-    let deployLog = $state<string[]>([]);
-    let deployError = $state("");
     let deleteOpen = $state(false);
-    let deleting = $state(false);
     let logContainer: HTMLDivElement | undefined = $state();
+
+    // Persisted log — from API, outside machine
+    type LogEvent = { type: string; data: string };
+    let persistedLog = $state<LogEvent[]>([]);
+
+    // Combine live machine log with persisted log
+    const deployLog = $derived<LogEvent[]>(liveLog.length > 0 ? liveLog : persistedLog);
+
+    const MAX_DOTS = 80;
+
+    const displayLines = $derived(() => {
+        const out: LogEvent[] = [];
+        for (const line of deployLog) {
+            if (line.data.trim() === '.') {
+                if (out.length > 0) {
+                    const prev = out[out.length - 1];
+                    const dotCount = (prev.data.match(/\.+$/)?.[0]?.length ?? 0) + 1;
+                    if (dotCount <= MAX_DOTS) {
+                        out[out.length - 1] = { ...prev, data: prev.data + '.' };
+                    }
+                }
+            } else {
+                out.push(line);
+            }
+        }
+        return out;
+    });
+
+    function lineColor(event: LogEvent): string {
+        if (event.type === 'error') return 'text-red-400';
+        if (event.type === 'complete') return 'text-green-400 font-medium';
+        const trimmed = event.data.trimStart();
+        if (trimmed.startsWith('═══')) return 'text-zinc-100 font-medium';
+        if (trimmed.startsWith('──')) return 'text-zinc-400 font-medium';
+        if (trimmed.startsWith('+ ') || trimmed.startsWith('+[')) return 'text-green-400';
+        if (trimmed.startsWith('- ') || trimmed.startsWith('-[')) return 'text-red-400';
+        if (trimmed.startsWith('~ ') || trimmed.startsWith('~[')) return 'text-yellow-400';
+        if (trimmed.startsWith('error:') || trimmed.startsWith('Error:') || trimmed.startsWith('ERROR:')) return 'text-red-400';
+        if (trimmed.startsWith('warning:') || trimmed.startsWith('warn:') || trimmed.startsWith('WARNING:')) return 'text-yellow-400';
+        if (trimmed.startsWith('Updating') || trimmed.startsWith('Updated') || trimmed.startsWith('Creating') || trimmed.startsWith('Created')) return 'text-cyan-400';
+        if (trimmed.startsWith('Destroying') || trimmed.startsWith('Destroyed') || trimmed.startsWith('Deleting') || trimmed.startsWith('Deleted')) return 'text-red-400';
+        return 'text-zinc-300';
+    }
 
     // Auto-scroll deploy log to bottom when new lines arrive
     $effect(() => {
@@ -28,6 +86,21 @@
         }
     });
 
+    function parsePersistedLog(raw: string | undefined): LogEvent[] {
+        if (!raw) return [];
+        const events: LogEvent[] = [];
+        for (const line of raw.split('\n')) {
+            if (!line.trim()) continue;
+            try {
+                const ev = JSON.parse(line);
+                if (ev.type && ev.data !== undefined) {
+                    events.push({ type: ev.type, data: ev.data });
+                }
+            } catch { /* skip malformed lines */ }
+        }
+        return events;
+    }
+
     async function load() {
         loading = true;
         try {
@@ -35,6 +108,14 @@
                 getGroup(id),
                 listAccounts(),
             ]);
+            // Detect external deploy: backend is deploying but we didn't start it
+            if (group?.status === 'deploying' && $machineState.matches('idle')) {
+                send({ type: 'EXTERNAL_DEPLOY_DETECTED' });
+            }
+            // Restore persisted deploy log when not actively deploying
+            if (group?.deployLog && !deploying) {
+                persistedLog = parsePersistedLog(group.deployLog);
+            }
         } catch {
             group = null;
         } finally {
@@ -43,6 +124,36 @@
     }
 
     onMount(load);
+
+    // Reload data when machine returns to idle after an operation
+    $effect(() => {
+        if ($machineState.matches('idle') && $machineState.context.finalStatus) {
+            load();
+        }
+    });
+
+    // Navigate away on successful delete
+    $effect(() => {
+        if ($machineState.matches('deleted')) {
+            navigate('/');
+        }
+    });
+
+    // Poll for external deploy completion (every 5s)
+    $effect(() => {
+        if (!$machineState.matches('externalDeploying')) return;
+        const interval = setInterval(async () => {
+            try {
+                const g = await getGroup(id);
+                if (g && g.status !== 'deploying') {
+                    persistedLog = parsePersistedLog(g.deployLog);
+                    group = g;
+                    send({ type: 'EXTERNAL_DEPLOY_ENDED' });
+                }
+            } catch { /* retry next interval */ }
+        }, 5000);
+        return () => clearInterval(interval);
+    });
 
     function getAccountName(accountId: string | null): string {
         if (!accountId) return "Unknown";
@@ -66,39 +177,13 @@
         return "outline";
     }
 
-    async function handleDeploy() {
-        deploying = true;
-        deployLog = [];
-        deployError = "";
-        const res = await deployGroup(id);
-        readSSEStream(res, {
-            onEvent: (ev) => {
-                if (ev.type === "error") {
-                    deployError = ev.data;
-                    deployLog = [...deployLog, `ERROR: ${ev.data}`];
-                } else {
-                    deployLog = [...deployLog, ev.data];
-                }
-            },
-            onError: (err) => { deployError = err; },
-            onDone: async () => {
-                await load();
-                deploying = false;
-            },
-        });
+    function handleDeploy() {
+        send({ type: 'DEPLOY' });
     }
 
-    async function handleDelete() {
-        deleting = true;
-        try {
-            await deleteGroup(id);
-            deleteOpen = false;
-            navigate("/");
-        } catch (err) {
-            deployError = err instanceof Error ? err.message : String(err);
-        } finally {
-            deleting = false;
-        }
+    function handleDelete() {
+        deleteOpen = false;
+        send({ type: 'REQUEST_DELETE' });
     }
 </script>
 
@@ -124,6 +209,12 @@
                     <Badge variant={statusVariant(group.status)}
                         >{group.status}</Badge
                     >
+                    {#if deploying && currentPhase > 0}
+                        <Badge variant="secondary">Phase {currentPhase}/3</Badge>
+                    {/if}
+                    {#if $machineState.matches('externalDeploying')}
+                        <Badge variant="secondary">Deploying (external)</Badge>
+                    {/if}
                     <span class="text-sm text-muted-foreground"
                         >{group.members.length} accounts</span
                     >
@@ -137,10 +228,9 @@
                 {/if}
                 <Button
                     variant="destructive"
-                    onclick={() => {
-                        deleteOpen = true;
-                    }}>Delete Group</Button
-                >
+                    onclick={() => { deleteOpen = true; }}
+                    disabled={deploying || deleting}
+                >{deleting ? "Deleting..." : "Delete Group"}</Button>
             </div>
         </div>
 
@@ -232,18 +322,12 @@
                 <Card.Content>
                     <div
                         bind:this={logContainer}
-                        class="bg-muted rounded p-3 font-mono text-xs max-h-96 overflow-y-auto space-y-0.5"
+                        class="bg-zinc-950 rounded-lg border border-zinc-800 p-4 font-mono text-xs leading-relaxed max-h-[32rem] overflow-y-auto"
                     >
-                        {#each deployLog as line}
-                            <p
-                                class={line.startsWith("ERROR:")
-                                    ? "text-destructive"
-                                    : line.startsWith("═══")
-                                      ? "font-bold text-foreground"
-                                      : "text-muted-foreground"}
-                            >
-                                {line}
-                            </p>
+                        {#each displayLines() as event}
+                            <div class={lineColor(event)} style="overflow-wrap: anywhere;">
+                                {event.data}
+                            </div>
                         {/each}
                     </div>
                 </Card.Content>

@@ -18,7 +18,7 @@ type Session struct {
 
 type SessionStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 }
 
 func NewSessionStore(p *DBPair) *SessionStore {

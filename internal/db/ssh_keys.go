@@ -22,7 +22,7 @@ type SSHKey struct {
 
 type SSHKeyStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 	enc *crypto.Encryptor
 }
 

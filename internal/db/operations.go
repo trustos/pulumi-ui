@@ -17,7 +17,7 @@ type Operation struct {
 
 type OperationStore struct {
 	rdb *sql.DB
-	wdb *sql.DB
+	wdb *ResilientWriter
 }
 
 func NewOperationStore(p *DBPair) *OperationStore {
