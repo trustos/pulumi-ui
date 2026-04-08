@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -122,6 +121,11 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(outputs) == 0 {
+		send(engine.SSEEvent{Type: "error", Data: "Primary deployment produced no outputs — workers cannot be wired"})
+		h.Groups.UpdateStatus(groupID, "failed")
+		return
+	}
 	send(engine.SSEEvent{Type: "output", Data: fmt.Sprintf("Primary outputs captured: %d keys", len(outputs))})
 
 	// ── Phase 2: Wire outputs → workers, deploy in parallel ──────────────
@@ -151,7 +155,9 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			// Update the stack config in DB.
-			h.updateStackConfig(worker.stackName, group.Blueprint, worker.config, worker.passphraseID, worker.accountID)
+			if err := h.updateStackConfig(worker.stackName, group.Blueprint, worker.config, worker.passphraseID, worker.accountID); err != nil {
+				send(engine.SSEEvent{Type: "error", Data: fmt.Sprintf("Failed to update config for %s: %v", worker.stackName, err)})
+			}
 		}
 	}
 
@@ -163,10 +169,18 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	for _, worker := range workerMembers {
 		wg.Add(1)
 		go func(w *memberWithCreds) {
-			defer wg.Done()
+			defer func() {
+				if rec := recover(); rec != nil {
+					mu.Lock()
+					failedWorkers = append(failedWorkers, w.stackName)
+					mu.Unlock()
+					send(engine.SSEEvent{Type: "error", Data: fmt.Sprintf("Panic deploying %s: %v", w.stackName, rec)})
+				}
+				wg.Done()
+			}()
 			send(engine.SSEEvent{Type: "output", Data: fmt.Sprintf("── Deploying %s ──", w.stackName)})
 			status := h.Engine.Up(
-				context.Background(), // independent context per worker
+				r.Context(),
 				w.stackName,
 				group.Blueprint,
 				w.config,
@@ -212,7 +226,9 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update primary config and re-deploy (just adds IAM policies).
-	h.updateStackConfig(primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.passphraseID, primaryMember.accountID)
+	if err := h.updateStackConfig(primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.passphraseID, primaryMember.accountID); err != nil {
+		send(engine.SSEEvent{Type: "error", Data: fmt.Sprintf("Failed to update primary config: %v", err)})
+	}
 
 	reUpStatus := h.Engine.Up(
 		r.Context(),
@@ -293,7 +309,7 @@ func (h *PlatformHandler) resolveMemberCreds(m db.GroupMember) (*memberWithCreds
 	}, nil
 }
 
-func (h *PlatformHandler) updateStackConfig(stackName, blueprint string, config map[string]string, passphraseID, accountID *string) {
+func (h *PlatformHandler) updateStackConfig(stackName, blueprint string, config map[string]string, passphraseID, accountID *string) error {
 	cfg := &stacks.StackConfig{
 		APIVersion: "pulumi.io/v1",
 		Kind:       "Stack",
@@ -303,6 +319,9 @@ func (h *PlatformHandler) updateStackConfig(stackName, blueprint string, config 
 		},
 		Config: config,
 	}
-	yamlStr, _ := cfg.ToYAML()
-	h.Stacks.Upsert(stackName, blueprint, yamlStr, accountID, passphraseID, nil, accountID)
+	yamlStr, err := cfg.ToYAML()
+	if err != nil {
+		return fmt.Errorf("marshal config for %s: %w", stackName, err)
+	}
+	return h.Stacks.Upsert(stackName, blueprint, yamlStr, accountID, passphraseID, nil, accountID)
 }

@@ -100,15 +100,25 @@
     return accounts.find(a => a.id === id)?.region ?? '';
   }
 
-  // Generate per-role CIDRs for review
-  function getPerRoleCidrs(): { stackName: string; role: string; overrides: Record<string, string> }[] {
-    return members.map((m, idx) => {
-      const stackName = m.role === 'primary' ? `${groupName}-primary` : `${groupName}-worker-${idx}`;
+  // Generate per-role CIDRs for review — uses sequential global index
+  // (primary=0, workers=1,2,3) to avoid CIDR collisions.
+  function getPerRoleCidrs(): { stackName: string; role: string; accountId: string; overrides: Record<string, string> }[] {
+    // Sort: primary first, then workers — matches backend CreateGroup order
+    const sorted = [...members].sort((a, b) => {
+      if (a.role === 'primary') return -1;
+      if (b.role === 'primary') return 1;
+      return 0;
+    });
+    let workerIdx = 0;
+    return sorted.map((m, globalIdx) => {
+      const stackName = m.role === 'primary'
+        ? `${groupName}-primary`
+        : `${groupName}-worker-${++workerIdx}`;
       const overrides: Record<string, string> = {};
       for (const prc of multiAccount?.perRoleConfig ?? []) {
-        overrides[prc.key] = prc.pattern.replace('{index}', String(idx));
+        overrides[prc.key] = prc.pattern.replace('{index}', String(globalIdx));
       }
-      return { stackName, role: m.role, overrides };
+      return { stackName, role: m.role, accountId: m.accountId, overrides };
     });
   }
 
@@ -269,7 +279,7 @@
               <div class="flex items-center gap-2 p-2 border rounded text-sm">
                 <Badge variant={item.role === 'primary' ? 'default' : 'secondary'} class="text-[10px]">{item.role}</Badge>
                 <span class="font-mono flex-1">{item.stackName}</span>
-                <span class="text-xs text-muted-foreground">{getAccountName(members[i].accountId)} · {getAccountRegion(members[i].accountId)}</span>
+                <span class="text-xs text-muted-foreground">{getAccountName(item.accountId)} · {getAccountRegion(item.accountId)}</span>
               </div>
             {/each}
           </div>

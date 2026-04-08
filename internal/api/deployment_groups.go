@@ -56,7 +56,7 @@ func (h *PlatformHandler) ListGroups(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]GroupSummary, 0, len(groups))
 	for _, g := range groups {
-		members, _ := h.Groups.ListMembers(g.ID)
+		members, _ := h.Groups.ListMembers(g.ID) //nolint: best-effort for listing
 		views := make([]GroupMemberView, 0, len(members))
 		for _, m := range members {
 			views = append(views, GroupMemberView{
