@@ -73,6 +73,8 @@ type PlatformHandler struct {
 	Hooks         *db.HookStore
 	MeshManager   *mesh.Manager
 	ConnStore     *db.StackConnectionStore
+	Groups        *db.DeploymentGroupStore
+	Registry      *blueprints.BlueprintRegistry
 	LogBuffer     *logbuffer.Buffer
 	AgentBinaries embed.FS
 }

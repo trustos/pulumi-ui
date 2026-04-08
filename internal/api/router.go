@@ -85,6 +85,13 @@ func NewRouter(cfg RouterConfig, frontendFS http.FileSystem) http.Handler {
 			r.Delete("/programs/{name}", cfg.Blueprints.DeleteBlueprint)
 			r.Post("/programs/{name}/fork", cfg.Blueprints.ForkBlueprint)
 
+			// Deployment groups
+			r.Get("/groups", cfg.Platform.ListGroups)
+			r.Post("/groups", cfg.Platform.CreateGroup)
+			r.Get("/groups/{id}", cfg.Platform.GetGroup)
+			r.Post("/groups/{id}/deploy", cfg.Platform.DeployGroup)
+			r.Delete("/groups/{id}", cfg.Platform.DeleteGroup)
+
 			r.Get("/stacks", cfg.Stacks.ListStacks)
 			r.Get("/stacks/discover", cfg.Platform.DiscoverRemoteStacks)
 			r.Delete("/stacks/discover/{project}/{stack}", cfg.Platform.DeleteRemoteStack)

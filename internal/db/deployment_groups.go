@@ -26,15 +26,16 @@ type GroupMember struct {
 }
 
 type DeploymentGroupStore struct {
-	db *sql.DB
+	rdb *sql.DB
+	wdb *sql.DB
 }
 
-func NewDeploymentGroupStore(db *sql.DB) *DeploymentGroupStore {
-	return &DeploymentGroupStore{db: db}
+func NewDeploymentGroupStore(p *DBPair) *DeploymentGroupStore {
+	return &DeploymentGroupStore{rdb: p.ReadDB, wdb: p.WriteDB}
 }
 
 func (s *DeploymentGroupStore) Create(g *DeploymentGroup) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		INSERT INTO deployment_groups (id, name, blueprint, status, shared_config, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, g.ID, g.Name, g.Blueprint, g.Status, g.SharedConfig, time.Now().Unix(), time.Now().Unix())
@@ -43,7 +44,7 @@ func (s *DeploymentGroupStore) Create(g *DeploymentGroup) error {
 
 func (s *DeploymentGroupStore) Get(id string) (*DeploymentGroup, error) {
 	g := &DeploymentGroup{}
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT id, name, blueprint, status, shared_config, created_at, updated_at
 		FROM deployment_groups WHERE id = ?
 	`, id).Scan(&g.ID, &g.Name, &g.Blueprint, &g.Status, &g.SharedConfig, &g.CreatedAt, &g.UpdatedAt)
@@ -55,7 +56,7 @@ func (s *DeploymentGroupStore) Get(id string) (*DeploymentGroup, error) {
 
 func (s *DeploymentGroupStore) GetByName(name string) (*DeploymentGroup, error) {
 	g := &DeploymentGroup{}
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT id, name, blueprint, status, shared_config, created_at, updated_at
 		FROM deployment_groups WHERE name = ?
 	`, name).Scan(&g.ID, &g.Name, &g.Blueprint, &g.Status, &g.SharedConfig, &g.CreatedAt, &g.UpdatedAt)
@@ -66,7 +67,7 @@ func (s *DeploymentGroupStore) GetByName(name string) (*DeploymentGroup, error) 
 }
 
 func (s *DeploymentGroupStore) List() ([]DeploymentGroup, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT id, name, blueprint, status, shared_config, created_at, updated_at
 		FROM deployment_groups ORDER BY created_at DESC
 	`)
@@ -86,20 +87,20 @@ func (s *DeploymentGroupStore) List() ([]DeploymentGroup, error) {
 }
 
 func (s *DeploymentGroupStore) UpdateStatus(id, status string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		UPDATE deployment_groups SET status = ?, updated_at = ? WHERE id = ?
 	`, status, time.Now().Unix(), id)
 	return err
 }
 
 func (s *DeploymentGroupStore) Delete(id string) error {
-	_, err := s.db.Exec(`DELETE FROM deployment_groups WHERE id = ?`, id)
+	_, err := s.wdb.Exec(`DELETE FROM deployment_groups WHERE id = ?`, id)
 	return err
 }
 
 // AddMember adds a stack to a deployment group.
 func (s *DeploymentGroupStore) AddMember(m *GroupMember) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		INSERT INTO stack_group_membership (group_id, stack_name, role, deploy_order, account_id)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(group_id, stack_name) DO UPDATE SET
@@ -112,7 +113,7 @@ func (s *DeploymentGroupStore) AddMember(m *GroupMember) error {
 
 // ListMembers returns all stacks in a group, ordered by deploy_order.
 func (s *DeploymentGroupStore) ListMembers(groupID string) ([]GroupMember, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.rdb.Query(`
 		SELECT group_id, stack_name, role, deploy_order, account_id
 		FROM stack_group_membership
 		WHERE group_id = ?
@@ -135,7 +136,7 @@ func (s *DeploymentGroupStore) ListMembers(groupID string) ([]GroupMember, error
 
 // RemoveMember removes a stack from a group.
 func (s *DeploymentGroupStore) RemoveMember(groupID, stackName string) error {
-	_, err := s.db.Exec(`
+	_, err := s.wdb.Exec(`
 		DELETE FROM stack_group_membership WHERE group_id = ? AND stack_name = ?
 	`, groupID, stackName)
 	return err
@@ -144,7 +145,7 @@ func (s *DeploymentGroupStore) RemoveMember(groupID, stackName string) error {
 // GetGroupForStack returns the group a stack belongs to, or nil if not in a group.
 func (s *DeploymentGroupStore) GetGroupForStack(stackName string) (*DeploymentGroup, *GroupMember, error) {
 	var m GroupMember
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT group_id, stack_name, role, deploy_order, account_id
 		FROM stack_group_membership WHERE stack_name = ?
 	`, stackName).Scan(&m.GroupID, &m.StackName, &m.Role, &m.DeployOrder, &m.AccountID)
