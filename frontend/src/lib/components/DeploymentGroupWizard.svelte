@@ -127,7 +127,7 @@
 
   // Generate per-role CIDRs — primary=0, workers=1,2,3
   const perRoleCidrs = $derived((() => {
-    const sorted = [...members].sort((a, b) => {
+    const sorted = members.toSorted((a, b) => {
       if (a.role === 'primary') return -1;
       if (b.role === 'primary') return 1;
       return 0;
