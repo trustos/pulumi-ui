@@ -5,6 +5,7 @@
     import * as Card from "$lib/components/ui/card";
     import * as Dialog from "$lib/components/ui/dialog";
     import { getGroup, deployGroup, deleteGroup, listAccounts } from "$lib/api";
+    import { readSSEStream } from "$lib/sse-stream";
     import { navigate } from "$lib/router";
     import type { DeploymentGroupSummary, OciAccount } from "$lib/types";
 
@@ -69,49 +70,22 @@
         deploying = true;
         deployLog = [];
         deployError = "";
-        try {
-            const res = await deployGroup(id);
-            if (
-                !res.ok &&
-                !res.headers.get("content-type")?.includes("text/event-stream")
-            ) {
-                deployError = await res.text();
-                return;
-            }
-            const reader = res.body?.getReader();
-            if (!reader) return;
-            const decoder = new TextDecoder();
-            let buf = "";
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buf += decoder.decode(value, { stream: true });
-                const lines = buf.split("\n");
-                buf = lines.pop() ?? "";
-                for (const line of lines) {
-                    if (!line.startsWith("data: ")) continue;
-                    try {
-                        const ev = JSON.parse(line.slice(6));
-                        if (ev.type === "error") {
-                            deployError = ev.data;
-                            deployLog = [...deployLog, `ERROR: ${ev.data}`];
-                        } else if (
-                            ev.type === "output" ||
-                            ev.type === "complete"
-                        ) {
-                            deployLog = [...deployLog, ev.data];
-                        }
-                    } catch {
-                        /* skip non-JSON */
-                    }
+        const res = await deployGroup(id);
+        readSSEStream(res, {
+            onEvent: (ev) => {
+                if (ev.type === "error") {
+                    deployError = ev.data;
+                    deployLog = [...deployLog, `ERROR: ${ev.data}`];
+                } else {
+                    deployLog = [...deployLog, ev.data];
                 }
-            }
-            await load(); // Refresh group status
-        } catch (err) {
-            deployError = err instanceof Error ? err.message : String(err);
-        } finally {
-            deploying = false;
-        }
+            },
+            onError: (err) => { deployError = err; },
+            onDone: async () => {
+                await load();
+                deploying = false;
+            },
+        });
     }
 
     async function handleDelete() {

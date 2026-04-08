@@ -1,4 +1,5 @@
 import type { BlueprintMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob, Hook, AppSettings, S3TestResult, RemoteStackSummary, UnlockResult, DeploymentGroupSummary } from './types';
+import { readSSEStream } from './sse-stream';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -192,8 +193,8 @@ export function streamOperation(
   onEvent: (event: { type: string; data: string; timestamp: string }) => void,
   onDone: (status: string) => void
 ): () => void {
-  let cancelled = false;
   const controller = new AbortController();
+  let cancelStream: (() => void) | undefined;
 
   (async () => {
     try {
@@ -203,53 +204,15 @@ export function streamOperation(
         body: JSON.stringify({}),
         signal: controller.signal,
       });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => 'unknown error');
-        onEvent({ type: 'error', data: text.trim(), timestamp: new Date().toISOString() });
-        onDone('failed');
-        return;
-      }
-      if (!res.body) {
-        onDone('failed');
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (!cancelled) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const event = JSON.parse(line.slice(6));
-              if (event.type === 'done') {
-                onDone(event.data ?? 'succeeded');
-                return;
-              }
-              onEvent(event);
-            } catch {
-              // ignore parse errors
-            }
-          }
-        }
-      }
-      onDone('succeeded');
+      cancelStream = readSSEStream(res, { onEvent, onDone, onError: (err) => {
+        onEvent({ type: 'error', data: err, timestamp: new Date().toISOString() });
+      }});
     } catch (err) {
-      if (!cancelled) onDone('failed');
+      onDone('failed');
     }
   })();
 
-  return () => {
-    cancelled = true;
-    controller.abort();
-  };
+  return () => { cancelStream?.(); controller.abort(); };
 }
 
 export function streamDeployApps(
@@ -257,8 +220,8 @@ export function streamDeployApps(
   onEvent: (event: { type: string; data: string; timestamp: string }) => void,
   onDone: (status: string) => void
 ): () => void {
-  let cancelled = false;
   const controller = new AbortController();
+  let cancelStream: (() => void) | undefined;
 
   (async () => {
     try {
@@ -268,42 +231,15 @@ export function streamDeployApps(
         body: JSON.stringify({}),
         signal: controller.signal,
       });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => 'unknown error');
-        onEvent({ type: 'error', data: text.trim(), timestamp: new Date().toISOString() });
-        onDone('failed');
-        return;
-      }
-      if (!res.body) { onDone('failed'); return; }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (!cancelled) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const event = JSON.parse(line.slice(6));
-              if (event.type === 'done') { onDone(event.data ?? 'succeeded'); return; }
-              onEvent(event);
-            } catch { /* ignore parse errors */ }
-          }
-        }
-      }
-      onDone('succeeded');
+      cancelStream = readSSEStream(res, { onEvent, onDone, onError: (err) => {
+        onEvent({ type: 'error', data: err, timestamp: new Date().toISOString() });
+      }});
     } catch (err) {
-      if (!cancelled) onDone('failed');
+      onDone('failed');
     }
   })();
 
-  return () => { cancelled = true; controller.abort(); };
+  return () => { cancelStream?.(); controller.abort(); };
 }
 
 export async function cancelOperation(name: string): Promise<void> {

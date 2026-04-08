@@ -12,6 +12,7 @@
     getHealth, listPassphrases, createPassphrase, deletePassphrase, renamePassphrase, getPassphraseValue,
     getSettings, putSettings, saveCredentials, testS3Connection, migrateState,
   } from '$lib/api';
+  import { readSSEStream } from '$lib/sse-stream';
   import type { Passphrase, AppSettings, S3TestResult } from '$lib/types';
 
   // ── Passphrases tab ────────────────────────────────────────────────────────
@@ -180,43 +181,22 @@
     migrating = true;
     migrateLog = [];
     migrateError = '';
-    try {
-      const res = await migrateState(direction);
-      if (!res.ok && !res.headers.get('content-type')?.includes('text/event-stream')) {
-        migrateError = await res.text();
-        return;
-      }
-      const reader = res.body?.getReader();
-      if (!reader) return;
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop() ?? '';
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const ev = JSON.parse(line.slice(6));
-            if (ev.type === 'error') {
-              migrateError = ev.data;
-            } else if (ev.type === 'output') {
-              migrateLog = [...migrateLog, ev.data];
-            } else if (ev.type === 'complete') {
-              migrateLog = [...migrateLog, ev.data];
-            }
-          } catch { /* skip non-JSON */ }
+    const res = await migrateState(direction);
+    readSSEStream(res, {
+      onEvent: (ev) => {
+        if (ev.type === 'error') {
+          migrateError = ev.data;
+        } else {
+          migrateLog = [...migrateLog, ev.data];
         }
-      }
-      await loadSettings();
-      await refreshHealth();
-    } catch (err) {
-      migrateError = err instanceof Error ? err.message : String(err);
-    } finally {
-      migrating = false;
-    }
+      },
+      onError: (err) => { migrateError = err; },
+      onDone: async () => {
+        await loadSettings();
+        await refreshHealth();
+        migrating = false;
+      },
+    });
   }
 
   // ── Status tab ─────────────────────────────────────────────────────────────
