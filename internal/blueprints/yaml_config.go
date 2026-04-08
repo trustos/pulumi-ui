@@ -173,6 +173,11 @@ func ParseConfigFields(yamlBody string) ([]ConfigField, string, error) {
 				}
 				hidden = mf.Hidden
 			}
+			// Auto-hide fields that are wiring targets in meta.multiAccount.
+			// These are filled by the deployment group orchestrator, not by the user.
+			if !hidden && doc.Meta.MultiAccount != nil {
+				hidden = isWiringTarget(doc.Meta.MultiAccount, key)
+			}
 		}
 
 		fields = append(fields, ConfigField{
@@ -290,6 +295,30 @@ func ApplyConfigDefaults(yamlBody string, config map[string]string) map[string]s
 		merged[k] = v
 	}
 	return merged
+}
+
+// isWiringTarget returns true if a config field key is a target of any
+// multiAccount wiring mapping. These fields are auto-filled by the deployment
+// group orchestrator and should be hidden from the user config form.
+func isWiringTarget(ma *MultiAccountMeta, key string) bool {
+	for _, w := range ma.Wiring {
+		for _, m := range w.Mappings {
+			if m.Config == key {
+				return true
+			}
+		}
+		for _, am := range w.AccountMappings {
+			if am.Config == key {
+				return true
+			}
+		}
+		for _, cm := range w.CollectMappings {
+			if cm.Config == key {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ParseMultiAccount parses the meta.multiAccount section of a YAML blueprint.

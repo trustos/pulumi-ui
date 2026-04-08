@@ -178,14 +178,15 @@ func (r *BlueprintRegistry) List() []BlueprintMeta {
 	defer r.mu.RUnlock()
 	metas := make([]BlueprintMeta, 0, len(r.blueprints))
 	for _, p := range r.blueprints {
-		_, isCustom := p.(YAMLBlueprintProvider)
+		isBuiltin := r.builtins[p.Name()]
+		_, isYAML := p.(YAMLBlueprintProvider)
 		meta := BlueprintMeta{
 			Name:         p.Name(),
 			DisplayName:  p.DisplayName(),
 			Description:  p.Description(),
 			ConfigFields: p.ConfigFields(),
-			IsCustom:     isCustom,
-			IsBuiltin:    r.builtins[p.Name()],
+			IsCustom:     isYAML && !isBuiltin,
+			IsBuiltin:    isBuiltin,
 		}
 		if ap, ok := p.(ApplicationProvider); ok {
 			meta.Applications = ap.Applications()
