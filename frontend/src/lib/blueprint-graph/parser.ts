@@ -602,16 +602,49 @@ function stripYamlQuotes(s: string): string {
 }
 
 /**
- * Collect expanded YAML array items starting with "        - key: val" (8-space + dash).
- * Returns inline format like `[{ key: "val", ... }]` or null if no array found.
+ * Collect expanded YAML array items starting with "        - ..." (8-space + dash).
+ * Handles both object arrays (`- key: val`) and simple string arrays (`- "string"`).
+ * Returns inline format like `[{ key: "val" }]` or `["string1", "string2"]`, or null.
  */
 function tryCollectExpandedArray(text: string): string | null {
   const lines = text.split('\n');
+
+  // First pass: check for simple string array (- "value" or - unquoted value)
+  // If the first item doesn't look like "- key: value", try simple string collection.
+  const simpleItems: string[] = [];
+  let isSimple = true;
+  for (const line of lines) {
+    const dashMatch = line.match(/^        - (.+)$/);
+    if (dashMatch) {
+      const content = dashMatch[1].trim();
+      // If it looks like "- key: value" (word followed by colon), it's an object array
+      if (/^\w[\w.-]*:\s/.test(content)) {
+        isSimple = false;
+        break;
+      }
+      simpleItems.push(stripYamlQuotes(content));
+      continue;
+    }
+    if (line.trim() === '') continue;
+    break;
+  }
+  if (isSimple && simpleItems.length > 0) {
+    // Return as inline array with proper quoting
+    const quoted = simpleItems.map(v => {
+      // Preserve template/ref expressions unquoted at the outer level
+      if (v.startsWith('${') || (v.startsWith('{{') && v.includes('}}'))) return `"${v}"`;
+      // Numbers and booleans stay unquoted
+      if (/^(true|false|\d+(\.\d+)?)$/.test(v)) return v;
+      return `"${v}"`;
+    });
+    return `[${quoted.join(', ')}]`;
+  }
+
+  // Second pass: object array (- key: value)
   const items: Record<string, string>[] = [];
   let current: Record<string, string> | null = null;
 
   for (const line of lines) {
-    // Array item start: 8 spaces + "- key: value"
     const itemStart = line.match(/^        - (\w[\w.-]*):\s*(.*)$/);
     if (itemStart) {
       if (current) items.push(current);
@@ -619,15 +652,12 @@ function tryCollectExpandedArray(text: string): string | null {
       current[itemStart[1]] = stripYamlQuotes(itemStart[2].trim());
       continue;
     }
-    // Continuation field: 10 spaces + "key: value"
     const contField = line.match(/^          (\w[\w.-]*):\s*(.*)$/);
     if (contField && current) {
       current[contField[1]] = stripYamlQuotes(contField[2].trim());
       continue;
     }
-    // Empty line — continue looking
     if (line.trim() === '') continue;
-    // Different indent or format — stop
     break;
   }
   if (current) items.push(current);

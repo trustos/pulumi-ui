@@ -435,7 +435,7 @@
               {@render sourcePickerDropdown(i)}
             {/if}
           {/if}
-        {:else if isSimpleArray(prop.key) && !isRefOrTemplate(prop.value)}
+        {:else if isSimpleArray(prop.key) && !isRefOrTemplate(prop.value) && !(prop.value.includes('{{') && prop.value.includes('}}'))}
           <!-- Simple array (e.g. cidrBlocks, statements): list editor -->
           {@const items = parseSimpleArray(prop.value) ?? []}
           {@const itemHint = getItemValidationHint(prop.key)}
