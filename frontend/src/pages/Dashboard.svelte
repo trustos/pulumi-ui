@@ -3,6 +3,7 @@
   import { Badge } from '$lib/components/ui/badge';
   import { Alert, AlertDescription } from '$lib/components/ui/alert';
   import * as Card from '$lib/components/ui/card';
+  import * as Dialog from '$lib/components/ui/dialog';
   import * as Tooltip from '$lib/components/ui/tooltip';
   import StackCard from '$lib/components/StackCard.svelte';
   import NewStackDialog from '$lib/components/NewStackDialog.svelte';
@@ -85,13 +86,30 @@
     refreshAll();
   }
 
-  async function handleDeleteRemote(remote: RemoteStackSummary) {
-    if (!confirm(`Permanently delete "${remote.name}" state from S3? This cannot be undone.`)) return;
+  // Delete remote stack confirmation dialog
+  let deleteRemoteOpen = $state(false);
+  let deleteRemoteTarget = $state<RemoteStackSummary | null>(null);
+  let deleteRemoteLoading = $state(false);
+  let deleteRemoteError = $state('');
+
+  function confirmDeleteRemote(remote: RemoteStackSummary) {
+    deleteRemoteTarget = remote;
+    deleteRemoteError = '';
+    deleteRemoteOpen = true;
+  }
+
+  async function doDeleteRemote() {
+    if (!deleteRemoteTarget) return;
+    deleteRemoteLoading = true;
+    deleteRemoteError = '';
     try {
-      await deleteRemoteStack(remote.blueprint, remote.name);
-      remoteStacks = remoteStacks.filter(r => r.name !== remote.name);
+      await deleteRemoteStack(deleteRemoteTarget.blueprint, deleteRemoteTarget.name);
+      remoteStacks = remoteStacks.filter(r => r.name !== deleteRemoteTarget!.name);
+      deleteRemoteOpen = false;
     } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
+      deleteRemoteError = err instanceof Error ? err.message : String(err);
+    } finally {
+      deleteRemoteLoading = false;
     }
   }
 
@@ -184,7 +202,7 @@
                     </Button>
                     <Tooltip.Root>
                       <Tooltip.Trigger>
-                        <Button size="sm" variant="ghost" class="text-destructive hover:text-destructive" onclick={() => handleDeleteRemote(remote)}>
+                        <Button size="sm" variant="ghost" class="text-destructive hover:text-destructive" onclick={() => confirmDeleteRemote(remote)}>
                           Delete
                         </Button>
                       </Tooltip.Trigger>
@@ -253,3 +271,24 @@
     {passphrases}
   />
 {/if}
+
+<!-- Delete remote stack confirmation -->
+<Dialog.Root bind:open={deleteRemoteOpen}>
+  <Dialog.Content class="max-w-sm">
+    <Dialog.Header>
+      <Dialog.Title>Delete remote stack state</Dialog.Title>
+      <Dialog.Description>
+        Permanently delete <strong>{deleteRemoteTarget?.name}</strong> state from S3. This removes the Pulumi state file, backups, and history. This cannot be undone.
+      </Dialog.Description>
+    </Dialog.Header>
+    {#if deleteRemoteError}
+      <p class="text-sm text-destructive">{deleteRemoteError}</p>
+    {/if}
+    <Dialog.Footer>
+      <Button variant="outline" onclick={() => { deleteRemoteOpen = false; }}>Cancel</Button>
+      <Button variant="destructive" onclick={doDeleteRemote} disabled={deleteRemoteLoading}>
+        {deleteRemoteLoading ? 'Deleting...' : 'Delete'}
+      </Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
