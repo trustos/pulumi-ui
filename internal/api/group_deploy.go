@@ -92,6 +92,13 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Phase 1: Deploy primary ──────────────────────────────────────────
+	// Unlock stacks before deploying — a previous failed/cancelled deploy may have left locks.
+	for _, m := range members {
+		if err := h.Engine.Unlock(m.StackName); err != nil {
+			log.Printf("[group-deploy] unlock %s: %v (non-fatal)", m.StackName, err)
+		}
+	}
+
 	send(engine.SSEEvent{Type: "output", Data: "═══ Phase 1: Deploying primary stack ═══"})
 	primaryStatus := h.Engine.Up(
 		r.Context(),
