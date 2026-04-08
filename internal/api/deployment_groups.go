@@ -198,8 +198,13 @@ func (h *PlatformHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 			workerIdx++
 		}
 
-		// Build per-stack config: shared defaults → per-member overrides → auto-filled.
+		// Build per-stack config: blueprint defaults → shared → per-member → auto-filled.
+		// Start with blueprint defaults so hidden wiring fields (workerTenancyOcids etc.)
+		// have empty-string values instead of missing — Go templates fail on missing keys.
 		stackConfig := make(map[string]string)
+		if yamlProg, ok := prog.(blueprints.YAMLBlueprintProvider); ok {
+			stackConfig = blueprints.ApplyConfigDefaults(yamlProg.YAMLBody(), stackConfig)
+		}
 		for k, v := range body.Config {
 			stackConfig[k] = v
 		}
