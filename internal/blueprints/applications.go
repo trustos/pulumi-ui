@@ -74,3 +74,11 @@ type ApplicationProvider interface {
 type AgentAccessProvider interface {
 	AgentAccess() bool
 }
+
+// MultiAccountProvider is an optional interface for blueprints that support
+// deployment across multiple OCI accounts. The MultiAccount() method returns
+// the wiring metadata that describes roles, deployment order, and how outputs
+// from one role's deployment feed into another role's config.
+type MultiAccountProvider interface {
+	MultiAccount() *MultiAccountMeta
+}

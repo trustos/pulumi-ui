@@ -12,10 +12,11 @@ type YAMLBlueprint struct {
 	name         string
 	displayName  string
 	description  string
-	yamlBody     string           // raw template body as stored in DB
-	fields       []ConfigField    // derived from the YAML config: section
-	agentAccess  bool             // parsed from meta.agentAccess
-	applications []ApplicationDef // parsed from meta.applications
+	yamlBody     string              // raw template body as stored in DB
+	fields       []ConfigField       // derived from the YAML config: section
+	agentAccess  bool                // parsed from meta.agentAccess
+	applications []ApplicationDef    // parsed from meta.applications
+	multiAccount *MultiAccountMeta   // parsed from meta.multiAccount
 }
 
 // NewYAMLBlueprint parses a raw Pulumi YAML template body and returns a
@@ -34,6 +35,7 @@ func NewYAMLBlueprint(name, displayName, description, yamlBody string) (*YAMLBlu
 		fields:       fields,
 		agentAccess:  ParseAgentAccess(yamlBody),
 		applications: ParseApplications(yamlBody),
+		multiAccount: ParseMultiAccount(yamlBody),
 	}, nil
 }
 
@@ -52,9 +54,13 @@ func (p *YAMLBlueprint) AgentAccess() bool { return p.agentAccess }
 // Applications returns the application catalog declared in meta.applications.
 func (p *YAMLBlueprint) Applications() []ApplicationDef { return p.applications }
 
+// MultiAccount returns the multi-account deployment metadata, or nil if not declared.
+func (p *YAMLBlueprint) MultiAccount() *MultiAccountMeta { return p.multiAccount }
+
 // Compile-time checks.
 var _ AgentAccessProvider = (*YAMLBlueprint)(nil)
 var _ ApplicationProvider = (*YAMLBlueprint)(nil)
+var _ MultiAccountProvider = (*YAMLBlueprint)(nil)
 
 // Run returns nil — this signals the engine to use the YAML execution path.
 func (p *YAMLBlueprint) Run(_ map[string]string) pulumi.RunFunc { return nil }

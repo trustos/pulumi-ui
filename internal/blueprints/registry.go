@@ -21,16 +21,67 @@ type ConfigField struct {
 	Secret      bool     `json:"secret,omitempty"`     // true = Consul KV auto-managed credential
 }
 
+// MultiAccountRole defines a role in a multi-account deployment group.
+type MultiAccountRole struct {
+	Key   string `json:"key" yaml:"key"`
+	Label string `json:"label" yaml:"label"`
+	Min   int    `json:"min" yaml:"min"`
+	Max   int    `json:"max" yaml:"max"`
+}
+
+// MultiAccountWiringMapping maps an output from one role to a config field on another.
+type MultiAccountWiringMapping struct {
+	Output string `json:"output" yaml:"output"`
+	Config string `json:"config" yaml:"config"`
+}
+
+// MultiAccountAccountMapping maps an account field to a config field.
+type MultiAccountAccountMapping struct {
+	AccountField string `json:"accountField" yaml:"accountField"`
+	Config       string `json:"config" yaml:"config"`
+}
+
+// MultiAccountCollectMapping collects a field from all stacks of a role.
+type MultiAccountCollectMapping struct {
+	AccountField string `json:"accountField" yaml:"accountField"`
+	Config       string `json:"config" yaml:"config"`
+	Separator    string `json:"separator" yaml:"separator"`
+}
+
+// MultiAccountWiring defines how outputs flow between roles.
+type MultiAccountWiring struct {
+	FromRole        string                       `json:"fromRole" yaml:"fromRole"`
+	ToRole          string                       `json:"toRole" yaml:"toRole"`
+	Mappings        []MultiAccountWiringMapping  `json:"mappings,omitempty" yaml:"mappings"`
+	AccountMappings []MultiAccountAccountMapping `json:"accountMappings,omitempty" yaml:"accountMappings"`
+	CollectMappings []MultiAccountCollectMapping `json:"collectMappings,omitempty" yaml:"collectMappings"`
+}
+
+// MultiAccountPerRoleConfig defines config fields with per-role-instance defaults.
+type MultiAccountPerRoleConfig struct {
+	Key     string `json:"key" yaml:"key"`
+	Pattern string `json:"pattern" yaml:"pattern"` // e.g. "10.{index}.0.0/16"
+}
+
+// MultiAccountMeta declares that a blueprint supports multi-account deployment.
+type MultiAccountMeta struct {
+	Roles         []MultiAccountRole          `json:"roles" yaml:"roles"`
+	DeployOrder   []string                    `json:"deployOrder" yaml:"deployOrder"`
+	Wiring        []MultiAccountWiring        `json:"wiring" yaml:"wiring"`
+	PerRoleConfig []MultiAccountPerRoleConfig `json:"perRoleConfig,omitempty" yaml:"perRoleConfig"`
+}
+
 // BlueprintMeta is the safe, serialisable view of a Blueprint (sent to the UI).
 type BlueprintMeta struct {
-	Name         string           `json:"name"`
-	DisplayName  string           `json:"displayName"`
-	Description  string           `json:"description"`
-	ConfigFields []ConfigField    `json:"configFields"`
-	IsCustom     bool             `json:"isCustom"`                // true for user-defined YAML blueprints
-	IsBuiltin    bool             `json:"isBuiltin,omitempty"`     // true for blueprints registered via RegisterBuiltins (not editable/deletable)
-	Applications []ApplicationDef `json:"applications,omitempty"`  // nil for blueprints without a catalog
-	AgentAccess  bool             `json:"agentAccess,omitempty"`   // true if agent networking is auto-injected
+	Name         string             `json:"name"`
+	DisplayName  string             `json:"displayName"`
+	Description  string             `json:"description"`
+	ConfigFields []ConfigField      `json:"configFields"`
+	IsCustom     bool               `json:"isCustom"`                // true for user-defined YAML blueprints
+	IsBuiltin    bool               `json:"isBuiltin,omitempty"`     // true for blueprints registered via RegisterBuiltins (not editable/deletable)
+	Applications []ApplicationDef   `json:"applications,omitempty"`  // nil for blueprints without a catalog
+	AgentAccess  bool               `json:"agentAccess,omitempty"`   // true if agent networking is auto-injected
+	MultiAccount *MultiAccountMeta  `json:"multiAccount,omitempty"`  // non-nil if blueprint supports multi-account deployment
 }
 
 // Blueprint is the internal interface all Pulumi blueprints implement.
@@ -140,6 +191,9 @@ func (r *BlueprintRegistry) List() []BlueprintMeta {
 		}
 		if aap, ok := p.(AgentAccessProvider); ok {
 			meta.AgentAccess = aap.AgentAccess()
+		}
+		if map_, ok := p.(MultiAccountProvider); ok {
+			meta.MultiAccount = map_.MultiAccount()
 		}
 		metas = append(metas, meta)
 	}

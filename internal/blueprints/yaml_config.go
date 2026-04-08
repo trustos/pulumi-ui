@@ -24,6 +24,7 @@ type pulumiMeta struct {
 	Fields       map[string]pulumiMetaField `yaml:"fields"`
 	AgentAccess  bool                       `yaml:"agentAccess"`
 	Applications []pulumiMetaApp            `yaml:"applications"`
+	MultiAccount *MultiAccountMeta          `yaml:"multiAccount"`
 }
 
 type pulumiMetaApp struct {
@@ -279,6 +280,17 @@ func ApplyConfigDefaults(yamlBody string, config map[string]string) map[string]s
 		merged[k] = v
 	}
 	return merged
+}
+
+// ParseMultiAccount parses the meta.multiAccount section of a YAML blueprint.
+// Returns nil if no multi-account metadata is declared.
+func ParseMultiAccount(yamlBody string) *MultiAccountMeta {
+	parseable := truncateAtResources(yamlBody)
+	var doc pulumiYAMLConfig
+	if err := yaml.Unmarshal([]byte(parseable), &doc); err != nil || doc.Meta == nil {
+		return nil
+	}
+	return doc.Meta.MultiAccount
 }
 
 // ParseAgentAccess returns true if the YAML blueprint declares agentAccess: true
