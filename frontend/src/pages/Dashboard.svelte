@@ -8,7 +8,7 @@
   import NewStackDialog from '$lib/components/NewStackDialog.svelte';
   import StarterWizard from '$lib/components/StarterWizard.svelte';
   import ClaimStackDialog from '$lib/components/ClaimStackDialog.svelte';
-  import { listStacks, listBlueprints, listAccounts, listPassphrases, listSSHKeys, discoverRemoteStacks, getSettings } from '$lib/api';
+  import { listStacks, listBlueprints, listAccounts, listPassphrases, listSSHKeys, discoverRemoteStacks, deleteRemoteStack, getSettings } from '$lib/api';
   import { navigate } from '$lib/router';
   import { starters } from '$lib/starters';
   import type { StarterCard } from '$lib/starters';
@@ -83,6 +83,16 @@
 
   function handleClaimed() {
     refreshAll();
+  }
+
+  async function handleDeleteRemote(remote: RemoteStackSummary) {
+    if (!confirm(`Permanently delete "${remote.name}" state from S3? This cannot be undone.`)) return;
+    try {
+      await deleteRemoteStack(remote.blueprint, remote.name);
+      remoteStacks = remoteStacks.filter(r => r.name !== remote.name);
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
   }
 
   let hasAccounts = $derived(!loadingAccounts && accounts.length > 0);
@@ -168,9 +178,19 @@
               <Card.Content>
                 <div class="flex items-center justify-between">
                   <Badge variant="secondary">{remote.blueprint}</Badge>
-                  <Button size="sm" variant="outline" onclick={() => openClaimDialog(remote)}>
-                    Unlock
-                  </Button>
+                  <div class="flex gap-1">
+                    <Button size="sm" variant="outline" onclick={() => openClaimDialog(remote)}>
+                      Unlock
+                    </Button>
+                    <Tooltip.Root>
+                      <Tooltip.Trigger>
+                        <Button size="sm" variant="ghost" class="text-destructive hover:text-destructive" onclick={() => handleDeleteRemote(remote)}>
+                          Delete
+                        </Button>
+                      </Tooltip.Trigger>
+                      <Tooltip.Content>Permanently delete state from S3</Tooltip.Content>
+                    </Tooltip.Root>
+                  </div>
                 </div>
               </Card.Content>
             </Card.Root>

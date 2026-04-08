@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/trustos/pulumi-ui/internal/auth"
 	"github.com/trustos/pulumi-ui/internal/db"
 )
@@ -159,4 +161,118 @@ func (h *PlatformHandler) DiscoverRemoteStacks(w http.ResponseWriter, r *http.Re
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(remote)
+}
+
+// DeleteRemoteStack removes a stack's state files from the S3 backend.
+// Deletes: .pulumi/stacks/<project>/<stack>.json, .json.bak, and
+// any objects under .pulumi/history/<project>/<stack>/ and
+// .pulumi/backups/<project>/<stack>/.
+func (h *PlatformHandler) DeleteRemoteStack(w http.ResponseWriter, r *http.Request) {
+	project := chi.URLParam(r, "project")
+	stack := chi.URLParam(r, "stack")
+	if project == "" || stack == "" {
+		http.Error(w, "project and stack are required", http.StatusBadRequest)
+		return
+	}
+
+	bucket, _, _ := h.Creds.Get(db.KeyS3Bucket)
+	ns, _, _ := h.Creds.Get(db.KeyS3Namespace)
+	region, _, _ := h.Creds.Get(db.KeyS3Region)
+	accessKey, _, _ := h.Creds.Get(db.KeyS3AccessKeyID)
+	secretKey, _, _ := h.Creds.Get(db.KeyS3SecretAccessKey)
+
+	if bucket == "" || ns == "" || region == "" || accessKey == "" || secretKey == "" {
+		http.Error(w, "S3 credentials not fully configured", http.StatusBadRequest)
+		return
+	}
+
+	endpoint := fmt.Sprintf("https://%s.compat.objectstorage.%s.oraclecloud.com", ns, region)
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	// Collect all keys to delete: state file, backup, history, backups dirs.
+	keysToDelete := []string{
+		fmt.Sprintf(".pulumi/stacks/%s/%s.json", project, stack),
+		fmt.Sprintf(".pulumi/stacks/%s/%s.json.bak", project, stack),
+	}
+
+	// List and delete objects under history/ and backups/ prefixes.
+	for _, prefix := range []string{
+		fmt.Sprintf(".pulumi/history/%s/%s/", project, stack),
+		fmt.Sprintf(".pulumi/backups/%s/%s/", project, stack),
+	} {
+		listed := listS3Keys(r.Context(), client, endpoint, bucket, prefix, accessKey, secretKey, region)
+		keysToDelete = append(keysToDelete, listed...)
+	}
+
+	// Delete each key.
+	deleted := 0
+	for _, key := range keysToDelete {
+		delURL := fmt.Sprintf("%s/%s/%s", endpoint, bucket, key)
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, delURL, nil)
+		if err != nil {
+			continue
+		}
+		signS3Request(req, accessKey, secretKey, region)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+			deleted++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": deleted,
+		"total":   len(keysToDelete),
+		"stack":   stack,
+		"project": project,
+	})
+}
+
+// listS3Keys returns all object keys under a given prefix in the S3 bucket.
+func listS3Keys(ctx context.Context, client *http.Client, endpoint, bucket, prefix, accessKey, secretKey, region string) []string {
+	var keys []string
+	continuationToken := ""
+
+	for {
+		listURL := fmt.Sprintf("%s/%s?list-type=2&prefix=%s", endpoint, bucket, prefix)
+		if continuationToken != "" {
+			listURL += "&continuation-token=" + continuationToken
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+		if err != nil {
+			break
+		}
+		signS3Request(req, accessKey, secretKey, region)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			break
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			break
+		}
+
+		var result listBucketResult
+		if err := xml.Unmarshal(body, &result); err != nil {
+			break
+		}
+
+		for _, obj := range result.Contents {
+			keys = append(keys, obj.Key)
+		}
+
+		if !result.IsTruncated || result.NextToken == "" {
+			break
+		}
+		continuationToken = result.NextToken
+	}
+
+	return keys
 }

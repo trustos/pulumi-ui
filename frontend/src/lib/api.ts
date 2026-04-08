@@ -12,6 +12,16 @@ export async function discoverRemoteStacks(): Promise<RemoteStackSummary[]> {
   return res.json();
 }
 
+export async function deleteRemoteStack(project: string, stack: string): Promise<void> {
+  const res = await fetch(`/api/stacks/discover/${encodeURIComponent(project)}/${encodeURIComponent(stack)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+}
+
 export async function unlockRemoteStack(
   name: string,
   blueprint: string,
