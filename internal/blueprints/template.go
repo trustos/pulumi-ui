@@ -2,6 +2,8 @@ package blueprints
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,6 +27,7 @@ func buildFuncMap() template.FuncMap {
 	fm["cloudInit"] = templateCloudInit
 	fm["groupRef"] = templateGroupRef
 	fm["gzipBase64"] = templateGzipBase64
+	fm["gossipKey"] = templateGossipKey
 	return fm
 }
 
@@ -104,16 +107,33 @@ func templateInstanceMemoryGb(nodeIndex, nodeCount int) int {
 // function produces only the program-specific cloud-init.
 func templateCloudInit(nodeIndex int, config map[string]string) string {
 	nodeCount, _ := strconv.Atoi(config["nodeCount"])
+	if nodeCount == 0 {
+		nodeCount = 1 // multi-account blueprint: single node per stack
+	}
 	ocpus := templateInstanceOcpus(nodeIndex, nodeCount)
 	memGb := templateInstanceMemoryGb(nodeIndex, nodeCount)
 	if v, err := strconv.Atoi(config["ocpusPerNode"]); err == nil && v > 0 {
 		ocpus = v
 	}
+	if v, err := strconv.Atoi(config["ocpus"]); err == nil && v > 0 {
+		ocpus = v
+	}
 	if v, err := strconv.Atoi(config["memoryGbPerNode"]); err == nil && v > 0 {
 		memGb = v
 	}
+	if v, err := strconv.Atoi(config["memoryInGbs"]); err == nil && v > 0 {
+		memGb = v
+	}
 
-	return buildCloudInit(ocpus, memGb, nodeCount, config["nomadVersion"], config["consulVersion"], nil, nil, nil)
+	// Pass cluster-specific variables for multi-account join logic.
+	extraVars := map[string]string{}
+	for _, key := range []string{"role", "primaryPrivateIp", "gossipKey"} {
+		if v := config[key]; v != "" {
+			extraVars[key] = v
+		}
+	}
+
+	return buildCloudInit(ocpus, memGb, nodeCount, config["nomadVersion"], config["consulVersion"], nil, extraVars, nil)
 }
 
 // templateGroupRef formats a Pulumi OCI IAM policy statement that references
@@ -131,4 +151,16 @@ func templateGroupRef(groupName, domain, statement string) string {
 // Usage in YAML templates: {{ gzipBase64 "#!/bin/bash\napt update" }}
 func templateGzipBase64(script string) string {
 	return agentinject.GzipBase64([]byte(script))
+}
+
+// templateGossipKey generates a 32-byte random gossip encryption key,
+// base64-encoded, suitable for Consul and Nomad gossip encryption.
+// Equivalent to `consul keygen` or `nomad operator gossip keyring generate`.
+// Usage in YAML templates: {{ gossipKey }}
+func templateGossipKey() string {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic("gossipKey: failed to generate random key: " + err.Error())
+	}
+	return base64.StdEncoding.EncodeToString(key)
 }

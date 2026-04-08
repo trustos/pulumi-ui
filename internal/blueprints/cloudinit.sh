@@ -183,8 +183,39 @@ discover_node_ips() {
   done
 }
 
+# --- Cluster role variables (set by template, empty for single-account) ---
+CLUSTER_ROLE="{{ .Vars.role }}"
+CLUSTER_JOIN_IP="{{ .Vars.primaryPrivateIp }}"
+GOSSIP_KEY="{{ .Vars.gossipKey }}"
+
 # --- Peer discovery + self-identification (called after discover_imds) ---
 discover_peers() {
+  SELF_PRIVATE_IP=$(hostname -I | awk '{print $1}')
+  if [ -z "$SELF_PRIVATE_IP" ]; then
+    echo "ERROR: Could not determine self private IP."; exit 1
+  fi
+  echo "Self private IP: $SELF_PRIVATE_IP"
+
+  # Multi-account cluster: role-based join (skip OCI IP discovery)
+  if [ "$CLUSTER_ROLE" = "primary" ]; then
+    echo "Cluster role: PRIMARY (self-bootstrap)"
+    NOMAD_IPS="[\"$SELF_PRIVATE_IP\"]"
+    IS_FIRST_NODE=true
+    NOMAD_BOOTSTRAP_EXPECT=1
+    export NOMAD_IPS IS_FIRST_NODE SELF_PRIVATE_IP NOMAD_BOOTSTRAP_EXPECT
+    return 0
+  fi
+
+  if [ "$CLUSTER_ROLE" = "worker" ] && [ -n "$CLUSTER_JOIN_IP" ]; then
+    echo "Cluster role: WORKER (joining primary at $CLUSTER_JOIN_IP)"
+    NOMAD_IPS="[\"$CLUSTER_JOIN_IP\"]"
+    IS_FIRST_NODE=false
+    NOMAD_BOOTSTRAP_EXPECT=1
+    export NOMAD_IPS IS_FIRST_NODE SELF_PRIVATE_IP NOMAD_BOOTSTRAP_EXPECT
+    return 0
+  fi
+
+  # Single-account mode: discover all nodes in same subnet
   discover_node_ips
 
   if [ -z "$ALL_NODE_IPS" ]; then
@@ -193,12 +224,6 @@ discover_peers() {
     NOMAD_IPS=$(echo "$ALL_NODE_IPS" | tr ' ' '\n' | jq -R . | jq -s .)
   fi
   echo "Nomad peer IPs: $NOMAD_IPS"
-
-  SELF_PRIVATE_IP=$(hostname -I | awk '{print $1}')
-  if [ -z "$SELF_PRIVATE_IP" ]; then
-    echo "ERROR: Could not determine self private IP."; exit 1
-  fi
-  echo "Self private IP: $SELF_PRIVATE_IP"
 
   FIRST_NODE_IP=""
   if [ -n "$ALL_NODE_IPS" ]; then
@@ -263,16 +288,28 @@ install_consul() {
   mkdir -p /etc/consul.d "$CONSUL_DATA_DIR"
   chown -R consul:consul /etc/consul.d "$CONSUL_DATA_DIR"
 
+  local consul_server="true"
+  local consul_bootstrap="bootstrap_expect = $NOMAD_BOOTSTRAP_EXPECT"
+  local consul_encrypt=""
+  if [ "$CLUSTER_ROLE" = "worker" ]; then
+    consul_server="false"
+    consul_bootstrap=""
+  fi
+  if [ -n "$GOSSIP_KEY" ]; then
+    consul_encrypt="encrypt = \"$GOSSIP_KEY\""
+  fi
+
   cat > /etc/consul.d/consul.hcl <<EOF
 node_name  = "$(hostname)"
-server     = true
+server     = $consul_server
 datacenter = "dc1"
 data_dir   = "$CONSUL_DATA_DIR"
 log_level  = "$LOG_LEVEL"
 retry_join = $NOMAD_IPS
 bind_addr  = "$SELF_PRIVATE_IP"
 client_addr = "0.0.0.0"
-bootstrap_expect = $NOMAD_BOOTSTRAP_EXPECT
+$consul_bootstrap
+$consul_encrypt
 ui = true
 EOF
   chown consul:consul /etc/consul.d/consul.hcl
@@ -364,6 +401,29 @@ configure_nomad() {
   mkdir -p "$DATA_DIR" "$DATA_DIR/alloc" /etc/nomad.d
   chown nomad:nomad "$DATA_DIR" "$DATA_DIR/alloc" 2>/dev/null || true
 
+  local nomad_server_block=""
+  if [ "$CLUSTER_ROLE" = "worker" ]; then
+    nomad_server_block='server {
+  enabled = false
+}'
+  else
+    local nomad_encrypt=""
+    if [ -n "$GOSSIP_KEY" ]; then
+      nomad_encrypt="encrypt = \"$GOSSIP_KEY\""
+    fi
+    nomad_server_block="server {
+  enabled = true
+  bootstrap_expect = ${NOMAD_BOOTSTRAP_EXPECT}
+  retry_join = ${NOMAD_IPS}
+  $nomad_encrypt
+}"
+  fi
+
+  local nomad_client_servers=""
+  if [ "$CLUSTER_ROLE" = "worker" ] && [ -n "$CLUSTER_JOIN_IP" ]; then
+    nomad_client_servers="servers = [\"$CLUSTER_JOIN_IP:4647\"]"
+  fi
+
   cat > /etc/nomad.d/nomad.hcl <<EOF
 log_level = "$LOG_LEVEL"
 data_dir = "$DATA_DIR"
@@ -375,11 +435,7 @@ acl {
   role_ttl   = "60s"
 }
 
-server {
-  enabled = true
-  bootstrap_expect = ${NOMAD_BOOTSTRAP_EXPECT}
-  retry_join = ${NOMAD_IPS}
-}
+${nomad_server_block}
 
 bind_addr = "0.0.0.0"
 
@@ -387,6 +443,7 @@ client {
   enabled = true
   cpu_total_compute = ${NOMAD_CLIENT_CPU}
   memory_total_mb   = ${NOMAD_CLIENT_MEMORY}
+  ${nomad_client_servers}
 }
 
 plugin "docker" {

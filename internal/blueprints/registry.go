@@ -73,6 +73,11 @@ func RegisterBuiltins(r *BlueprintRegistry) {
 		"Nomad cluster with application catalog: Traefik, PostgreSQL, pgAdmin, NocoBase, and more",
 		builtins.ReadFile("nomad-full-stack.yaml"))
 	r.builtins["nomad-full-stack"] = true
+
+	RegisterYAML(r, "nomad-multi-account", "Nomad Multi-Account",
+		"Multi-account Nomad + Consul cluster over OCI DRG. Pool resources across Always Free accounts.",
+		builtins.ReadFile("nomad-multi-account.yaml"))
+	r.builtins["nomad-multi-account"] = true
 }
 
 // Register adds p to the registry.
