@@ -9,11 +9,12 @@
   import NewStackDialog from '$lib/components/NewStackDialog.svelte';
   import StarterWizard from '$lib/components/StarterWizard.svelte';
   import ClaimStackDialog from '$lib/components/ClaimStackDialog.svelte';
-  import { listStacks, listBlueprints, listAccounts, listPassphrases, listSSHKeys, discoverRemoteStacks, deleteRemoteStack, getSettings } from '$lib/api';
+  import DeploymentGroupWizard from '$lib/components/DeploymentGroupWizard.svelte';
+  import { listStacks, listBlueprints, listAccounts, listPassphrases, listSSHKeys, discoverRemoteStacks, deleteRemoteStack, getSettings, listGroups } from '$lib/api';
   import { navigate } from '$lib/router';
   import { starters } from '$lib/starters';
   import type { StarterCard } from '$lib/starters';
-  import type { BlueprintMeta, StackSummary, OciAccount, Passphrase, SshKey, RemoteStackSummary } from '$lib/types';
+  import type { BlueprintMeta, StackSummary, OciAccount, Passphrase, SshKey, RemoteStackSummary, DeploymentGroupSummary } from '$lib/types';
 
   let stacks = $state<StackSummary[]>([]);
   let blueprints = $state<BlueprintMeta[]>([]);
@@ -33,6 +34,11 @@
   let claimDialogOpen = $state(false);
   let selectedRemoteStack = $state<RemoteStackSummary | null>(null);
 
+  // Deployment groups
+  let groups = $state<DeploymentGroupSummary[]>([]);
+  let groupWizardOpen = $state(false);
+  let groupWizardBlueprint = $state<BlueprintMeta | null>(null);
+
   function refreshAll() {
     listStacks()
       .then(s => { stacks = s; })
@@ -51,6 +57,10 @@
     listSSHKeys()
       .then(k => { sshKeys = k; })
       .catch(() => { sshKeys = []; });
+    // Load deployment groups.
+    listGroups()
+      .then(g => { groups = g; })
+      .catch(() => { groups = []; });
     // Discover remote stacks if S3 backend is active.
     getSettings()
       .then(settings => {
@@ -114,6 +124,13 @@
   }
 
   let hasAccounts = $derived(!loadingAccounts && accounts.length > 0);
+  let hasMultipleAccounts = $derived(!loadingAccounts && accounts.length >= 2);
+  let multiAccountBlueprints = $derived(blueprints.filter(b => b.multiAccount));
+
+  function openGroupWizard(bp: BlueprintMeta) {
+    groupWizardBlueprint = bp;
+    groupWizardOpen = true;
+  }
 
   let agentAccessByBlueprint = $derived(
     Object.fromEntries(blueprints.map(p => [p.name, !!p.agentAccess]))
@@ -174,6 +191,41 @@
         {#each stacks as stack}
           <StackCard {stack} agentAccess={agentAccessByBlueprint[stack.blueprint] ?? false} />
         {/each}
+      </div>
+    {/if}
+
+    <!-- Deployment groups -->
+    {#if groups.length > 0}
+      <div class="mt-8">
+        <div class="flex items-center gap-2 mb-3">
+          <h2 class="text-sm font-medium text-muted-foreground">Deployment Groups</h2>
+          <Badge variant="outline">{groups.length}</Badge>
+        </div>
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {#each groups as group (group.id)}
+            <button
+              class="block w-full text-left"
+              onclick={() => navigate(`/groups/${group.id}`)}
+            >
+              <Card.Root class="hover:shadow-md transition-shadow cursor-pointer">
+                <Card.Header class="pb-2">
+                  <div class="flex items-center justify-between">
+                    <Card.Title class="text-base">{group.name}</Card.Title>
+                    <Badge variant={group.status === 'deployed' ? 'default' : group.status === 'failed' ? 'destructive' : 'secondary'}>
+                      {group.status}
+                    </Badge>
+                  </div>
+                </Card.Header>
+                <Card.Content>
+                  <div class="flex items-center gap-2">
+                    <Badge variant="secondary">{group.blueprint}</Badge>
+                    <span class="text-xs text-muted-foreground">{group.members.length} accounts</span>
+                  </div>
+                </Card.Content>
+              </Card.Root>
+            </button>
+          {/each}
+        </div>
       </div>
     {/if}
 
@@ -246,6 +298,30 @@
           </div>
           <p class="text-xs text-muted-foreground">Pick a blueprint and configure from scratch</p>
         </button>
+        {#each multiAccountBlueprints as mab (mab.name)}
+          <Tooltip.Root>
+            <Tooltip.Trigger>
+              <button
+                class="text-left border border-dashed rounded-lg p-3 hover:bg-muted/50 hover:border-primary/30 transition-colors w-full {!hasMultipleAccounts ? 'opacity-50 cursor-not-allowed' : ''}"
+                onclick={() => { if (hasMultipleAccounts) openGroupWizard(mab); }}
+                disabled={!hasMultipleAccounts}
+              >
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="text-base">&#x1f310;</span>
+                  <span class="font-medium text-sm text-muted-foreground group-hover:text-foreground">{mab.displayName}</span>
+                </div>
+                <p class="text-xs text-muted-foreground">Deploy across multiple OCI accounts with DRG networking</p>
+              </button>
+            </Tooltip.Trigger>
+            <Tooltip.Content>
+              {#if !hasMultipleAccounts}
+                Add at least 2 OCI accounts to use multi-account deployment
+              {:else}
+                Create a {mab.displayName} across {accounts.length} accounts
+              {/if}
+            </Tooltip.Content>
+          </Tooltip.Root>
+        {/each}
       </div>
     </div>
   {/if}
@@ -269,6 +345,15 @@
     solution={activeStarter}
     {accounts}
     {passphrases}
+  />
+{/if}
+
+{#if groupWizardBlueprint}
+  <DeploymentGroupWizard
+    bind:open={groupWizardOpen}
+    blueprint={groupWizardBlueprint}
+    {accounts}
+    bind:passphrases
   />
 {/if}
 

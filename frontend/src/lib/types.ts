@@ -52,6 +52,38 @@ export interface ApplicationDef {
   port?: number;
 }
 
+export interface MultiAccountRole {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+}
+
+export interface MultiAccountWiringMapping {
+  output: string;
+  config: string;
+}
+
+export interface MultiAccountWiring {
+  fromRole: string;
+  toRole: string;
+  mappings?: MultiAccountWiringMapping[];
+  accountMappings?: { accountField: string; config: string }[];
+  collectMappings?: { accountField: string; config: string; separator: string }[];
+}
+
+export interface MultiAccountPerRoleConfig {
+  key: string;
+  pattern: string;
+}
+
+export interface MultiAccountMeta {
+  roles: MultiAccountRole[];
+  deployOrder: string[];
+  wiring: MultiAccountWiring[];
+  perRoleConfig?: MultiAccountPerRoleConfig[];
+}
+
 export interface BlueprintMeta {
   name: string;
   displayName: string;
@@ -61,6 +93,23 @@ export interface BlueprintMeta {
   isBuiltin?: boolean;
   applications?: ApplicationDef[];
   agentAccess?: boolean;
+  multiAccount?: MultiAccountMeta;
+}
+
+export interface DeploymentGroupSummary {
+  id: string;
+  name: string;
+  blueprint: string;
+  status: string;
+  members: GroupMemberView[];
+  createdAt: number;
+}
+
+export interface GroupMemberView {
+  stackName: string;
+  role: string;
+  accountId: string | null;
+  order: number;
 }
 
 export interface ValidationError {

@@ -11,6 +11,7 @@
   import BlueprintDocs from './pages/BlueprintDocs.svelte';
   import BlueprintEditor from './pages/BlueprintEditor.svelte';
   import Logs from './pages/Logs.svelte';
+  import DeploymentGroupDetail from './pages/DeploymentGroupDetail.svelte';
   import Login from '$lib/pages/Login.svelte';
   import Register from '$lib/pages/Register.svelte';
   import ImportSetup from '$lib/pages/ImportSetup.svelte';
@@ -123,6 +124,9 @@
         <BlueprintEditor name={forkName} fork={true} />
       {:else if path === '/blueprints/docs' || path === '/programs/docs'}
         <BlueprintDocs />
+      {:else if path.startsWith('/groups/')}
+        {@const groupId = path.slice('/groups/'.length)}
+        <DeploymentGroupDetail id={groupId} />
       {:else if path === '/logs'}
         <Logs />
       {:else if path === '/settings'}

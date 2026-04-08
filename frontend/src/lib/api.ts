@@ -1,4 +1,4 @@
-import type { BlueprintMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob, Hook, AppSettings, S3TestResult, RemoteStackSummary, UnlockResult } from './types';
+import type { BlueprintMeta, StackSummary, StackInfo, OciAccount, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, Passphrase, OciImportPreview, OciImportResult, GeneratedKeyPair, SshKey, ValidationError, ValidateProgramResult, PortForward, NomadJob, Hook, AppSettings, S3TestResult, RemoteStackSummary, UnlockResult, DeploymentGroupSummary } from './types';
 
 export async function listStacks(): Promise<StackSummary[]> {
   const res = await fetch('/api/stacks');
@@ -762,5 +762,47 @@ export async function deleteHook(stackName: string, hookId: string): Promise<voi
   const res = await fetch(`/api/stacks/${encodeURIComponent(stackName)}/hooks/${encodeURIComponent(hookId)}`, {
     method: 'DELETE',
   });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+// ── Deployment Groups ──
+
+export async function listGroups(): Promise<DeploymentGroupSummary[]> {
+  const res = await fetch('/api/groups');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getGroup(id: string): Promise<DeploymentGroupSummary> {
+  const res = await fetch(`/api/groups/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function createGroup(body: {
+  name: string;
+  blueprint: string;
+  members: { accountId: string; role: string }[];
+  config: Record<string, string>;
+  passphraseId: string;
+}): Promise<{ id: string; name: string }> {
+  const res = await fetch('/api/groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deployGroup(id: string): Promise<Response> {
+  return fetch(`/api/groups/${encodeURIComponent(id)}/deploy`, { method: 'POST' });
+}
+
+export async function deleteGroup(id: string): Promise<void> {
+  const res = await fetch(`/api/groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
