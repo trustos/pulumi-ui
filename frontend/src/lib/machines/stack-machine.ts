@@ -76,7 +76,9 @@ export type StackMachineEvent =
   | { type: 'SSE_EVENT'; event: SSEEvent }
   | { type: 'OP_DONE'; status: string }
   | { type: 'APPS_DONE'; status: string }
-  | { type: 'CANCEL_DONE' };
+  | { type: 'CANCEL_DONE' }
+  | { type: 'EXTERNAL_OP_DETECTED' }
+  | { type: 'EXTERNAL_OP_ENDED' };
 
 // ── Machine definition ───────────────────────────────────────────────────────
 
@@ -178,6 +180,7 @@ export const stackMachine = setup({
             ],
           }),
         },
+        EXTERNAL_OP_DETECTED: 'externalRunning',
         DEPLOY_APPS: {
           target: 'deployingApps',
           actions: assign({
@@ -267,6 +270,21 @@ export const stackMachine = setup({
           actions: ['appendStatus', 'setLastStatus'],
         },
         CANCEL: 'cancelling',
+      },
+    },
+
+    /**
+     * EXTERNAL_RUNNING: An operation was detected running on the server
+     * (via getStackInfo().running === true) but was not started by this
+     * client. We don't have an SSE stream — just show "running" status
+     * and wait for EXTERNAL_OP_ENDED when the next loadInfo() shows
+     * running === false.
+     *
+     * The UI shows a "Running (external)" indicator and disables action buttons.
+     */
+    externalRunning: {
+      on: {
+        EXTERNAL_OP_ENDED: 'idle',
       },
     },
   },

@@ -16,6 +16,7 @@ that stream live output back to the browser.
 | Encryption | AES-GCM, key from env var or auto-generated keystore |
 | Provisioning | Pulumi Automation API (Go SDK) + OCI Terraform provider v4.4.0 |
 | Frontend | Svelte 5 SPA, embedded in the Go binary via `go:embed` |
+| State mgmt | XState v5 (stack operation lifecycle), Svelte 5 runes ($state/$derived) for everything else |
 | Cloud | Oracle Cloud Infrastructure (OCI) — Always Free A1 Flex instances |
 
 ---
@@ -118,6 +119,10 @@ frontend/            Svelte 5 SPA (src/ is the source; dist/ is embedded)
   src/lib/components/ Reusable UI components (ConfigForm, dialogs, pickers, ObjectPropertyEditor, ClaimStackDialog, DeploymentGroupWizard)
   src/pages/DeploymentGroupDetail.svelte  Group detail page with pipeline view + deploy orchestration
   src/lib/blueprint-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking, schema-utils, user-data)
+  src/lib/machines/  XState state machines
+    stack-machine.ts Stack operation lifecycle (idle → running → deployingApps → idle)
+  src/lib/sse-stream.ts  Reusable SSE stream reader (used by api.ts, DeploymentGroupDetail, Settings)
+  src/lib/stack-operation.ts  Legacy operation module (superseded by stack-machine.ts)
   src/lib/api.ts     All backend calls — no raw fetch elsewhere
   src/lib/types.ts   TypeScript interfaces matching backend JSON
 ```
@@ -283,6 +288,8 @@ Full detail: `docs/coding-principles.md`
 - **Repository interfaces**: stores implement interfaces from `internal/ports/`; handlers/services depend on interfaces, never on concrete types.
 - **Config field grouping**: blueprints organize `ConfigField` items into groups via `meta.groups` with `key`, `label`, and `fields` list. Fields with `Secret: true` are Consul KV auto-managed credentials with per-app `_autoCredentials` toggle.
 - **Blueprint registration**: explicit `RegisterBuiltins(r)` in `main.go`. No `init()` self-registration.
+- **XState usage**: Use XState ONLY for complex operation lifecycles with multiple phases, guards, and temporal dependencies (e.g., stack operation machine in `stack-machine.ts`). Do NOT use XState for simple UI state (dialog open/close, form values, tab selection) — use Svelte 5 `$state` runes for those. See `docs/frontend.md` for detailed guidelines.
+- **SSE streaming**: Use `readSSEStream()` from `src/lib/sse-stream.ts` for all server-sent event consumption. Never duplicate the stream-reading boilerplate (buffer, split, parse, dispatch).
 
 ---
 

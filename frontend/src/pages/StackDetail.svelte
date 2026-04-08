@@ -30,7 +30,7 @@
 
   // Derived values from the machine — these replace the old $state booleans.
   // $machineState is a Svelte store provided by @xstate/svelte.
-  const isRunning = $derived($machineState.matches('running') || $machineState.matches('cancelling'));
+  const isRunning = $derived($machineState.matches('running') || $machineState.matches('cancelling') || $machineState.matches('externalRunning'));
   const isDeployingApps = $derived($machineState.matches('deployingApps'));
   const currentOp = $derived($machineState.context.currentOp);
   // Combine persisted (historical) logs with live machine logs.
@@ -333,11 +333,14 @@
   async function loadInfo() {
     try {
       info = await getStackInfo(name);
-      // Note: info.running reflects server-side state. The XState machine
-      // is the source of truth for client-side operation tracking. If an
-      // operation was started from another session, info.running will be
-      // true but the machine stays in 'idle'. This is acceptable — the
-      // UI just shows the latest status after the operation completes.
+      // Detect externally-started operations: server says running but
+      // the machine is idle (we didn't start it from this session).
+      if (info.running && $machineState.matches('idle')) {
+        send({ type: 'EXTERNAL_OP_DETECTED' });
+      } else if (!info.running && $machineState.matches('externalRunning')) {
+        send({ type: 'EXTERNAL_OP_ENDED' });
+        await loadPersistedLogs();
+      }
     } catch (err) {
       loadError = err instanceof Error ? err.message : String(err);
     }

@@ -301,6 +301,77 @@ Fields with `options: [...]` in `meta.fields` render as `<select>` dropdowns in 
 
 Level 7 validation errors are **non-blocking** — the program can still be saved even if the warning is shown. Only Levels 1–6 block saving. This is enforced by `hasBlockingErrors()` in the backend API handler.
 
+---
+
+## XState State Machines
+
+### When to use XState
+
+Use XState for **operation lifecycles** — flows with:
+- Multiple mutually exclusive phases (idle → running → cancelling → idle)
+- Invoked long-running services (SSE streams)
+- Guards that prevent invalid transitions (can't start deploy while destroying)
+- Automatic chaining (successful `up` → auto deploy-apps)
+- Side effects on entering/leaving states (cancel API call on leaving `running`)
+
+### When NOT to use XState
+
+Do NOT use XState for:
+- **UI state**: dialog open/close, tab selection, form values — use `$state` runes
+- **Data loading**: fetched API responses — use `$state` with `$effect`
+- **Simple flags**: `isSaving`, `isLoading`, `error` — use `$state`
+- **Derived computations**: use `$derived`
+
+Rule of thumb: if the state has fewer than 4 variables and no temporal dependencies, use `$state`. If you find yourself writing `$effect` chains to coordinate multiple `$state` booleans, consider XState.
+
+### Stack Operation Machine (`stack-machine.ts`)
+
+States: `idle` → `running` → (`cancelling` | `deployingApps`) → `idle`
+
+Invoked actors:
+- `pulumiOp`: SSE stream for up/destroy/refresh/preview (via `streamOperation`)
+- `deployApps`: SSE stream for app deployment (via `streamDeployApps`)
+
+Key patterns:
+- **Callback actors** (`fromCallback`): wraps SSE stream functions. XState starts the actor on state entry and calls the cleanup function (cancel) on state exit.
+- **Guards**: `chainApps && status === 'succeeded' && currentOp === 'up'` enables auto-chain from deploy to app deployment.
+- **Context**: `{ stackName, currentOp, logLines, lastStatus, chainApps }` — the machine's data. Updated via `assign()` actions.
+
+### Integration with Svelte 5
+
+```svelte
+<script>
+  import { useMachine } from '@xstate/svelte';
+  import { stackMachine } from '$lib/machines/stack-machine';
+
+  // useMachine returns { snapshot (Svelte store), send, actorRef }
+  const { snapshot: machineState, send } = useMachine(stackMachine, {
+    input: { stackName: name },
+  });
+
+  // Derive reactive values from the store ($machineState is the snapshot)
+  const isRunning = $derived($machineState.matches('running'));
+  const logLines = $derived($machineState.context.logLines);
+
+  // Send events to trigger transitions
+  send({ type: 'START_OP', op: 'up', chainApps: true });
+  send({ type: 'CANCEL' });
+</script>
+```
+
+**Key learnings from integration**:
+1. `$machineState` is a Svelte store (use `$` prefix to read reactively)
+2. Machine context values are read-only `$derived` — never assign to them directly
+3. `useMachine` captures the `input` prop at creation time — it won't reactively update if the prop changes (fine for `stackName` which is constant per page)
+4. Side effects (reload info, load logs) should use `$effect` watching `$machineState.matches('idle')`, not machine actions — keeps the machine pure and testable
+5. Persisted logs (historical, from API) are separate `$state` — combined with machine logs via `$derived`
+
+### SSE Stream Utility (`sse-stream.ts`)
+
+All SSE consumption uses `readSSEStream(response, { onEvent, onDone, onError })`. This replaces ~120 lines of duplicated buffer/parse logic across 4 callers.
+
+Inside XState machines, SSE streams are wrapped in `fromCallback` actors — the machine manages their lifecycle (start on entry, cancel on exit).
+
 ### Resource Rename Propagation
 Renaming a resource in the visual editor automatically updates all references across the entire program graph:
 - **Property values**: `${oldName.id}` → `${newName.id}`, `${oldName[0].name}` → `${newName[0].name}`
