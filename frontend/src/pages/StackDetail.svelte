@@ -24,11 +24,9 @@
   // Manages: idle → running → (cancelling | deployingApps) → idle
   // Replaces: isRunning, currentOp, logLines, cancelFn, isDeployingApps,
   //           deployAppLines, deployAppCancelFn, pendingAutoDeployApps, autoDeployTriggered
-  // Note: stackName captures the initial prop value. This is intentional —
-  // the component gets a new instance when navigating to a different stack.
-  // svelte-ignore state_referenced_locally
   const { snapshot: machineState, send } = useMachine(stackMachine, {
-    input: { stackName: name },
+    // @ts-ignore — name is stable for this component instance (new instance per route)
+    get input() { return { stackName: name }; },
   });
 
   // Derived values from the machine — these replace the old $state booleans.
