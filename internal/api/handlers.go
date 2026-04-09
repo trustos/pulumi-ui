@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"embed"
+	"sync"
 
 	"github.com/trustos/pulumi-ui/internal/blueprints"
 	"github.com/trustos/pulumi-ui/internal/db"
@@ -73,9 +75,15 @@ type PlatformHandler struct {
 	MeshManager   *mesh.Manager
 	ConnStore     *db.StackConnectionStore
 	Groups        *db.DeploymentGroupStore
+	Ops           *db.OperationStore
 	Registry      *blueprints.BlueprintRegistry
 	LogBuffer     *logbuffer.Buffer
 	AgentBinaries embed.FS
+
+	// groupCancels stores cancel functions for running group deploys.
+	// Keyed by group ID. Protected by groupMu.
+	groupMu      sync.Mutex
+	groupCancels map[string]context.CancelFunc
 }
 
 // AdminHandler manages health checks, export/import setup.

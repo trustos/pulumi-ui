@@ -147,6 +147,26 @@ describe('group-deploy-machine', () => {
     actor.stop();
   });
 
+  // ── Cancellation ───────────────────────────────────────────────────
+
+  it('CANCEL transitions deploying → cancelling', () => {
+    const actor = startMachine();
+    actor.send({ type: 'DEPLOY' });
+    actor.send({ type: 'CANCEL' });
+    expect(actor.getSnapshot().matches('cancelling')).toBe(true);
+    actor.stop();
+  });
+
+  it('DEPLOY_DONE in cancelling transitions to idle', () => {
+    const actor = startMachine();
+    actor.send({ type: 'DEPLOY' });
+    actor.send({ type: 'CANCEL' });
+    actor.send({ type: 'DEPLOY_DONE', status: 'cancelled' });
+    expect(actor.getSnapshot().matches('idle')).toBe(true);
+    expect(actor.getSnapshot().context.finalStatus).toBe('cancelled');
+    actor.stop();
+  });
+
   // ── Mutual exclusion ──────────────────────────────────────────────────
 
   it('DEPLOY is ignored while deploying', () => {

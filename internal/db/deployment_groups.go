@@ -87,6 +87,16 @@ func (s *DeploymentGroupStore) List() ([]DeploymentGroup, error) {
 	return groups, nil
 }
 
+// MarkStaleDeploying is called on startup to reset any groups left in
+// 'deploying' state by a server restart or crash.
+func (s *DeploymentGroupStore) MarkStaleDeploying() error {
+	_, err := s.wdb.Exec(`
+		UPDATE deployment_groups SET status = 'failed', updated_at = unixepoch()
+		WHERE status = 'deploying'
+	`)
+	return err
+}
+
 // AppendDeployLog appends a JSON-encoded SSE event line to the deploy log.
 func (s *DeploymentGroupStore) AppendDeployLog(id, line string) error {
 	_, err := s.wdb.Exec(`

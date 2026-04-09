@@ -90,6 +90,7 @@ func NewRouter(cfg RouterConfig, frontendFS http.FileSystem) http.Handler {
 			r.Post("/groups", cfg.Platform.CreateGroup)
 			r.Get("/groups/{id}", cfg.Platform.GetGroup)
 			r.Post("/groups/{id}/deploy", cfg.Platform.DeployGroup)
+			r.Post("/groups/{id}/cancel", cfg.Platform.CancelGroupDeploy)
 			r.Delete("/groups/{id}", cfg.Platform.DeleteGroup)
 
 			r.Get("/stacks", cfg.Stacks.ListStacks)

@@ -223,14 +223,32 @@ func injectPluginsSection(yaml string) string {
 // UpsertStackLocalSource. OCI credentials are injected as Pulumi provider
 // config (YAML programs cannot read environment variables directly).
 func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, prog blueprints.Blueprint, yamlProg blueprints.YAMLBlueprintProvider, cfg map[string]string, envVars map[string]string, creds Credentials) (auto.Stack, func(), error) {
+	log.Printf("[engine] getOrCreateYAMLStack: stack=%s cfgKeys=%d", stackName, len(cfg))
+
 	// Merge program defaults into cfg so that fields with a default: value in
 	// the config: section are never absent from the template context.
 	cfg = blueprints.ApplyConfigDefaults(yamlProg.YAMLBody(), cfg)
+	log.Printf("[engine] getOrCreateYAMLStack: stack=%s after defaults cfgKeys=%d", stackName, len(cfg))
+
+	// Log key config values for tracing (redact secrets)
+	for _, k := range []string{"role", "workerTenancyOcids", "drgOcid", "primaryTenancyOcid", "primaryPrivateIp"} {
+		if v, ok := cfg[k]; ok && v != "" {
+			log.Printf("[engine] getOrCreateYAMLStack: stack=%s cfg[%s] = %s", stackName, k, v)
+		}
+	}
 
 	// Render the Go template.
 	rendered, err := blueprints.RenderTemplate(yamlProg.YAMLBody(), cfg)
 	if err != nil {
 		return auto.Stack{}, nil, fmt.Errorf("template render: %w", err)
+	}
+
+	// Log whether key resources appear in the rendered YAML
+	if strings.Contains(rendered, "cross-tenancy-policy-") {
+		log.Printf("[engine] getOrCreateYAMLStack: stack=%s rendered YAML contains cross-tenancy-policy", stackName)
+	}
+	if strings.Contains(rendered, "drg-attachment") {
+		log.Printf("[engine] getOrCreateYAMLStack: stack=%s rendered YAML contains drg-attachment", stackName)
 	}
 
 	// Strip potentially dangerous fn::readFile directives.
@@ -320,6 +338,8 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 	// A temp file is deleted after Up; subsequent Refresh would see a missing path
 	// and the provider falls back to ~/.oci/config, causing 401-NotAuthenticated.
 	oci := creds.OCI
+	log.Printf("[engine] getOrCreateYAMLStack: stack=%s setting OCI provider config (tenancy=...%s region=%s)",
+		stackName, oci.TenancyOCID[max(0, len(oci.TenancyOCID)-12):], oci.Region)
 	ociConfigs := map[string]auto.ConfigValue{
 		"oci:tenancyOcid": {Value: oci.TenancyOCID},
 		"oci:userOcid":    {Value: oci.UserOCID},
@@ -784,7 +804,10 @@ func (e *Engine) executeOperation(
 	send SSESender,
 	run operationFunc,
 ) string {
+	log.Printf("[engine] executeOperation: stack=%s blueprint=%s", stackName, blueprintName)
+
 	if !e.tryLock(stackName) {
+		log.Printf("[engine] executeOperation: stack=%s LOCKED — another op running", stackName)
 		send(SSEEvent{Type: "error", Data: "another operation is already running for this stack"})
 		return "conflict"
 	}
@@ -802,6 +825,8 @@ func (e *Engine) executeOperation(
 		return "failed"
 	}
 	defer cleanup()
+	log.Printf("[engine] executeOperation: stack=%s envVars built (OCI_TENANCY=...%s OCI_REGION=%s)",
+		stackName, creds.OCI.TenancyOCID[max(0, len(creds.OCI.TenancyOCID)-12):], creds.OCI.Region)
 
 	opCtx, cancel := context.WithCancel(ctx)
 	e.mu.Lock()
@@ -819,9 +844,11 @@ func (e *Engine) executeOperation(
 		defer stackCleanup()
 	}
 	if err != nil {
+		log.Printf("[engine] executeOperation: stack=%s resolve FAILED: %v", stackName, err)
 		send(SSEEvent{Type: "error", Data: "stack init: " + err.Error()})
 		return "failed"
 	}
+	log.Printf("[engine] executeOperation: stack=%s resolved, starting operation", stackName)
 
 	return run(opCtx, stack, prog, send)
 }

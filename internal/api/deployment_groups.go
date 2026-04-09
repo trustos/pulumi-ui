@@ -182,27 +182,34 @@ func (h *PlatformHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create individual stacks for each member.
+	// Build per-member configs first, then fill missing values from primary.
+	type memberInfo struct {
+		stackName    string
+		role         string
+		deployOrder  int
+		accountID    string
+		config       map[string]string
+	}
+	memberInfos := make([]memberInfo, 0, len(body.Members))
 	workerIdx := 0
+	var primaryConfig map[string]string
+
 	for i, m := range body.Members {
-		var stackName string
-		var role string
-		var deployOrder int
+		var mi memberInfo
+		mi.accountID = m.AccountID
 
 		if m.Role == "primary" {
-			stackName = body.Name + "-primary"
-			role = "primary"
-			deployOrder = 0
+			mi.stackName = body.Name + "-primary"
+			mi.role = "primary"
+			mi.deployOrder = 0
 		} else {
-			stackName = fmt.Sprintf("%s-worker-%d", body.Name, workerIdx+1)
-			role = "worker"
-			deployOrder = 1
+			mi.stackName = fmt.Sprintf("%s-worker-%d", body.Name, workerIdx+1)
+			mi.role = "worker"
+			mi.deployOrder = 1
 			workerIdx++
 		}
 
 		// Build per-stack config: blueprint defaults → shared → per-member → auto-filled.
-		// Start with blueprint defaults so hidden wiring fields (workerTenancyOcids etc.)
-		// have empty-string values instead of missing — Go templates fail on missing keys.
 		stackConfig := make(map[string]string)
 		if yamlProg, ok := prog.(blueprints.YAMLBlueprintProvider); ok {
 			stackConfig = blueprints.ApplyConfigDefaults(yamlProg.YAMLBody(), stackConfig)
@@ -210,47 +217,73 @@ func (h *PlatformHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		for k, v := range body.Config {
 			stackConfig[k] = v
 		}
-		// Per-member config overrides shared values (e.g., different image/shape per account).
 		for k, v := range m.Config {
 			if v != "" {
 				stackConfig[k] = v
 			}
 		}
-		stackConfig["role"] = role
+		stackConfig["role"] = mi.role
 		stackConfig["gossipKey"] = gossipKey
 
-		// Apply per-role CIDRs from pattern.
 		for _, prc := range multiAccount.PerRoleConfig {
 			stackConfig[prc.Key] = strings.ReplaceAll(prc.Pattern, "{index}", fmt.Sprintf("%d", i))
 		}
 
-		// Create the stack config YAML.
+		mi.config = stackConfig
+		if mi.role == "primary" {
+			primaryConfig = stackConfig
+		}
+		memberInfos = append(memberInfos, mi)
+	}
+
+	// Fill missing config values on workers from the primary's config.
+	// Common fields like imageId, shape, sshPublicKey are typically the same
+	// across accounts in the same region but have no blueprint default.
+	if primaryConfig != nil {
+		for i := range memberInfos {
+			if memberInfos[i].role == "primary" {
+				continue
+			}
+			for k, v := range primaryConfig {
+				if _, exists := memberInfos[i].config[k]; !exists || memberInfos[i].config[k] == "" {
+					if v != "" {
+						memberInfos[i].config[k] = v
+					}
+				}
+			}
+			// Re-apply role (primary fill-from might have overwritten it)
+			memberInfos[i].config["role"] = memberInfos[i].role
+		}
+	}
+
+	// Create stacks in DB.
+	for _, mi := range memberInfos {
 		cfg := &stacks.StackConfig{
 			APIVersion: "pulumi.io/v1",
 			Kind:       "Stack",
 			Metadata: stacks.StackMetadata{
-				Name:      stackName,
+				Name:      mi.stackName,
 				Blueprint: body.Blueprint,
 			},
-			Config: stackConfig,
+			Config: mi.config,
 		}
 		yamlStr, _ := cfg.ToYAML()
-		accountID := m.AccountID
+		accountID := mi.accountID
 		passphraseID := body.PassphraseID
-		if err := h.Stacks.Upsert(stackName, body.Blueprint, yamlStr, &accountID, &passphraseID, nil, &accountID); err != nil {
-			http.Error(w, fmt.Sprintf("failed to create stack %s: %v", stackName, err), http.StatusInternalServerError)
+		if err := h.Stacks.Upsert(mi.stackName, body.Blueprint, yamlStr, &accountID, &passphraseID, nil, &accountID); err != nil {
+			http.Error(w, fmt.Sprintf("failed to create stack %s: %v", mi.stackName, err), http.StatusInternalServerError)
 			return
 		}
 
 		// Add to group.
 		if err := h.Groups.AddMember(&db.GroupMember{
 			GroupID:     groupID,
-			StackName:   stackName,
-			Role:        role,
-			DeployOrder: deployOrder,
+			StackName:   mi.stackName,
+			Role:        mi.role,
+			DeployOrder: mi.deployOrder,
 			AccountID:   &accountID,
 		}); err != nil {
-			http.Error(w, fmt.Sprintf("failed to add member %s: %v", stackName, err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("failed to add member %s: %v", mi.stackName, err), http.StatusInternalServerError)
 			return
 		}
 	}

@@ -50,18 +50,18 @@
  * ```
  */
 
-import { setup, assign, fromCallback } from 'xstate';
-import { streamOperation, streamDeployApps, cancelOperation } from '$lib/api';
-import type { SSEEvent } from '$lib/sse-stream';
+import { setup, assign, fromCallback } from "xstate";
+import { streamOperation, streamDeployApps, cancelOperation } from "$lib/api";
+import type { SSEEvent } from "$lib/sse-stream";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type OpType = 'up' | 'destroy' | 'refresh' | 'preview';
+export type OpType = "up" | "destroy" | "refresh" | "preview";
 
 /** The context (data) carried by the machine across transitions. */
 export interface StackMachineContext {
   stackName: string;
-  currentOp: OpType | '';
+  currentOp: OpType | "";
   logLines: SSEEvent[];
   lastStatus: string;
   /** If true, chain deploy-apps automatically after a successful 'up'. */
@@ -70,15 +70,15 @@ export interface StackMachineContext {
 
 /** Events the machine accepts. */
 export type StackMachineEvent =
-  | { type: 'START_OP'; op: OpType; chainApps?: boolean }
-  | { type: 'DEPLOY_APPS' }
-  | { type: 'CANCEL' }
-  | { type: 'SSE_EVENT'; event: SSEEvent }
-  | { type: 'OP_DONE'; status: string }
-  | { type: 'APPS_DONE'; status: string }
-  | { type: 'CANCEL_DONE' }
-  | { type: 'EXTERNAL_OP_DETECTED' }
-  | { type: 'EXTERNAL_OP_ENDED' };
+  | { type: "START_OP"; op: OpType; chainApps?: boolean }
+  | { type: "DEPLOY_APPS" }
+  | { type: "CANCEL" }
+  | { type: "SSE_EVENT"; event: SSEEvent }
+  | { type: "OP_DONE"; status: string }
+  | { type: "APPS_DONE"; status: string }
+  | { type: "CANCEL_DONE" }
+  | { type: "EXTERNAL_OP_DETECTED" }
+  | { type: "EXTERNAL_OP_ENDED" };
 
 // ── Machine definition ───────────────────────────────────────────────────────
 
@@ -92,7 +92,7 @@ export const stackMachine = setup({
     /** Append an SSE event to the log. */
     appendLog: assign({
       logLines: ({ context, event }) => {
-        if (event.type !== 'SSE_EVENT') return context.logLines;
+        if (event.type !== "SSE_EVENT") return context.logLines;
         return [...context.logLines, event.event];
       },
     }),
@@ -100,25 +100,30 @@ export const stackMachine = setup({
     /** Append a status separator to the log (e.g., "─── succeeded ───"). */
     appendStatus: assign({
       logLines: ({ context, event }) => {
-        if (event.type !== 'OP_DONE' && event.type !== 'APPS_DONE') return context.logLines;
-        return [...context.logLines, {
-          type: 'output',
-          data: `─── ${event.status} ───`,
-          timestamp: new Date().toISOString(),
-        }];
+        if (event.type !== "OP_DONE" && event.type !== "APPS_DONE")
+          return context.logLines;
+        return [
+          ...context.logLines,
+          {
+            type: "output",
+            data: `─── ${event.status} ───`,
+            timestamp: new Date().toISOString(),
+          },
+        ];
       },
     }),
 
     /** Store the final status. */
     setLastStatus: assign({
       lastStatus: ({ event }) => {
-        if (event.type === 'OP_DONE' || event.type === 'APPS_DONE') return event.status;
-        return '';
+        if (event.type === "OP_DONE" || event.type === "APPS_DONE")
+          return event.status;
+        return "";
       },
     }),
 
     /** Clear operation type when going idle. */
-    clearOp: assign({ currentOp: '' as const }),
+    clearOp: assign({ currentOp: "" as const }),
   },
   actors: {
     /**
@@ -128,40 +133,48 @@ export const stackMachine = setup({
      * state and stops it when leaving. The actor reads the SSE stream and sends
      * events back to the parent machine.
      */
-    pulumiOp: fromCallback<StackMachineEvent, { stackName: string; op: OpType }>(
-      ({ sendBack, input }) => {
-        const cancel = streamOperation(input.stackName, input.op,
-          (event) => sendBack({ type: 'SSE_EVENT', event }),
-          (status) => sendBack({ type: 'OP_DONE', status }),
-        );
-        // Return cleanup function — called when the actor is stopped (e.g., on cancel)
-        return () => { cancel(); };
-      }
-    ),
+    pulumiOp: fromCallback<
+      StackMachineEvent,
+      { stackName: string; op: OpType }
+    >(({ sendBack, input }) => {
+      const cancel = streamOperation(
+        input.stackName,
+        input.op,
+        (event) => sendBack({ type: "SSE_EVENT", event }),
+        (status) => sendBack({ type: "OP_DONE", status }),
+      );
+      // Return cleanup function — called when the actor is stopped (e.g., on cancel)
+      return () => {
+        cancel();
+      };
+    }),
 
     /**
      * SSE stream actor for app deployment (deploy-apps).
      */
     deployApps: fromCallback<StackMachineEvent, { stackName: string }>(
       ({ sendBack, input }) => {
-        const cancel = streamDeployApps(input.stackName,
-          (event) => sendBack({ type: 'SSE_EVENT', event }),
-          (status) => sendBack({ type: 'APPS_DONE', status }),
+        const cancel = streamDeployApps(
+          input.stackName,
+          (event) => sendBack({ type: "SSE_EVENT", event }),
+          (status) => sendBack({ type: "APPS_DONE", status }),
         );
-        return () => { cancel(); };
-      }
+        return () => {
+          cancel();
+        };
+      },
     ),
   },
 }).createMachine({
-  id: 'stackOps',
+  id: "stackOps",
   context: ({ input }) => ({
     stackName: input.stackName,
-    currentOp: '' as const,
+    currentOp: "" as const,
     logLines: [],
-    lastStatus: '',
+    lastStatus: "",
     chainApps: false,
   }),
-  initial: 'idle',
+  initial: "idle",
   states: {
     /**
      * IDLE: No operation running. The stack is ready for user actions.
@@ -170,23 +183,31 @@ export const stackMachine = setup({
     idle: {
       on: {
         START_OP: {
-          target: 'running',
+          target: "running",
           actions: assign({
             currentOp: ({ event }) => event.op,
             chainApps: ({ event }) => event.chainApps ?? false,
             logLines: ({ context, event }) => [
               ...context.logLines,
-              { type: 'output', data: `─── ${event.op} ───`, timestamp: new Date().toISOString() },
+              {
+                type: "output",
+                data: `─── ${event.op} ───`,
+                timestamp: new Date().toISOString(),
+              },
             ],
           }),
         },
-        EXTERNAL_OP_DETECTED: 'externalRunning',
+        EXTERNAL_OP_DETECTED: "externalRunning",
         DEPLOY_APPS: {
-          target: 'deployingApps',
+          target: "deployingApps",
           actions: assign({
             logLines: ({ context }) => [
               ...context.logLines,
-              { type: 'output', data: '─── deploy-apps ───', timestamp: new Date().toISOString() },
+              {
+                type: "output",
+                data: "─── deploy-apps ───",
+                timestamp: new Date().toISOString(),
+              },
             ],
           }),
         },
@@ -204,35 +225,45 @@ export const stackMachine = setup({
      */
     running: {
       invoke: {
-        src: 'pulumiOp',
+        src: "pulumiOp",
         input: ({ context }) => ({
           stackName: context.stackName,
           op: context.currentOp as OpType,
         }),
       },
       on: {
-        SSE_EVENT: { actions: 'appendLog' },
+        SSE_EVENT: { actions: "appendLog" },
         OP_DONE: [
           {
             // Auto-chain: successful 'up' with chainApps → deploy apps
             guard: ({ context, event }) =>
-              context.chainApps && event.status === 'succeeded' && context.currentOp === 'up',
-            target: 'deployingApps',
-            actions: ['appendStatus', 'setLastStatus', assign({
-              currentOp: '' as const,
-              logLines: ({ context }) => [
-                ...context.logLines,
-                { type: 'output', data: '─── deploy-apps ───', timestamp: new Date().toISOString() },
-              ],
-            })],
+              context.chainApps &&
+              event.status === "succeeded" &&
+              context.currentOp === "up",
+            target: "deployingApps",
+            actions: [
+              "appendStatus",
+              "setLastStatus",
+              assign({
+                currentOp: "" as const,
+                logLines: ({ context }) => [
+                  ...context.logLines,
+                  {
+                    type: "output",
+                    data: "─── deploy-apps ───",
+                    timestamp: new Date().toISOString(),
+                  },
+                ],
+              }),
+            ],
           },
           {
             // Normal completion → idle
-            target: 'idle',
-            actions: ['appendStatus', 'setLastStatus', 'clearOp'],
+            target: "idle",
+            actions: ["appendStatus", "setLastStatus", "clearOp"],
           },
         ],
-        CANCEL: 'cancelling',
+        CANCEL: "cancelling",
       },
     },
 
@@ -246,10 +277,10 @@ export const stackMachine = setup({
         cancelOperation(context.stackName).catch(() => {});
       },
       on: {
-        SSE_EVENT: { actions: 'appendLog' },
+        SSE_EVENT: { actions: "appendLog" },
         OP_DONE: {
-          target: 'idle',
-          actions: ['appendStatus', 'setLastStatus', 'clearOp'],
+          target: "idle",
+          actions: ["appendStatus", "setLastStatus", "clearOp"],
         },
       },
     },
@@ -260,16 +291,16 @@ export const stackMachine = setup({
      */
     deployingApps: {
       invoke: {
-        src: 'deployApps',
+        src: "deployApps",
         input: ({ context }) => ({ stackName: context.stackName }),
       },
       on: {
-        SSE_EVENT: { actions: 'appendLog' },
+        SSE_EVENT: { actions: "appendLog" },
         APPS_DONE: {
-          target: 'idle',
-          actions: ['appendStatus', 'setLastStatus'],
+          target: "idle",
+          actions: ["appendStatus", "setLastStatus"],
         },
-        CANCEL: 'cancelling',
+        CANCEL: "cancelling",
       },
     },
 
@@ -290,7 +321,7 @@ export const stackMachine = setup({
             cancelOperation(context.stackName).catch(() => {});
           },
         },
-        EXTERNAL_OP_ENDED: 'idle',
+        EXTERNAL_OP_ENDED: "idle",
       },
     },
   },

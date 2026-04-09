@@ -781,6 +781,11 @@ export function streamGroupDeploy(
   return () => { cancelStream?.(); controller.abort(); };
 }
 
+export async function cancelGroupDeploy(id: string): Promise<void> {
+  const res = await fetch(`/api/groups/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
 export async function deleteGroup(id: string): Promise<void> {
   const res = await fetch(`/api/groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

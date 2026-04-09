@@ -14,7 +14,7 @@
     let { id = "" }: { id?: string } = $props();
 
     // ── XState machine for deploy/delete lifecycle ──────────────────────
-    // Manages: idle → deploying (3 phases) → idle, idle → deleting → deleted
+    // Manages: idle → deploying (5 phases) → idle, idle → deleting → deleted
     // Replaces: deploying, deployLog (live), deployError, deleting
     const { snapshot: machineState, send } = useMachine(groupDeployMachine, {
         get input() { return { groupId: id }; },
@@ -22,8 +22,9 @@
 
     // Derived from machine
     const deploying = $derived(
-        $machineState.matches('deploying') || $machineState.matches('externalDeploying')
+        $machineState.matches('deploying') || $machineState.matches('cancelling') || $machineState.matches('externalDeploying')
     );
+    const cancelling = $derived($machineState.matches('cancelling'));
     const deleting = $derived($machineState.matches('deleting'));
     const currentPhase = $derived($machineState.context.currentPhase);
     const deployError = $derived($machineState.context.error);
@@ -210,7 +211,7 @@
                         >{group.status}</Badge
                     >
                     {#if deploying && currentPhase > 0}
-                        <Badge variant="secondary">Phase {currentPhase}/3</Badge>
+                        <Badge variant="secondary">Phase {currentPhase}/5</Badge>
                     {/if}
                     {#if $machineState.matches('externalDeploying')}
                         <Badge variant="secondary">Deploying (external)</Badge>
@@ -221,9 +222,22 @@
                 </div>
             </div>
             <div class="flex gap-2">
-                {#if group.status === "configuring" || group.status === "failed" || group.status === "partial"}
-                    <Button onclick={handleDeploy} disabled={deploying}>
-                        {deploying ? "Deploying..." : "Deploy Cluster"}
+                {#if deploying}
+                    <Button variant="outline" onclick={() => send({ type: 'CANCEL' })} disabled={cancelling}>
+                        {cancelling ? "Cancelling..." : "Cancel"}
+                    </Button>
+                {:else if group.status === "configuring" || group.status === "failed" || group.status === "partial"}
+                    <Button onclick={handleDeploy}>
+                        Deploy Cluster
+                    </Button>
+                {:else if group.status === "deployed"}
+                    <Button variant="outline" onclick={handleDeploy}>
+                        Redeploy
+                    </Button>
+                {/if}
+                {#if !deploying}
+                    <Button variant="outline" onclick={load} disabled={loading}>
+                        Refresh
                     </Button>
                 {/if}
                 <Button

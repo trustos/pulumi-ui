@@ -41,7 +41,7 @@ meta:
   groups:
     - key: cluster
       label: "Cluster Role"
-      fields: [role, drgOcid, primaryPrivateIp, primaryTenancyOcid, gossipKey, workerTenancyOcids, peerCidrs]
+      fields: [role, drgOcid, primaryPrivateIp, primaryTenancyOcid, gossipKey, workerTenancyOcids, workerVcnOcids, drgAttached, peerCidrs]
     - key: infrastructure
       label: "Infrastructure"
       fields: [compartmentName, vcnCidr, subnetCidr, shape, imageId]
@@ -64,6 +64,10 @@ meta:
     gossipKey:
       hidden: true
     workerTenancyOcids:
+      hidden: true
+    workerVcnOcids:
+      hidden: true
+    drgAttached:
       hidden: true
     peerCidrs:
       hidden: true
@@ -92,6 +96,12 @@ config:
     type: string
     default: ""
   workerTenancyOcids:
+    type: string
+    default: ""
+  workerVcnOcids:
+    type: string
+    default: ""
+  drgAttached:
     type: string
     default: ""
   peerCidrs:
@@ -209,7 +219,12 @@ resources:
         - networkEntityId: ${cluster-igw.id}
           destination: "0.0.0.0/0"
           destinationType: CIDR_BLOCK
-{{- if and (ne .Config.role "primary") (ne (index .Config "drgOcid" | default "") "") }}
+{{- if eq .Config.role "primary" }}
+        - networkEntityId: ${cluster-drg.id}
+          destination: "10.0.0.0/8"
+          destinationType: CIDR_BLOCK
+{{- end }}
+{{- if and (ne .Config.role "primary") (eq (index .Config "drgAttached" | default "") "true") }}
         - networkEntityId: {{ index .Config "drgOcid" | default "" }}
           destination: "10.0.0.0/8"
           destinationType: CIDR_BLOCK
@@ -217,6 +232,9 @@ resources:
     options:
       dependsOn:
         - ${cluster-igw}
+{{- if eq .Config.role "primary" }}
+        - ${cluster-drg}
+{{- end }}
 
   cluster-nsg:
     type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
@@ -326,7 +344,7 @@ resources:
       dependsOn:
         - ${cluster-rt}
 
-# --- section: drg ---
+# --- section: drg (primary only) ---
 {{- if eq .Config.role "primary" }}
   cluster-drg:
     type: oci:Core/drg:Drg
@@ -334,6 +352,7 @@ resources:
       compartmentId: ${cluster-compartment.id}
       displayName: "nomad-cluster-drg"
 
+  # Primary's own VCN attachment to DRG
   drg-attachment:
     type: oci:Core/drgAttachment:DrgAttachment
     properties:
@@ -345,24 +364,6 @@ resources:
     options:
       dependsOn:
         - ${cluster-drg}
-
-  # Route rule: all 10.x.x.x traffic to DRG (covers all worker VCNs)
-  drg-route-rule:
-    type: oci:Core/routeTable:RouteTable
-    properties:
-      compartmentId: ${cluster-compartment.id}
-      vcnId: ${cluster-vcn.id}
-      displayName: "drg-rt"
-      routeRules:
-        - networkEntityId: ${cluster-drg.id}
-          destination: "10.0.0.0/8"
-          destinationType: CIDR_BLOCK
-        - networkEntityId: ${cluster-igw.id}
-          destination: "0.0.0.0/0"
-          destinationType: CIDR_BLOCK
-    options:
-      dependsOn:
-        - ${drg-attachment}
 
   # NLB for HTTP/HTTPS ingress (primary only)
   ingress-nsg:
@@ -480,7 +481,9 @@ resources:
       dependsOn:
         - ${ingress-nlb-listener-443}
 
-  # Cross-tenancy IAM: admit worker tenancies to attach to this DRG
+  # ── Cross-tenancy IAM policies (Phase 2) ──
+  # Per Oracle docs: DRG owner needs Endorse (to create attachments in worker tenancy)
+  # and Admit (to let worker manage DRG).
   {{- $workerOcids := splitList "," (index .Config "workerTenancyOcids" | default "") }}
   {{- range $idx, $ocid := $workerOcids }}
   {{- if ne (trim $ocid) "" }}
@@ -488,11 +491,32 @@ resources:
     type: oci:Identity/policy:Policy
     properties:
       compartmentId: ${oci:tenancyOcid}
-      name: {{ printf "admit-worker-%d" $idx }}
-      description: "Allow worker tenancy to attach VCN to cluster DRG"
+      name: {{ printf "cross-tenancy-worker-%d" $idx }}
+      description: "Cross-tenancy DRG policy for worker {{ $idx }}"
       statements:
         - {{ printf "Define tenancy WorkerTenancy%d as %s" $idx (trim $ocid) | quote }}
-        - {{ printf "Admit any-user of tenancy WorkerTenancy%d to manage drg-attachment in compartment id ${cluster-compartment.id}" $idx | quote }}
+        - {{ printf "Endorse any-user to manage drg-attachment in tenancy WorkerTenancy%d" $idx | quote }}
+        - {{ printf "Endorse any-user to manage virtual-network-family in tenancy WorkerTenancy%d" $idx | quote }}
+        - {{ printf "Admit any-user of tenancy WorkerTenancy%d to manage drg in tenancy" $idx | quote }}
+    options:
+      dependsOn:
+        - ${cluster-drg}
+  {{- end }}
+  {{- end }}
+
+  # ── Cross-tenancy DRG attachments to worker VCNs (Phase 4) ──
+  # The DRG owner (primary) creates cross-tenancy attachments to worker VCNs.
+  {{- $workerVcns := splitList "," (index .Config "workerVcnOcids" | default "") }}
+  {{- range $idx, $vcnOcid := $workerVcns }}
+  {{- if ne (trim $vcnOcid) "" }}
+  worker-vcn-attachment-{{ $idx }}:
+    type: oci:Core/drgAttachment:DrgAttachment
+    properties:
+      drgId: ${cluster-drg.id}
+      displayName: {{ printf "worker-vcn-attachment-%d" $idx | quote }}
+      networkDetails:
+        id: {{ trim $vcnOcid }}
+        type: VCN
     options:
       dependsOn:
         - ${cluster-drg}
@@ -500,30 +524,21 @@ resources:
   {{- end }}
 {{- end }}
 
-{{- if and (ne .Config.role "primary") (ne (index .Config "drgOcid" | default "") "") }}
-  # Worker: attach this VCN to the primary's DRG
-  drg-attachment:
-    type: oci:Core/drgAttachment:DrgAttachment
-    properties:
-      drgId: {{ index .Config "drgOcid" | default "" }}
-      displayName: "worker-vcn-attachment"
-      networkDetails:
-        id: ${cluster-vcn.id}
-        type: VCN
-    options:
-      dependsOn:
-        - ${cluster-subnet}
-
-  # Worker: endorse this tenancy to manage DRG attachments in primary tenancy
-  cross-tenancy-endorse:
+# --- section: worker cross-tenancy policy ---
+{{- if and (ne .Config.role "primary") (ne (index .Config "primaryTenancyOcid" | default "") "") }}
+  # Per Oracle docs: VCN owner needs Admit (to let DRG owner create attachments)
+  # and Endorse (to manage DRG in primary tenancy).
+  cross-tenancy-policy:
     type: oci:Identity/policy:Policy
     properties:
       compartmentId: ${oci:tenancyOcid}
-      name: "endorse-drg-attachment"
-      description: "Allow this tenancy to attach VCN to primary cluster DRG"
+      name: "cross-tenancy-drg-policy"
+      description: "Cross-tenancy DRG policy for primary cluster"
       statements:
         - {{ printf "Define tenancy PrimaryTenancy as %s" (index .Config "primaryTenancyOcid" | default "") | quote }}
-        - "Endorse any-user to manage drg-attachment in tenancy PrimaryTenancy"
+        - "Admit any-user of tenancy PrimaryTenancy to manage drg-attachment in tenancy"
+        - "Admit any-user of tenancy PrimaryTenancy to manage virtual-network-family in tenancy"
+        - "Endorse any-user to manage drg in tenancy PrimaryTenancy"
 {{- end }}
 
 # --- section: compute ---
@@ -559,4 +574,6 @@ outputs:
 {{- if eq .Config.role "primary" }}
   drgOcid: ${cluster-drg.id}
   nlbPublicIp: ${ingress-nlb.ipAddresses[0].ipAddress}
+{{- else }}
+  vcnOcid: ${cluster-vcn.id}
 {{- end }}

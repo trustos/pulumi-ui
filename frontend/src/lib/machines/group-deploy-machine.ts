@@ -27,7 +27,7 @@
  */
 
 import { setup, assign, fromCallback, fromPromise } from 'xstate';
-import { streamGroupDeploy, deleteGroup } from '$lib/api';
+import { streamGroupDeploy, deleteGroup, cancelGroupDeploy } from '$lib/api';
 import type { SSEEvent } from '$lib/sse-stream';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ export interface GroupDeployContext {
   /** Last error message (from stream error or deploy failure). */
   error: string;
   /** Current deploy phase: 0 = not deploying, 1/2/3 = active phase. */
-  currentPhase: 0 | 1 | 2 | 3;
+  currentPhase: 0 | 1 | 2 | 3 | 4 | 5;
   /** Final status after deploy completes: 'deployed', 'partial', 'failed', or ''. */
   finalStatus: string;
 }
@@ -48,6 +48,7 @@ export interface GroupDeployContext {
 /** Events the machine accepts. */
 export type GroupDeployEvent =
   | { type: 'DEPLOY' }
+  | { type: 'CANCEL' }
   | { type: 'REQUEST_DELETE' }
   | { type: 'SSE_EVENT'; event: SSEEvent }
   | { type: 'DEPLOY_DONE'; status: string }
@@ -59,11 +60,11 @@ export type GroupDeployEvent =
 
 const PHASE_RE = /Phase (\d)/;
 
-function detectPhase(data: string, currentPhase: 0 | 1 | 2 | 3): 0 | 1 | 2 | 3 {
+function detectPhase(data: string, currentPhase: 0 | 1 | 2 | 3 | 4 | 5): 0 | 1 | 2 | 3 | 4 | 5 {
   const match = data.match(PHASE_RE);
   if (!match) return currentPhase;
   const n = parseInt(match[1], 10);
-  if (n >= 1 && n <= 3) return n as 1 | 2 | 3;
+  if (n >= 1 && n <= 5) return n as 1 | 2 | 3 | 4 | 5;
   return currentPhase;
 }
 
@@ -198,6 +199,28 @@ export const groupDeployMachine = setup({
       },
       on: {
         SSE_EVENT: { actions: 'appendLog' },
+        CANCEL: 'cancelling',
+        DEPLOY_DONE: {
+          target: 'idle',
+          actions: ['appendStatus', 'setFinalStatus'],
+        },
+        DEPLOY_FAILED: {
+          target: 'idle',
+          actions: ['setError', 'setFinalStatus'],
+        },
+      },
+    },
+
+    /**
+     * CANCELLING: User requested cancellation. We call the cancel API
+     * and wait for the stream to end naturally.
+     */
+    cancelling: {
+      entry: ({ context }) => {
+        cancelGroupDeploy(context.groupId).catch(() => {});
+      },
+      on: {
+        SSE_EVENT: { actions: 'appendLog' },
         DEPLOY_DONE: {
           target: 'idle',
           actions: ['appendStatus', 'setFinalStatus'],
@@ -216,6 +239,11 @@ export const groupDeployMachine = setup({
      */
     externalDeploying: {
       on: {
+        CANCEL: {
+          actions: ({ context }) => {
+            cancelGroupDeploy(context.groupId).catch(() => {});
+          },
+        },
         EXTERNAL_DEPLOY_ENDED: 'idle',
       },
     },

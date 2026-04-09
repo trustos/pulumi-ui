@@ -115,6 +115,11 @@ func main() {
 	customBlueprints := db.NewCustomBlueprintStore(dbPair)
 	groupStore := db.NewDeploymentGroupStore(dbPair)
 
+	// Reset any deployment groups stuck in 'deploying' from a server restart.
+	if err := groupStore.MarkStaleDeploying(); err != nil {
+		log.Printf("Warning: could not mark stale group deploys: %v", err)
+	}
+
 	// Prune expired sessions on startup
 	sessions.DeleteExpired()
 
@@ -172,7 +177,7 @@ func main() {
 	authH := &api.AuthHandler{Users: users, Sessions: sessions}
 	identityH := &api.IdentityHandler{Accounts: accounts, Passphrases: passphrases, SSHKeys: sshKeys, Creds: creds}
 	networkH := &api.NetworkHandler{ForwardManager: fwdMgr, MeshManager: meshMgr, ConnStore: connStore, NodeCertStore: nodeCertStore}
-	platformH := &api.PlatformHandler{Creds: creds, Stacks: stackStore, Accounts: accounts, Passphrases: passphrases, Engine: eng, Hooks: hookStore, MeshManager: meshMgr, ConnStore: connStore, Groups: groupStore, Registry: registry, LogBuffer: logBuf, AgentBinaries: agentBinaries}
+	platformH := &api.PlatformHandler{Creds: creds, Stacks: stackStore, Accounts: accounts, Passphrases: passphrases, Engine: eng, Hooks: hookStore, MeshManager: meshMgr, ConnStore: connStore, Groups: groupStore, Ops: ops, Registry: registry, LogBuffer: logBuf, AgentBinaries: agentBinaries}
 	blueprintH := &api.BlueprintHandler{Registry: registry, CustomBlueprints: customBlueprints, Stacks: stackStore, MeshManager: meshMgr, ConnStore: connStore}
 	adminH := &api.AdminHandler{DB: dbPair.WriteDB, Accounts: accounts, Passphrases: passphrases, Creds: creds, Users: users, DataDir: dataDir, KeyFilePath: dataDir + "/encryption.key", RestartCh: restartCh}
 	stackH := &api.StackHandler{

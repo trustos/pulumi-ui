@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -65,8 +66,15 @@ func (r *ResilientWriter) ExecContext(ctx context.Context, query string, args ..
 }
 
 func (r *ResilientWriter) retryExec(ctx context.Context, query string, args []interface{}) (sql.Result, error) {
+	// Truncate query for logging
+	logQuery := query
+	if len(logQuery) > 80 {
+		logQuery = logQuery[:80] + "..."
+	}
+	log.Printf("[db] lock contention on exec, starting retry: %s", strings.TrimSpace(logQuery))
 	var lastErr error
-	for _, interval := range lockRetryIntervals {
+	for i, interval := range lockRetryIntervals {
+		_ = i
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -82,5 +90,6 @@ func (r *ResilientWriter) retryExec(ctx context.Context, query string, args []in
 		}
 		lastErr = err
 	}
-	return nil, lastErr
+	log.Printf("[db] lock retry EXHAUSTED after %d attempts: %s", len(lockRetryIntervals), strings.TrimSpace(logQuery))
+	return nil, fmt.Errorf("database locked after %d retries: %w", len(lockRetryIntervals), lastErr)
 }
