@@ -308,7 +308,7 @@ func buildNSGRuleResource(nsgName string) *yaml.Node {
 			"udpOptions": map[string]interface{}{
 				"destinationPortRange": map[string]interface{}{
 					"min": AgentPort,
-					"max": AgentPort,
+					"max": AgentNLBPortBase + 32, // 41820-41853: direct + per-node NLB listeners
 				},
 			},
 		},

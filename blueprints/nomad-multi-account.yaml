@@ -293,19 +293,6 @@ resources:
         destinationPortRange: { min: 4648, max: 4648 }
       description: "Nomad gossip (UDP)"
 
-  # Nebula agent (for pulumi-ui mesh access)
-  nsg-nebula:
-    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
-    properties:
-      networkSecurityGroupId: ${cluster-nsg.id}
-      direction: INGRESS
-      protocol: "17"
-      source: "0.0.0.0/0"
-      sourceType: CIDR_BLOCK
-      udpOptions:
-        destinationPortRange: { min: 41820, max: 41820 }
-      description: "Nebula mesh agent (UDP)"
-
   # SSH access
   nsg-ssh:
     type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule

@@ -747,6 +747,10 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 					send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: found %s = %s", key, ip)})
 					log.Printf("[agent-discover] stack %s: agent reachable at %s", stackName, ip)
 				}
+				// Also store in node certs for per-node tunnel dialling.
+				if e.nodeCertStore != nil {
+					e.nodeCertStore.UpdateAgentRealIP(stackName, 0, ip)
+				}
 				if e.meshManager != nil {
 					e.meshManager.CloseTunnel(stackName)
 				}
@@ -761,6 +765,9 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 				log.Printf("[agent-discover] failed to store agent IP for %s: %v", stackName, err)
 			} else {
 				send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: found %s = %s", key, ip)})
+			}
+			if e.nodeCertStore != nil {
+				e.nodeCertStore.UpdateAgentRealIP(stackName, 0, ip)
 			}
 			if e.meshManager != nil {
 				e.meshManager.CloseTunnel(stackName)
