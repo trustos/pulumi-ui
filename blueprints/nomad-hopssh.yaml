@@ -43,7 +43,7 @@ meta:
   groups:
     - key: cluster
       label: "Cluster Role"
-      fields: [role, drgOcid, primaryPrivateIp, primaryTenancyOcid, gossipKey, workerTenancyOcids, workerVcnOcids, workerPrivateIps, drgAttached, nlbPublicIp, nlbAgentPort, peerCidrs, bootstrapExpect]
+      fields: [role, drgOcid, primaryPrivateIp, primaryTenancyOcid, gossipKey, workerTenancyOcids, workerVcnOcids, workerPrivateIps, drgAttached, nlbPublicIp, nlbAgentPort, peerCidrs, bootstrapExpect, poolReady]
     - key: networking
       label: "Networking & Ports"
       fields: [exposedPorts, workerPorts, vcnCidr, nlbSubnetCidr, nodesSubnetCidr]
@@ -90,6 +90,8 @@ meta:
       label: "Nomad/Consul Mode"
       description: "Server+Client: quorum + workloads. Server: quorum only. Client: workloads only."
     bootstrapExpect:
+      hidden: true
+    poolReady:
       hidden: true
     exposedPorts:
       ui_type: port-list
@@ -259,6 +261,9 @@ config:
   bootstrapExpect:
     type: string
     default: ""
+  poolReady:
+    type: string
+    default: ""
 
   # ── Networking ──
   exposedPorts:
@@ -321,6 +326,24 @@ variables:
       arguments:
         compartmentId: ${oci:tenancyOcid}
       return: availabilityDomains
+
+{{- if eq (index .Config "poolReady" | default "") "true" }}
+  # Pool instance data sources — only resolve on re-up (poolReady=true)
+  # when instances are already RUNNING from Phase 1
+  poolInstances:
+    fn::invoke:
+      function: oci:Core/getInstancePoolInstances:getInstancePoolInstances
+      arguments:
+        compartmentId: ${cluster-compartment.id}
+        instancePoolId: ${cluster-instance-pool.id}
+      return: instances
+
+  firstPoolInstance:
+    fn::invoke:
+      function: oci:Core/getInstance:getInstance
+      arguments:
+        instanceId: ${poolInstances[0].instanceId}
+{{- end }}
 
 resources:
 {{- $peerCidrs := splitList "," (index .Config "peerCidrs" | default "") }}
@@ -747,12 +770,15 @@ resources:
   {{- end }}
   {{- end }}
 
-  # ── Agent backend set + listener (primary only, for Nebula mesh) ──
-  agent-bs:
+  # ── Per-node agent backend sets + listeners (Phase 1.5, poolReady=true) ──
+  {{- if eq (index $.Config "poolReady" | default "") "true" }}
+  {{- $prevAgentRes := $prevNlbResource }}
+  {{- range $i := until $nc }}
+  agent-bs-{{ $i }}:
     type: oci:NetworkLoadBalancer/backendSet:BackendSet
     properties:
       networkLoadBalancerId: ${ingress-nlb.id}
-      name: "agent-bs"
+      name: {{ printf "agent-bs-%d" $i | quote }}
       policy: FIVE_TUPLE
       isPreserveSource: false
       healthChecker:
@@ -760,19 +786,33 @@ resources:
         port: 22
     options:
       dependsOn:
-        - {{ printf "${%s}" $prevNlbResource }}
+        - {{ printf "${%s}" $prevAgentRes }}
 
-  agent-ln:
+  agent-ln-{{ $i }}:
     type: oci:NetworkLoadBalancer/listener:Listener
     properties:
       networkLoadBalancerId: ${ingress-nlb.id}
-      name: "agent-listener"
-      defaultBackendSetName: "agent-bs"
+      name: {{ printf "agent-listener-%d" (add 41821 $i) | quote }}
+      defaultBackendSetName: {{ printf "agent-bs-%d" $i | quote }}
       protocol: UDP
-      port: 41821
+      port: {{ add 41821 $i }}
     options:
       dependsOn:
-        - ${agent-bs}
+        - ${agent-bs-{{ $i }}}
+
+  agent-be-{{ $i }}:
+    type: oci:NetworkLoadBalancer/backend:Backend
+    properties:
+      networkLoadBalancerId: ${ingress-nlb.id}
+      backendSetName: {{ printf "agent-bs-%d" $i | quote }}
+      targetId: {{ printf "${poolInstances[%d].instanceId}" $i }}
+      port: 41820
+    options:
+      dependsOn:
+        - ${agent-ln-{{ $i }}}
+  {{- $prevAgentRes = printf "agent-be-%d" $i }}
+  {{- end }}
+  {{- end }}
 
   # ── Cross-tenancy IAM policies (Phase 2) ──
   {{- $workerOcids := splitList "," (index .Config "workerTenancyOcids" | default "") }}
@@ -926,10 +966,6 @@ resources:
           vnicSelection: "PrimaryVnic"
   {{- end }}
   {{- end }}
-        - loadBalancerId: ${ingress-nlb.id}
-          backendSetName: "agent-bs"
-          port: 41820
-          vnicSelection: "PrimaryVnic"
 {{- end }}
     options:
       dependsOn:
@@ -941,10 +977,12 @@ resources:
         - ${ingress-nlb-bs-{{ $p._0 }}}
   {{- end }}
   {{- end }}
-        - ${agent-bs}
 {{- end }}
 
 outputs:
+{{- if eq (index .Config "poolReady" | default "") "true" }}
+  instancePrivateIp: ${firstPoolInstance.privateIp}
+{{- end }}
   poolId: ${cluster-instance-pool.id}
   compartmentId: ${cluster-compartment.id}
   nodeCount: {{ .Config.nodeCount | default "1" }}

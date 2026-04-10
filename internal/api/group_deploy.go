@@ -225,6 +225,31 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 		outputs["instancePrivateIp"] = auto.OutputValue{Value: primaryIPs[0]}
 	}
 
+	// ── Phase 1.5: Re-up primary with poolReady=true ─────────────────────
+	// Pool instances are now RUNNING. Re-up creates per-node agent NLB backends
+	// using the getInstancePoolInstances data source (which now resolves valid IDs).
+	send(engine.SSEEvent{Type: "output", Data: "── Creating per-node agent backends ──"})
+	primaryMember.config["poolReady"] = "true"
+	if err := h.updateStackConfig(primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.passphraseID, primaryMember.accountID); err != nil {
+		log.Printf("[group-deploy] ERROR: failed to update primary config for phase 1.5: %v", err)
+	}
+	phase15Status := h.trackedUp(opCtx, primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.creds, send)
+	log.Printf("[group-deploy] phase 1.5: pool-ready re-up status=%s", phase15Status)
+	if phase15Status != "succeeded" {
+		send(engine.SSEEvent{Type: "error", Data: "Failed to create per-node agent backends — continuing with round-robin"})
+	}
+
+	// Re-read outputs after Phase 1.5 (instancePrivateIp now available)
+	outputs, err = h.Engine.GetStackOutputs(opCtx, primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.creds)
+	if err != nil {
+		log.Printf("[group-deploy] WARNING: could not re-read outputs after phase 1.5: %v", err)
+	} else {
+		log.Printf("[group-deploy] phase 1.5 outputs: %d keys", len(outputs))
+		for k, v := range outputs {
+			log.Printf("[group-deploy]   output %s = %v", k, v.Value)
+		}
+	}
+
 	// ── Phase 2: Create cross-tenancy IAM policies on primary ────────────
 	// This must happen BEFORE deploying workers, because workers need
 	// permission to reference the primary's DRG for cross-tenancy routing.
