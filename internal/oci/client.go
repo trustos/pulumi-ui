@@ -287,8 +287,8 @@ func (c *Client) GetInstancePrivateIP(compartmentID, instanceID string) (string,
 
 	// Get the VNIC details
 	var vnic Vnic
-	vnicURL := fmt.Sprintf("https://virtualnetwork.%s.oraclecloud.com/20160918/vnics/%s",
-		c.region, url.PathEscape(attachments[0].VnicID))
+	vnicURL := fmt.Sprintf("%s/vnics/%s",
+		computeBase(c.region), url.PathEscape(attachments[0].VnicID))
 	if err := c.get(vnicURL, &vnic); err != nil {
 		return "", fmt.Errorf("get VNIC: %w", err)
 	}
