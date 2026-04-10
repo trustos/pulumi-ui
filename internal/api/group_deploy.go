@@ -13,9 +13,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/trustos/pulumi-ui/internal/blueprints"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
+	"github.com/trustos/pulumi-ui/internal/oci"
 	"github.com/trustos/pulumi-ui/internal/stacks"
 )
 
@@ -213,10 +215,19 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	send(engine.SSEEvent{Type: "output", Data: fmt.Sprintf("Primary outputs captured: %d keys", len(outputs))})
 
-	// ── Phase 1.5: Re-up primary with poolReady=true ─────────────────────
-	// Pool instances are now RUNNING. Re-up creates per-node agent NLB backends
-	// using the getInstancePoolInstances data source (which now resolves valid IDs).
+	// ── Phase 1.5: Resolve pool IPs via OCI API, re-up with per-node backends ──
+	// Pool instances are now RUNNING. Resolve their IPs via OCI API, set
+	// primaryNodeIps config, and re-up to create per-node agent NLB backends.
 	send(engine.SSEEvent{Type: "output", Data: "── Creating per-node agent backends ──"})
+	primaryIPs, err := resolvePoolInstanceIPs(primaryMember, outputs)
+	if err != nil {
+		log.Printf("[group-deploy] WARNING: could not resolve primary pool IPs: %v", err)
+	} else if len(primaryIPs) > 0 {
+		log.Printf("[group-deploy] phase 1.5: primary pool IPs: %v", primaryIPs)
+		primaryMember.config["primaryNodeIps"] = strings.Join(primaryIPs, ",")
+		// Also inject first IP as instancePrivateIp for wiring
+		outputs["instancePrivateIp"] = auto.OutputValue{Value: primaryIPs[0]}
+	}
 	primaryMember.config["poolReady"] = "true"
 	if err := h.updateStackConfig(primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.passphraseID, primaryMember.accountID); err != nil {
 		log.Printf("[group-deploy] ERROR: failed to update primary config for phase 1.5: %v", err)
@@ -224,10 +235,10 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	phase15Status := h.trackedUp(opCtx, primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.creds, send)
 	log.Printf("[group-deploy] phase 1.5: pool-ready re-up status=%s", phase15Status)
 	if phase15Status != "succeeded" {
-		send(engine.SSEEvent{Type: "error", Data: "Failed to create per-node agent backends — continuing with round-robin"})
+		send(engine.SSEEvent{Type: "error", Data: "Failed to create per-node agent backends — continuing"})
 	}
 
-	// Re-read outputs after Phase 1.5 (instancePrivateIp now available)
+	// Re-read outputs after Phase 1.5 (instancePrivateIp now in output)
 	outputs, err = h.Engine.GetStackOutputs(opCtx, primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.creds)
 	if err != nil {
 		log.Printf("[group-deploy] WARNING: could not re-read outputs after phase 1.5: %v", err)
@@ -400,17 +411,26 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	// data sources resolve instancePrivateIp for NLB backend wiring.
 	send(engine.SSEEvent{Type: "output", Data: "── Resolving worker instance IPs ──"})
 	for _, worker := range workerMembers {
+		// Resolve worker pool IPs via OCI API
+		wOutputs, err := h.Engine.GetStackOutputs(opCtx, worker.stackName, group.Blueprint, worker.config, worker.creds)
+		if err != nil {
+			log.Printf("[group-deploy] phase 3.5: failed to get outputs for %s: %v", worker.stackName, err)
+			continue
+		}
+		wIPs, err := resolvePoolInstanceIPs(worker, wOutputs)
+		if err != nil {
+			log.Printf("[group-deploy] phase 3.5: WARNING: could not resolve pool IPs for %s: %v", worker.stackName, err)
+		} else if len(wIPs) > 0 {
+			log.Printf("[group-deploy] phase 3.5: worker %s pool IPs: %v", worker.stackName, wIPs)
+			worker.config["primaryNodeIps"] = strings.Join(wIPs, ",")
+		}
 		worker.config["poolReady"] = "true"
 		if err := h.updateStackConfig(worker.stackName, group.Blueprint, worker.config, worker.passphraseID, worker.accountID); err != nil {
 			log.Printf("[group-deploy] phase 3.5: ERROR updating config for %s: %v", worker.stackName, err)
-			continue
 		}
-		status := h.trackedUp(opCtx, worker.stackName, group.Blueprint, worker.config, worker.creds, send)
-		log.Printf("[group-deploy] phase 3.5: worker %s pool-ready re-up status=%s", worker.stackName, status)
 	}
 
 	// ── Phase 4: Create cross-tenancy DRG attachments to worker VCNs ─────
-	// Read worker outputs (now includes instancePrivateIp from poolReady re-up).
 	send(engine.SSEEvent{Type: "output", Data: "═══ Phase 4: Creating cross-tenancy DRG attachments ═══"})
 
 	workerVcnOcids := []string{}
@@ -700,5 +720,56 @@ func (h *PlatformHandler) updateStackConfig(stackName, blueprint string, config 
 	}
 	log.Printf("[group-deploy] saving config for %s (%d bytes)", stackName, len(yamlStr))
 	return h.Stacks.Upsert(stackName, blueprint, yamlStr, accountID, passphraseID, nil, accountID)
+}
+
+// resolvePoolInstanceIPs queries OCI API to get private IPs for all instances
+// in an InstancePool. Uses poolId and compartmentId from Pulumi stack outputs.
+func resolvePoolInstanceIPs(member *memberWithCreds, outputs auto.OutputMap) ([]string, error) {
+	poolID := ""
+	compartmentID := ""
+	if v, ok := outputs["poolId"]; ok {
+		poolID, _ = v.Value.(string)
+	}
+	if v, ok := outputs["compartmentId"]; ok {
+		compartmentID, _ = v.Value.(string)
+	}
+	if poolID == "" || compartmentID == "" {
+		return nil, fmt.Errorf("missing poolId or compartmentId outputs")
+	}
+
+	ociCred := member.creds.OCI
+	if ociCred.TenancyOCID == "" {
+		return nil, fmt.Errorf("no OCI credentials for %s", member.stackName)
+	}
+	client, err := oci.NewClient(ociCred.TenancyOCID, ociCred.UserOCID, ociCred.Fingerprint, ociCred.PrivateKey, ociCred.Region)
+	if err != nil {
+		return nil, fmt.Errorf("create OCI client: %w", err)
+	}
+
+	instances, err := client.ListInstancePoolInstances(compartmentID, poolID)
+	if err != nil {
+		return nil, fmt.Errorf("list pool instances: %w", err)
+	}
+	log.Printf("[group-deploy] pool %s: %d instances found", poolID[len(poolID)-12:], len(instances))
+
+	var ips []string
+	for _, inst := range instances {
+		state := inst.State
+		if state == "" {
+			state = inst.LifecycleState
+		}
+		if state != "Running" && state != "RUNNING" {
+			log.Printf("[group-deploy] pool instance %s state=%s, skipping", inst.ID, state)
+			continue
+		}
+		ip, err := client.GetInstancePrivateIP(compartmentID, inst.ID)
+		if err != nil {
+			log.Printf("[group-deploy] failed to get IP for instance %s: %v", inst.ID, err)
+			continue
+		}
+		ips = append(ips, ip)
+		log.Printf("[group-deploy] pool instance %s privateIp=%s", inst.ID, ip)
+	}
+	return ips, nil
 }
 

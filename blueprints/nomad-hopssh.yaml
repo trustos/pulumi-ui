@@ -43,7 +43,7 @@ meta:
   groups:
     - key: cluster
       label: "Cluster Role"
-      fields: [role, drgOcid, primaryPrivateIp, primaryTenancyOcid, gossipKey, workerTenancyOcids, workerVcnOcids, workerPrivateIps, drgAttached, nlbPublicIp, nlbAgentPort, peerCidrs, bootstrapExpect, poolReady]
+      fields: [role, drgOcid, primaryPrivateIp, primaryTenancyOcid, gossipKey, workerTenancyOcids, workerVcnOcids, workerPrivateIps, drgAttached, nlbPublicIp, nlbAgentPort, peerCidrs, bootstrapExpect, poolReady, primaryNodeIps]
     - key: networking
       label: "Networking & Ports"
       fields: [exposedPorts, workerPorts, vcnCidr, nlbSubnetCidr, nodesSubnetCidr]
@@ -92,6 +92,8 @@ meta:
     bootstrapExpect:
       hidden: true
     poolReady:
+      hidden: true
+    primaryNodeIps:
       hidden: true
     exposedPorts:
       ui_type: port-list
@@ -264,6 +266,9 @@ config:
   poolReady:
     type: string
     default: ""
+  primaryNodeIps:
+    type: string
+    default: ""
 
   # ── Networking ──
   exposedPorts:
@@ -326,24 +331,6 @@ variables:
       arguments:
         compartmentId: ${oci:tenancyOcid}
       return: availabilityDomains
-
-{{- if eq (index .Config "poolReady" | default "") "true" }}
-  # Pool instance data sources — only resolve on re-up (poolReady=true)
-  # when instances are already RUNNING from Phase 1
-  poolInstances:
-    fn::invoke:
-      function: oci:Core/getInstancePoolInstances:getInstancePoolInstances
-      arguments:
-        compartmentId: ${cluster-compartment.id}
-        instancePoolId: ${cluster-instance-pool.id}
-      return: instances
-
-  firstPoolInstance:
-    fn::invoke:
-      function: oci:Core/getInstance:getInstance
-      arguments:
-        instanceId: ${poolInstances[0].instanceId}
-{{- end }}
 
 resources:
 {{- $peerCidrs := splitList "," (index .Config "peerCidrs" | default "") }}
@@ -770,10 +757,11 @@ resources:
   {{- end }}
   {{- end }}
 
-  # ── Per-node agent backend sets + listeners (Phase 1.5, poolReady=true) ──
-  {{- if eq (index $.Config "poolReady" | default "") "true" }}
+  # ── Per-node agent backend sets + listeners (Phase 1.5, via primaryNodeIps from OCI API) ──
+  {{- $primaryNodeIps := splitList "," (index .Config "primaryNodeIps" | default "") }}
   {{- $prevAgentRes := $prevNlbResource }}
-  {{- range $i := until $nc }}
+  {{- range $i, $ip := $primaryNodeIps }}
+  {{- if ne (trim $ip) "" }}
   agent-bs-{{ $i }}:
     type: oci:NetworkLoadBalancer/backendSet:BackendSet
     properties:
@@ -805,7 +793,7 @@ resources:
     properties:
       networkLoadBalancerId: ${ingress-nlb.id}
       backendSetName: {{ printf "agent-bs-%d" $i | quote }}
-      targetId: {{ printf "${poolInstances[%d].instanceId}" $i }}
+      ipAddress: {{ trim $ip | quote }}
       port: 41820
     options:
       dependsOn:
@@ -979,9 +967,12 @@ resources:
   {{- end }}
 {{- end }}
 
+{{- $firstNodeIp := "" }}
+{{- $pnIps := splitList "," (index .Config "primaryNodeIps" | default "") }}
+{{- if gt (len $pnIps) 0 }}{{ $firstNodeIp = trim (index $pnIps 0) }}{{ end }}
 outputs:
-{{- if eq (index .Config "poolReady" | default "") "true" }}
-  instancePrivateIp: ${firstPoolInstance.privateIp}
+{{- if ne $firstNodeIp "" }}
+  instancePrivateIp: {{ $firstNodeIp | quote }}
 {{- end }}
   poolId: ${cluster-instance-pool.id}
   compartmentId: ${cluster-compartment.id}
