@@ -46,7 +46,7 @@ meta:
       fields: [role, drgOcid, primaryPrivateIp, primaryTenancyOcid, gossipKey, workerTenancyOcids, workerVcnOcids, workerPrivateIps, drgAttached, nlbPublicIp, nlbAgentPort, peerCidrs, bootstrapExpect]
     - key: networking
       label: "Networking & Ports"
-      fields: [exposedPorts, vcnCidr, nlbSubnetCidr, nodesSubnetCidr]
+      fields: [exposedPorts, workerPorts, vcnCidr, nlbSubnetCidr, nodesSubnetCidr]
     - key: infrastructure
       label: "Infrastructure"
       fields: [compartmentName, shape, imageId]
@@ -93,9 +93,14 @@ meta:
       hidden: true
     exposedPorts:
       ui_type: port-list
-      label: "Exposed Ports"
-      description: "Ports exposed publicly on the Network Load Balancer"
+      label: "NLB Exposed Ports"
+      description: "Ports exposed publicly on the Network Load Balancer (primary only)"
       roles: [primary]
+    workerPorts:
+      ui_type: port-list
+      label: "Public IP Ports"
+      description: "Ports open on the worker's public IP (direct, no NLB)"
+      roles: [worker]
     nodeCount:
       ui_type: number
     nlbSubnetCidr:
@@ -259,6 +264,9 @@ config:
   exposedPorts:
     type: string
     default: "http:TCP:80:80;https:TCP:443:443"
+  workerPorts:
+    type: string
+    default: "hopssh-lighthouse:UDP:42001:42100;hopssh-dns:UDP:15300:15400"
 
   # ── Infrastructure ──
   compartmentName:
@@ -580,31 +588,31 @@ resources:
 {{- end }}
 
 {{- if ne .Config.role "primary" }}
-  # hopssh Nebula lighthouse UDP from internet (direct to public IP)
-  nsg-hopssh-lighthouse:
+  # ── Dynamic NSG rules from workerPorts config (direct to public IP) ──
+  {{- $workerPorts := splitList ";" (index .Config "workerPorts" | default "") }}
+  {{- range $idx, $portEntry := $workerPorts }}
+  {{- if ne $portEntry "" }}
+  {{- $wp := split ":" $portEntry }}
+  nsg-worker-{{ $wp._0 }}:
     type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
     properties:
       networkSecurityGroupId: ${cluster-nsg.id}
       direction: INGRESS
-      protocol: "17"
+      protocol: {{ if eq $wp._1 "UDP" }}"17"{{ else if eq $wp._1 "TCP_AND_UDP" }}"all"{{ else }}"6"{{ end }}
       source: "0.0.0.0/0"
       sourceType: CIDR_BLOCK
+      {{- if and (ne $wp._2 "0") (ne $wp._3 "0") }}
+      {{- if eq $wp._1 "UDP" }}
       udpOptions:
-        destinationPortRange: { min: 42001, max: 42100 }
-      description: "hopssh Nebula lighthouse (UDP)"
-
-  # hopssh DNS from internet
-  nsg-hopssh-dns:
-    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
-    properties:
-      networkSecurityGroupId: ${cluster-nsg.id}
-      direction: INGRESS
-      protocol: "17"
-      source: "0.0.0.0/0"
-      sourceType: CIDR_BLOCK
-      udpOptions:
-        destinationPortRange: { min: 15300, max: 15400 }
-      description: "hopssh DNS (UDP)"
+        destinationPortRange: { min: {{ $wp._2 }}, max: {{ $wp._3 }} }
+      {{- else if ne $wp._1 "TCP_AND_UDP" }}
+      tcpOptions:
+        destinationPortRange: { min: {{ $wp._2 }}, max: {{ $wp._3 }} }
+      {{- end }}
+      {{- end }}
+      description: {{ if eq $wp._2 "0" }}{{ printf "%s (%s all ports)" $wp._0 $wp._1 | quote }}{{ else }}{{ printf "%s (%s %s-%s)" $wp._0 $wp._1 $wp._2 $wp._3 | quote }}{{ end }}
+  {{- end }}
+  {{- end }}
 
   # Worker: Nebula agent UDP from primary NLB subnet (via DRG)
   nsg-nebula-from-nlb:
