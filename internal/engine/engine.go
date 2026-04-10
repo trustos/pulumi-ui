@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -627,7 +628,7 @@ func (e *Engine) agentVarListForStack(stackName string) []agentinject.AgentVars 
 
 // discoverAgentAddress extracts the agent's real IP from Pulumi outputs
 // after a successful deploy and stores it for Nebula static_host_map.
-func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, prog blueprints.Blueprint, stack auto.Stack, send SSESender) {
+func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, prog blueprints.Blueprint, stack auto.Stack, cfg map[string]string, send SSESender) {
 	hasAgent := false
 	if _, ok := prog.(blueprints.ApplicationProvider); ok {
 		hasAgent = true
@@ -643,6 +644,39 @@ func (e *Engine) discoverAgentAddress(ctx context.Context, stackName string, pro
 	if err != nil {
 		log.Printf("[agent-discover] failed to read outputs for %s: %v", stackName, err)
 		return
+	}
+
+	// Check config-based NLB discovery first (for worker stacks in multi-account
+	// groups where the NLB is in the primary tenancy). The worker's config gets
+	// nlbPublicIp + nlbAgentPort set by the group deploy orchestrator in Phase 5.
+	if e.nodeCertStore != nil {
+		cfgNlbIP := cfg["nlbPublicIp"]
+		cfgNlbPort := cfg["nlbAgentPort"]
+		if cfgNlbIP != "" && cfgNlbPort != "" {
+			basePort, _ := strconv.Atoi(cfgNlbPort)
+			nodeCount := 1
+			if nc, err := strconv.Atoi(cfg["nodeCount"]); err == nil && nc > 0 {
+				nodeCount = nc
+			}
+			for i := 0; i < nodeCount; i++ {
+				addr := fmt.Sprintf("%s:%d", cfgNlbIP, basePort+i)
+				if err := e.nodeCertStore.UpdateAgentRealIP(stackName, i, addr); err != nil {
+					log.Printf("[agent-discover] failed to store config-based NLB addr for %s node %d: %v", stackName, i, err)
+				} else {
+					send(SSEEvent{Type: "output", Data: fmt.Sprintf("Agent discovery: NLB %s node %d (from config)", addr, i)})
+					log.Printf("[agent-discover] stack %s node %d: config-based NLB %s", stackName, i, addr)
+				}
+				if i == 0 {
+					if err := e.connStore.UpdateAgentRealIP(stackName, addr); err != nil {
+						log.Printf("[agent-discover] WARNING: failed to update agent real IP for %s: %v", stackName, err)
+					}
+				}
+			}
+			if e.meshManager != nil {
+				e.meshManager.CloseTunnel(stackName)
+			}
+			return
+		}
 	}
 
 	// Per-node NLB discovery for YAML programs with agentAccess: true.
@@ -882,7 +916,7 @@ func (e *Engine) Up(ctx context.Context, stackName, blueprintName string, cfg ma
 				send(SSEEvent{Type: "error", Data: err.Error()})
 				return "failed"
 			}
-			e.discoverAgentAddress(opCtx, stackName, prog, stack, send)
+			e.discoverAgentAddress(opCtx, stackName, prog, stack, cfg, send)
 			return "succeeded"
 		})
 }
@@ -937,7 +971,7 @@ func (e *Engine) Refresh(ctx context.Context, stackName, blueprintName string, c
 			// Discover agent addresses from Pulumi outputs. This is essential
 			// for claimed stacks where refresh is the first operation and
 			// AgentRealIP is nil. For non-agent stacks this is a no-op.
-			e.discoverAgentAddress(opCtx, stackName, prog, stack, send)
+			e.discoverAgentAddress(opCtx, stackName, prog, stack, cfg, send)
 			return "succeeded"
 		})
 }

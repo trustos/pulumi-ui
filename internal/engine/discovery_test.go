@@ -39,7 +39,7 @@ func TestDiscoverAgentAddress_NilConnStore(t *testing.T) {
 	var events []SSEEvent
 	send := func(ev SSEEvent) { events = append(events, ev) }
 
-	e.discoverAgentAddress(nil, "test", &plainProgram{}, auto.Stack{}, send)
+	e.discoverAgentAddress(nil, "test", &plainProgram{}, auto.Stack{}, nil, send)
 	assert.Empty(t, events, "plain program + nil connStore should be a no-op")
 }
 
@@ -48,7 +48,7 @@ func TestDiscoverAgentAddress_NonAgentProgram(t *testing.T) {
 	var events []SSEEvent
 	send := func(ev SSEEvent) { events = append(events, ev) }
 
-	e.discoverAgentAddress(nil, "test", &plainProgram{}, auto.Stack{}, send)
+	e.discoverAgentAddress(nil, "test", &plainProgram{}, auto.Stack{}, nil, send)
 	assert.Empty(t, events, "non-agent programs should be skipped before outputs are read")
 }
 

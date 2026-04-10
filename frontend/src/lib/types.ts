@@ -25,7 +25,7 @@ export interface OciAvailabilityDomain {
 export interface ConfigField {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'textarea' | 'select' | 'oci-shape' | 'oci-image' | 'oci-compartment' | 'oci-ad' | 'ssh-public-key';
+  type: 'text' | 'number' | 'textarea' | 'select' | 'oci-shape' | 'oci-image' | 'oci-compartment' | 'oci-ad' | 'ssh-public-key' | 'port-list';
   required?: boolean;
   default?: string;
   description?: string;
@@ -34,6 +34,7 @@ export interface ConfigField {
   groupLabel?: string;
   secret?: boolean;
   hidden?: boolean;
+  roles?: string[];
 }
 
 export type ApplicationTier = 'bootstrap' | 'workload';

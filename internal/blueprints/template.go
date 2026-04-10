@@ -127,7 +127,7 @@ func templateCloudInit(nodeIndex int, config map[string]string) string {
 
 	// Pass cluster-specific variables for multi-account join logic.
 	extraVars := map[string]string{}
-	for _, key := range []string{"role", "primaryPrivateIp", "gossipKey"} {
+	for _, key := range []string{"role", "primaryPrivateIp", "gossipKey", "serverMode", "bootstrapExpect"} {
 		if v := config[key]; v != "" {
 			extraVars[key] = v
 		}

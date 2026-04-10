@@ -8,6 +8,7 @@
   import * as Select from '$lib/components/ui/select';
   import { Combobox } from '$lib/components/ui/combobox';
   import { Button } from '$lib/components/ui/button';
+  import PortListEditor from '$lib/components/PortListEditor.svelte';
 
   let {
     fields,
@@ -396,6 +397,9 @@
                 rows={4}
                 required={field.required}
               />
+
+            {:else if field.type === 'port-list'}
+              <PortListEditor bind:value={values[field.key]} />
 
             {:else}
               <Input

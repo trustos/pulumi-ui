@@ -50,6 +50,7 @@ setup_os() {
       [ $wait -ge 120 ] && { echo "ERROR: apt locks not released"; exit 1; }
     done
 
+    apt-get update
     for i in {1..60}; do
       apt-get install -y software-properties-common jq python3 python3-pip inotify-tools python3-venv pipx curl openssl wget unzip && break
       echo "apt-get install failed, retrying ($i/60)..."; sleep 5
@@ -187,6 +188,8 @@ discover_node_ips() {
 CLUSTER_ROLE="{{ .Vars.role }}"
 CLUSTER_JOIN_IP="{{ .Vars.primaryPrivateIp }}"
 GOSSIP_KEY="{{ .Vars.gossipKey }}"
+SERVER_MODE="{{ .Vars.serverMode }}"
+CLUSTER_BOOTSTRAP_EXPECT="{{ .Vars.bootstrapExpect }}"
 
 # --- Peer discovery + self-identification (called after discover_imds) ---
 discover_peers() {
@@ -196,21 +199,42 @@ discover_peers() {
   fi
   echo "Self private IP: $SELF_PRIVATE_IP"
 
-  # Multi-account cluster: role-based join (skip OCI IP discovery)
+  # Multi-account cluster: role-based join
+  # Override bootstrap_expect with cluster-wide value if set
+  if [ -n "$CLUSTER_BOOTSTRAP_EXPECT" ] && [ "$CLUSTER_BOOTSTRAP_EXPECT" -gt 0 ] 2>/dev/null; then
+    NOMAD_BOOTSTRAP_EXPECT="$CLUSTER_BOOTSTRAP_EXPECT"
+  fi
+
   if [ "$CLUSTER_ROLE" = "primary" ]; then
-    echo "Cluster role: PRIMARY (self-bootstrap)"
-    NOMAD_IPS="[\"$SELF_PRIVATE_IP\"]"
-    IS_FIRST_NODE=true
-    NOMAD_BOOTSTRAP_EXPECT=1
+    if [ "$NOMAD_BOOTSTRAP_EXPECT" -gt 1 ]; then
+      echo "Cluster role: PRIMARY (multi-node, expecting $NOMAD_BOOTSTRAP_EXPECT servers)"
+      discover_node_ips
+      NOMAD_IPS=$(echo "$ALL_NODE_IPS" | tr ' ' '\n' | jq -R . | jq -s .)
+      FIRST_NODE_IP=$(echo "$ALL_NODE_IPS" | tr ' ' '\n' | sort | head -n1)
+      IS_FIRST_NODE=false
+      if [ "$SELF_PRIVATE_IP" = "$FIRST_NODE_IP" ]; then
+        IS_FIRST_NODE=true
+        echo "This is the first/bootstrapping node."
+      fi
+    else
+      echo "Cluster role: PRIMARY (single-node, self-bootstrap)"
+      NOMAD_IPS="[\"$SELF_PRIVATE_IP\"]"
+      IS_FIRST_NODE=true
+    fi
     export NOMAD_IPS IS_FIRST_NODE SELF_PRIVATE_IP NOMAD_BOOTSTRAP_EXPECT
     return 0
   fi
 
   if [ "$CLUSTER_ROLE" = "worker" ] && [ -n "$CLUSTER_JOIN_IP" ]; then
-    echo "Cluster role: WORKER (joining primary at $CLUSTER_JOIN_IP)"
+    echo "Cluster role: WORKER (joining primary at $CLUSTER_JOIN_IP, serverMode=$SERVER_MODE)"
     NOMAD_IPS="[\"$CLUSTER_JOIN_IP\"]"
     IS_FIRST_NODE=false
-    NOMAD_BOOTSTRAP_EXPECT=1
+    # Use cluster-wide bootstrap_expect if set, otherwise 1 (client-only default)
+    if [ -n "$CLUSTER_BOOTSTRAP_EXPECT" ] && [ "$CLUSTER_BOOTSTRAP_EXPECT" -gt 0 ] 2>/dev/null; then
+      NOMAD_BOOTSTRAP_EXPECT="$CLUSTER_BOOTSTRAP_EXPECT"
+    else
+      NOMAD_BOOTSTRAP_EXPECT=1
+    fi
     export NOMAD_IPS IS_FIRST_NODE SELF_PRIVATE_IP NOMAD_BOOTSTRAP_EXPECT
     return 0
   fi
@@ -288,13 +312,24 @@ install_consul() {
   mkdir -p /etc/consul.d "$CONSUL_DATA_DIR"
   chown -R consul:consul /etc/consul.d "$CONSUL_DATA_DIR"
 
-  local consul_server="true"
-  local consul_bootstrap="bootstrap_expect = $NOMAD_BOOTSTRAP_EXPECT"
-  local consul_encrypt=""
-  if [ "$CLUSTER_ROLE" = "worker" ]; then
-    consul_server="false"
-    consul_bootstrap=""
+  # Determine server mode: use SERVER_MODE if set, else infer from CLUSTER_ROLE
+  # Options: "server" (quorum only), "client" (workloads only), "server+client" (both)
+  local effective_server_mode="$SERVER_MODE"
+  if [ -z "$effective_server_mode" ]; then
+    if [ "$CLUSTER_ROLE" = "worker" ]; then
+      effective_server_mode="client"
+    else
+      effective_server_mode="server+client"
+    fi
   fi
+
+  local consul_server="false"
+  local consul_bootstrap=""
+  if [ "$effective_server_mode" = "server" ] || [ "$effective_server_mode" = "server+client" ]; then
+    consul_server="true"
+    consul_bootstrap="bootstrap_expect = $NOMAD_BOOTSTRAP_EXPECT"
+  fi
+  local consul_encrypt=""
   if [ -n "$GOSSIP_KEY" ]; then
     consul_encrypt="encrypt = \"$GOSSIP_KEY\""
   fi
@@ -401,12 +436,21 @@ configure_nomad() {
   mkdir -p "$DATA_DIR" "$DATA_DIR/alloc" /etc/nomad.d
   chown nomad:nomad "$DATA_DIR" "$DATA_DIR/alloc" 2>/dev/null || true
 
+  # Determine server mode: use SERVER_MODE if set, else infer from CLUSTER_ROLE
+  # Options: "server" (quorum only), "client" (workloads only), "server+client" (both)
+  local effective_server_mode="$SERVER_MODE"
+  if [ -z "$effective_server_mode" ]; then
+    if [ "$CLUSTER_ROLE" = "worker" ]; then
+      effective_server_mode="client"
+    else
+      effective_server_mode="server+client"
+    fi
+  fi
+
+  local nomad_server_enabled="false"
   local nomad_server_block=""
-  if [ "$CLUSTER_ROLE" = "worker" ]; then
-    nomad_server_block='server {
-  enabled = false
-}'
-  else
+  if [ "$effective_server_mode" = "server" ] || [ "$effective_server_mode" = "server+client" ]; then
+    nomad_server_enabled="true"
     local nomad_encrypt=""
     if [ -n "$GOSSIP_KEY" ]; then
       nomad_encrypt="encrypt = \"$GOSSIP_KEY\""
@@ -417,10 +461,19 @@ configure_nomad() {
   retry_join = ${NOMAD_IPS}
   $nomad_encrypt
 }"
+  else
+    nomad_server_block='server {
+  enabled = false
+}'
+  fi
+
+  local nomad_client_enabled="false"
+  if [ "$effective_server_mode" = "client" ] || [ "$effective_server_mode" = "server+client" ]; then
+    nomad_client_enabled="true"
   fi
 
   local nomad_client_servers=""
-  if [ "$CLUSTER_ROLE" = "worker" ] && [ -n "$CLUSTER_JOIN_IP" ]; then
+  if [ "$CLUSTER_ROLE" != "primary" ] && [ -n "$CLUSTER_JOIN_IP" ]; then
     nomad_client_servers="servers = [\"$CLUSTER_JOIN_IP:4647\"]"
   fi
 
@@ -440,7 +493,7 @@ ${nomad_server_block}
 bind_addr = "0.0.0.0"
 
 client {
-  enabled = true
+  enabled = ${nomad_client_enabled}
   cpu_total_compute = ${NOMAD_CLIENT_CPU}
   memory_total_mb   = ${NOMAD_CLIENT_MEMORY}
   ${nomad_client_servers}

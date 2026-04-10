@@ -42,6 +42,10 @@ func buildCloudInit(
 	for k, v := range extraVars {
 		vars[k] = v
 	}
+	// Cluster-wide bootstrapExpect overrides per-stack nodeCount-based default
+	if be, ok := extraVars["bootstrapExpect"]; ok && be != "" {
+		vars["NOMAD_BOOTSTRAP_EXPECT"] = be
+	}
 
 	if apps == nil {
 		apps = map[string]bool{

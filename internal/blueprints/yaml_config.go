@@ -73,6 +73,7 @@ type pulumiMetaField struct {
 	Label       string   `yaml:"label"`
 	Options     []string `yaml:"options"`
 	Hidden      bool     `yaml:"hidden"`
+	Roles       []string `yaml:"roles"`
 }
 
 // ParseConfigFields parses the config: section of a Pulumi YAML body and
@@ -180,6 +181,13 @@ func ParseConfigFields(yamlBody string) ([]ConfigField, string, error) {
 			}
 		}
 
+		var roles []string
+		if doc.Meta != nil {
+			if mf, ok := doc.Meta.Fields[key]; ok {
+				roles = mf.Roles
+			}
+		}
+
 		fields = append(fields, ConfigField{
 			Key:         key,
 			Label:       label,
@@ -191,6 +199,7 @@ func ParseConfigFields(yamlBody string) ([]ConfigField, string, error) {
 			Group:       gKey,
 			GroupLabel:  gLabel,
 			Hidden:      hidden,
+			Roles:       roles,
 		})
 	}
 

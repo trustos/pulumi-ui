@@ -102,7 +102,7 @@
       for (const f of blueprint.configFields) {
         if (f.default) defaults[f.key] = f.default;
       }
-      memberConfigs = { ...memberConfigs, [accountId]: defaults };
+      memberConfigs = { ...memberConfigs, [accountId]: { ...defaults, role } };
     }
   }
 
@@ -296,7 +296,7 @@
           {#each members as m, idx (m.accountId)}
             {#if activeTab === m.accountId}
               <ConfigForm
-                fields={visibleFields}
+                fields={visibleFields.filter(f => !f.roles?.length || f.roles.includes(m.role))}
                 accountId={m.accountId}
                 initialValues={memberConfigs[m.accountId] ?? {}}
                 onSubmit={(values) => handleMemberConfigSubmit(m.accountId, values)}

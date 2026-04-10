@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -132,13 +133,43 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Clear phase-specific config from previous deploy attempts.
-	// workerVcnOcids is only set in Phase 4. drgAttached is only set in Phase 5.
-	// A previous failed deploy may have left them populated, causing premature
-	// rendering of cross-tenancy DRG attachments or DRG routes.
+	// These are only set in Phase 4/5 — a previous failed deploy may have
+	// left them populated, causing premature rendering.
 	primaryMember.config["workerVcnOcids"] = ""
+	primaryMember.config["workerPrivateIps"] = ""
 	for _, w := range workerMembers {
 		w.config["drgAttached"] = ""
+		w.config["nlbAgentPort"] = ""
 	}
+
+	// Default serverMode based on infrastructure role if not explicitly set.
+	allMembers := append([]*memberWithCreds{primaryMember}, workerMembers...)
+	for _, m := range allMembers {
+		if m.config["serverMode"] == "" {
+			if m == primaryMember {
+				m.config["serverMode"] = "server+client"
+			} else {
+				m.config["serverMode"] = "client"
+			}
+		}
+	}
+
+	// Calculate total server node count across all members for bootstrap_expect.
+	totalServerNodes := 0
+	for _, m := range allMembers {
+		if m.config["serverMode"] == "server" || m.config["serverMode"] == "server+client" {
+			nc := 1
+			if v, err := strconv.Atoi(m.config["nodeCount"]); err == nil && v > 0 {
+				nc = v
+			}
+			totalServerNodes += nc
+		}
+	}
+	bootstrapExpect := strconv.Itoa(totalServerNodes)
+	for _, m := range allMembers {
+		m.config["bootstrapExpect"] = bootstrapExpect
+	}
+	log.Printf("[group-deploy] serverMode defaults applied, bootstrapExpect=%s (total server nodes)", bootstrapExpect)
 
 	send(engine.SSEEvent{Type: "output", Data: "═══ Phase 1: Deploying primary stack ═══"})
 	log.Printf("[group-deploy] phase 1: deploying primary %s (blueprint=%s)", primaryMember.stackName, group.Blueprint)
@@ -209,6 +240,16 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[group-deploy] primary config: %s = %q", cm.Config, primaryMember.config[cm.Config])
 		}
 	}
+
+	// Collect worker VCN CIDRs as peerCidrs for primary route tables.
+	workerCidrs := []string{}
+	for _, worker := range workerMembers {
+		if cidr := worker.config["vcnCidr"]; cidr != "" {
+			workerCidrs = append(workerCidrs, cidr)
+		}
+	}
+	primaryMember.config["peerCidrs"] = strings.Join(workerCidrs, ",")
+	log.Printf("[group-deploy] phase 2: peerCidrs=%s", primaryMember.config["peerCidrs"])
 
 	// Log full primary config for debugging
 	log.Printf("[group-deploy] phase 2: primary config before re-deploy (%d keys):", len(primaryMember.config))
@@ -335,6 +376,7 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	send(engine.SSEEvent{Type: "output", Data: "═══ Phase 4: Creating cross-tenancy DRG attachments ═══"})
 
 	workerVcnOcids := []string{}
+	workerPrivateIps := []string{}
 	for _, worker := range workerMembers {
 		wOutputs, err := h.Engine.GetStackOutputs(opCtx, worker.stackName, group.Blueprint, worker.config, worker.creds)
 		if err != nil {
@@ -348,6 +390,12 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[group-deploy] phase 4: worker %s vcnOcid=%s", worker.stackName, val)
 			}
 		}
+		if ip, ok := wOutputs["instancePrivateIp"]; ok {
+			if val, ok := ip.Value.(string); ok && val != "" {
+				workerPrivateIps = append(workerPrivateIps, val)
+				log.Printf("[group-deploy] phase 4: worker %s privateIp=%s", worker.stackName, val)
+			}
+		}
 	}
 
 	if len(workerVcnOcids) == 0 {
@@ -358,6 +406,7 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	primaryMember.config["workerVcnOcids"] = strings.Join(workerVcnOcids, ",")
+	primaryMember.config["workerPrivateIps"] = strings.Join(workerPrivateIps, ",")
 	log.Printf("[group-deploy] phase 4: workerVcnOcids=%s", primaryMember.config["workerVcnOcids"])
 
 	if err := h.updateStackConfig(primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.passphraseID, primaryMember.accountID); err != nil {
@@ -392,15 +441,43 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── Phase 5: Update worker route tables with DRG route ───────────────
-	// Now that the cross-tenancy DRG attachment exists, workers can reference
-	// the primary's DRG in their route tables.
+	// ── Phase 5: Update worker routes + agent discovery config ───────────
+	// Workers get: DRG route, NLB public IP + agent port for Nebula discovery,
+	// and peer CIDRs for DRG routing.
 	send(engine.SSEEvent{Type: "output", Data: "═══ Phase 5: Updating worker routes ═══"})
 
+	// Get the primary's NLB public IP from outputs for worker agent discovery.
+	nlbPublicIp := ""
+	phase5Outputs, err := h.Engine.GetStackOutputs(opCtx, primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.creds)
+	if err == nil {
+		if v, ok := phase5Outputs["nlbPublicIp"]; ok {
+			if s, ok := v.Value.(string); ok {
+				nlbPublicIp = s
+			}
+		}
+	}
+	log.Printf("[group-deploy] phase 5: nlbPublicIp=%s", nlbPublicIp)
+
+	// Primary VCN CIDR as peer CIDR for workers
+	primaryVcnCidr := primaryMember.config["vcnCidr"]
+
+	// Worker NLB agent ports start after primary's agent-injected ports.
+	primaryNodeCount := 1
+	if nc, err := strconv.Atoi(primaryMember.config["nodeCount"]); err == nil && nc > 0 {
+		primaryNodeCount = nc
+	}
+	workerNlbPortBase := 41821 + primaryNodeCount // e.g., 41822 for 1-node primary, 41823 for 2-node
+
 	failedRoutes := []string{}
-	for _, worker := range workerMembers {
+	for i, worker := range workerMembers {
 		worker.config["drgAttached"] = "true"
-		log.Printf("[group-deploy] phase 5: updating worker %s routes (drgAttached=true, drgOcid=%s)", worker.stackName, worker.config["drgOcid"])
+		worker.config["peerCidrs"] = primaryVcnCidr
+		if nlbPublicIp != "" {
+			worker.config["nlbPublicIp"] = nlbPublicIp
+			worker.config["nlbAgentPort"] = fmt.Sprintf("%d", workerNlbPortBase+i)
+		}
+		log.Printf("[group-deploy] phase 5: updating worker %s (drgAttached=true, drgOcid=%s, nlbPublicIp=%s, nlbAgentPort=%s, peerCidrs=%s)",
+			worker.stackName, worker.config["drgOcid"], worker.config["nlbPublicIp"], worker.config["nlbAgentPort"], worker.config["peerCidrs"])
 
 		if err := h.updateStackConfig(worker.stackName, group.Blueprint, worker.config, worker.passphraseID, worker.accountID); err != nil {
 			log.Printf("[group-deploy] ERROR: failed to update config for %s: %v", worker.stackName, err)

@@ -176,7 +176,7 @@
 
   {#if loading}
     <div class="text-center py-12 text-muted-foreground">Loading stacks...</div>
-  {:else if stacks.length === 0 && remoteStacks.length === 0 && !error}
+  {:else if stacks.length === 0 && remoteStacks.length === 0 && groups.length === 0 && !error}
     <div class="text-center py-12 text-muted-foreground">
       <p class="mb-4">No stacks yet.</p>
       {#if hasAccounts}

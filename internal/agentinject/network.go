@@ -35,8 +35,9 @@ type discoveredResource struct {
 }
 
 type discoveredPoolResource struct {
-	name string
-	size int // from properties.size; 0 if unresolvable (Pulumi interpolation)
+	name          string
+	size          int    // from properties.size; 0 if unresolvable (Pulumi interpolation)
+	compartmentId string // from properties.compartmentId (for data source lookup)
 }
 
 // InjectNetworkingIntoYAML parses a rendered Pulumi YAML, detects existing
@@ -72,12 +73,11 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 		}
 	}
 
-	// Check if user-defined agent networking already exists: any NSG rule
-	// covering UDP port 41820 means the user scaffolded networking in the editor.
-	// Skip injection so the user retains full control over NSG/NLB resources.
-	if hasUserDefinedAgentNSGRule(resourcesNode) {
-		return yamlBody, nil
-	}
+	// Check if user-defined agent NSG rule already exists. If so, skip NSG
+	// rule injection but STILL inject NLB backends — the user may have a
+	// custom NSG rule (e.g., restricting source to NLB subnet) while still
+	// needing auto-injected NLB backend sets and listeners.
+	userDefinedNSG := hasUserDefinedAgentNSGRule(resourcesNode)
 
 	var nsgs, nlbs, computes []discoveredResource
 	var vcns, subnets []discoveredResource
@@ -120,14 +120,18 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 		}
 		if typeNode.Value == "oci:Core/instancePool:InstancePool" {
 			size := 0
+			compartmentId := ""
 			if props := findMapValue(resNode, "properties"); props != nil {
 				if sv := findMapValue(props, "size"); sv != nil {
 					if n, err := fmt.Sscanf(sv.Value, "%d", new(int)); n == 1 && err == nil {
 						fmt.Sscanf(sv.Value, "%d", &size)
 					}
 				}
+				if cv := findMapValue(props, "compartmentId"); cv != nil {
+					compartmentId = cv.Value
+				}
 			}
-			pools = append(pools, discoveredPoolResource{name: resName, size: size})
+			pools = append(pools, discoveredPoolResource{name: resName, size: size, compartmentId: compartmentId})
 		}
 	}
 
@@ -137,24 +141,42 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 
 	modified := false
 
-	// When no VCN/subnet resources exist but compute does, try to extract
-	// subnetId from the first compute instance's createVnicDetails. Use
-	// fn::invoke to resolve the subnet's VCN at deploy time.
-	if len(vcns) == 0 && len(subnets) == 0 && len(computes) > 0 && len(nsgs) == 0 && len(nlbs) == 0 {
-		subnetRef, compartmentRef := extractSubnetFromCompute(resourcesNode, computes[0].name)
-		if subnetRef != "" {
-			variablesNode := findMapValue(root, "variables")
-			if variablesNode == nil {
-				variablesNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-				root.Content = append(root.Content,
-					&yaml.Node{Kind: yaml.ScalarNode, Value: "variables"},
-					variablesNode,
-				)
-			}
-			addVariable(variablesNode, "__agent_subnet_info", buildSubnetLookupVariable(subnetRef))
+	// NSG injection: skip if user already defined an agent NSG rule (e.g.,
+	// restricting Nebula source to NLB subnet instead of 0.0.0.0/0).
+	if !userDefinedNSG {
+		// When no VCN/subnet resources exist but compute does, try to extract
+		// subnetId from the first compute instance's createVnicDetails. Use
+		// fn::invoke to resolve the subnet's VCN at deploy time.
+		if len(vcns) == 0 && len(subnets) == 0 && len(computes) > 0 && len(nsgs) == 0 && len(nlbs) == 0 {
+			subnetRef, compartmentRef := extractSubnetFromCompute(resourcesNode, computes[0].name)
+			if subnetRef != "" {
+				variablesNode := findMapValue(root, "variables")
+				if variablesNode == nil {
+					variablesNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+					root.Content = append(root.Content,
+						&yaml.Node{Kind: yaml.ScalarNode, Value: "variables"},
+						variablesNode,
+					)
+				}
+				addVariable(variablesNode, "__agent_subnet_info", buildSubnetLookupVariable(subnetRef))
 
+				nsgName := "__agent_nsg"
+				addResource(resourcesNode, nsgName, buildNSGResourceFromSubnetLookup(compartmentRef))
+				ruleName := "__agent_nsg_rule"
+				addResource(resourcesNode, ruleName, buildNSGRuleResource(nsgName))
+				for _, compute := range computes {
+					attachNSGToInstance(resourcesNode, compute.name, nsgName)
+				}
+				modified = true
+			}
+		}
+
+		// When no NSG exists but we have a VCN and compute, create one with the agent rule
+		if len(nsgs) == 0 && len(vcns) > 0 && len(computes) > 0 {
+			vcn := vcns[0]
+			compartmentRef := resolveCompartmentId(resourcesNode, vcn.name)
 			nsgName := "__agent_nsg"
-			addResource(resourcesNode, nsgName, buildNSGResourceFromSubnetLookup(compartmentRef))
+			addResource(resourcesNode, nsgName, buildNSGResource(compartmentRef, vcn.name))
 			ruleName := "__agent_nsg_rule"
 			addResource(resourcesNode, ruleName, buildNSGRuleResource(nsgName))
 			for _, compute := range computes {
@@ -162,27 +184,13 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 			}
 			modified = true
 		}
-	}
 
-	// When no NSG exists but we have a VCN and compute, create one with the agent rule
-	if len(nsgs) == 0 && len(vcns) > 0 && len(computes) > 0 {
-		vcn := vcns[0]
-		compartmentRef := resolveCompartmentId(resourcesNode, vcn.name)
-		nsgName := "__agent_nsg"
-		addResource(resourcesNode, nsgName, buildNSGResource(compartmentRef, vcn.name))
-		ruleName := "__agent_nsg_rule"
-		addResource(resourcesNode, ruleName, buildNSGRuleResource(nsgName))
-		for _, compute := range computes {
-			attachNSGToInstance(resourcesNode, compute.name, nsgName)
+		// For each existing NSG, add an ingress rule for Nebula UDP port
+		for _, nsg := range nsgs {
+			ruleName := fmt.Sprintf("__agent_nsg_rule_%s", nsg.name)
+			addResource(resourcesNode, ruleName, buildNSGRuleResource(nsg.name))
+			modified = true
 		}
-		modified = true
-	}
-
-	// For each existing NSG, add an ingress rule for Nebula UDP port
-	for _, nsg := range nsgs {
-		ruleName := fmt.Sprintf("__agent_nsg_rule_%s", nsg.name)
-		addResource(resourcesNode, ruleName, buildNSGRuleResource(nsg.name))
-		modified = true
 	}
 
 	// For each existing public NLB, inject per-node backend sets and listeners.
@@ -232,23 +240,53 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 			modified = true
 		}
 
-		// Pool-as-entity injection: one shared backend set at AgentNLBPortBase
+		// Pool-as-entity injection: one shared backend set at AgentNLBPortBase.
+		// Uses fn::invoke data source to look up pool member instance IDs
+		// (InstancePool does not expose actualState.instances in Pulumi YAML).
 		for _, pool := range pools {
 			if pool.size == 0 {
 				continue // dynamic size — cannot pre-configure backends
 			}
-			bsName := fmt.Sprintf("__agent_bs_%s_pool", nlb.name)
-			lnName := fmt.Sprintf("__agent_ln_%s_pool", nlb.name)
-			// Use port AgentNLBPortBase + len(computes) to avoid port collision
-			poolPort := AgentNLBPortBase + len(computes)
-			addResource(resourcesNode, bsName, buildNLBBackendSetResourceN(nlb.name, -1))
-			addResource(resourcesNode, lnName, buildNLBListenerResourceN(nlb.name, bsName, poolPort))
-			prevDep := lnName
+
+			// Add a variable to look up pool member instances via data source
+			varName := fmt.Sprintf("__agent_pool_%s_instances", pool.name)
+			variablesNode := findMapValue(root, "variables")
+			if variablesNode == nil {
+				variablesNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+				root.Content = append(root.Content,
+					&yaml.Node{Kind: yaml.ScalarNode, Value: "variables"},
+					variablesNode,
+				)
+			}
+			compartmentRef := pool.compartmentId
+			if compartmentRef == "" {
+				compartmentRef = "${oci:tenancyOcid}" // fallback
+			}
+			addVariable(variablesNode, varName, buildMappingNode(map[string]interface{}{
+				"fn::invoke": map[string]interface{}{
+					"function": "oci:Core/getInstancePoolInstances:getInstancePoolInstances",
+					"arguments": map[string]interface{}{
+						"compartmentId":  compartmentRef,
+						"instancePoolId": fmt.Sprintf("${%s.id}", pool.name),
+					},
+					"return": "instances",
+				},
+			}))
+
+			// Per-node: one backend set + listener + backend per pool instance,
+			// each on a distinct UDP port (41821, 41822, ...) for per-node targeting.
+			portOffset := len(computes) // start after per-compute ports
 			for j := 0; j < pool.size; j++ {
-				beName := fmt.Sprintf("__agent_be_%s_pool_%d", nlb.name, j)
-				targetRef := fmt.Sprintf("${%s.actualState.instances[%d].id}", pool.name, j)
-				addResource(resourcesNode, beName, buildNLBBackendResourceByTarget(nlb.name, bsName, targetRef, prevDep))
-				prevDep = beName
+				port := AgentNLBPortBase + portOffset + j
+				nodeIdx := portOffset + j
+				bsName := fmt.Sprintf("__agent_bs_%s_%d", nlb.name, nodeIdx)
+				lnName := fmt.Sprintf("__agent_ln_%s_%d", nlb.name, nodeIdx)
+				addResource(resourcesNode, bsName, buildNLBBackendSetResourceNWithDep(nlb.name, nodeIdx, prevNlbResource))
+				addResource(resourcesNode, lnName, buildNLBListenerResourceN(nlb.name, bsName, port))
+				beName := fmt.Sprintf("__agent_be_%s_%d", nlb.name, nodeIdx)
+				targetRef := fmt.Sprintf("${%s[%d].id}", varName, j)
+				addResource(resourcesNode, beName, buildNLBBackendResourceByTarget(nlb.name, bsName, targetRef, lnName))
+				prevNlbResource = beName
 			}
 			modified = true
 		}
