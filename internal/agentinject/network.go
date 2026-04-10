@@ -284,7 +284,7 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 				addResource(resourcesNode, bsName, buildNLBBackendSetResourceNWithDep(nlb.name, nodeIdx, prevNlbResource))
 				addResource(resourcesNode, lnName, buildNLBListenerResourceN(nlb.name, bsName, port))
 				beName := fmt.Sprintf("__agent_be_%s_%d", nlb.name, nodeIdx)
-				targetRef := fmt.Sprintf("${%s[%d].id}", varName, j)
+				targetRef := fmt.Sprintf("${%s[%d].instanceId}", varName, j)
 				addResource(resourcesNode, beName, buildNLBBackendResourceByTarget(nlb.name, bsName, targetRef, lnName))
 				prevNlbResource = beName
 			}

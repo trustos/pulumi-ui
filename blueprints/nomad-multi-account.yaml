@@ -312,7 +312,7 @@ variables:
     fn::invoke:
       function: oci:Core/getInstance:getInstance
       arguments:
-        instanceId: ${poolInstances[0].id}
+        instanceId: ${poolInstances[0].instanceId}
 
 resources:
 {{- $peerCidrs := splitList "," (index .Config "peerCidrs" | default "") }}
@@ -709,7 +709,7 @@ resources:
     properties:
       networkLoadBalancerId: ${ingress-nlb.id}
       backendSetName: {{ printf "bs-%s" $p._0 | quote }}
-      targetId: {{ printf "${poolInstances[%d].id}" $i }}
+      targetId: {{ printf "${poolInstances[%d].instanceId}" $i }}
       port: {{ $p._2 }}
     options:
       dependsOn:
