@@ -131,6 +131,11 @@ func RegisterBuiltins(r *BlueprintRegistry) {
 		"Multi-account Nomad + Consul cluster over OCI DRG. Pool resources across Always Free accounts.",
 		builtins.ReadFile("nomad-multi-account.yaml"))
 	r.builtins["nomad-multi-account"] = true
+
+	RegisterYAML(r, "nomad-hopssh", "Nomad + hopssh",
+		"Multi-account Nomad cluster with hopssh. Worker has public IP for Nebula lighthouse UDP.",
+		builtins.ReadFile("nomad-hopssh.yaml"))
+	r.builtins["nomad-hopssh"] = true
 }
 
 // Register adds p to the registry.
