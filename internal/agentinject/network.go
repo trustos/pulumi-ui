@@ -240,56 +240,12 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 			modified = true
 		}
 
-		// Pool-as-entity injection: one shared backend set at AgentNLBPortBase.
-		// Uses fn::invoke data source to look up pool member instance IDs
-		// (InstancePool does not expose actualState.instances in Pulumi YAML).
-		for _, pool := range pools {
-			if pool.size == 0 {
-				continue // dynamic size — cannot pre-configure backends
-			}
-
-			// Add a variable to look up pool member instances via data source
-			varName := fmt.Sprintf("__agent_pool_%s_instances", pool.name)
-			variablesNode := findMapValue(root, "variables")
-			if variablesNode == nil {
-				variablesNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-				root.Content = append(root.Content,
-					&yaml.Node{Kind: yaml.ScalarNode, Value: "variables"},
-					variablesNode,
-				)
-			}
-			compartmentRef := pool.compartmentId
-			if compartmentRef == "" {
-				compartmentRef = "${oci:tenancyOcid}" // fallback
-			}
-			addVariable(variablesNode, varName, buildMappingNode(map[string]interface{}{
-				"fn::invoke": map[string]interface{}{
-					"function": "oci:Core/getInstancePoolInstances:getInstancePoolInstances",
-					"arguments": map[string]interface{}{
-						"compartmentId":  compartmentRef,
-						"instancePoolId": fmt.Sprintf("${%s.id}", pool.name),
-					},
-					"return": "instances",
-				},
-			}))
-
-			// Per-node: one backend set + listener + backend per pool instance,
-			// each on a distinct UDP port (41821, 41822, ...) for per-node targeting.
-			portOffset := len(computes) // start after per-compute ports
-			for j := 0; j < pool.size; j++ {
-				port := AgentNLBPortBase + portOffset + j
-				nodeIdx := portOffset + j
-				bsName := fmt.Sprintf("__agent_bs_%s_%d", nlb.name, nodeIdx)
-				lnName := fmt.Sprintf("__agent_ln_%s_%d", nlb.name, nodeIdx)
-				addResource(resourcesNode, bsName, buildNLBBackendSetResourceNWithDep(nlb.name, nodeIdx, prevNlbResource))
-				addResource(resourcesNode, lnName, buildNLBListenerResourceN(nlb.name, bsName, port))
-				beName := fmt.Sprintf("__agent_be_%s_%d", nlb.name, nodeIdx)
-				targetRef := fmt.Sprintf("${%s[%d].instanceId}", varName, j)
-				addResource(resourcesNode, beName, buildNLBBackendResourceByTarget(nlb.name, bsName, targetRef, lnName))
-				prevNlbResource = beName
-			}
-			modified = true
-		}
+		// Pool NLB integration: skip backend injection for pools.
+		// Pools use the native InstancePool.loadBalancers property to auto-register
+		// instances as NLB backends. The blueprint template defines the backend sets
+		// and listeners; the pool's loadBalancers list references them.
+		// Agent injection only handles user_data + NSG rules for pools.
+		_ = pools // pools are handled by the blueprint, not injection
 	}
 
 	if !modified {

@@ -758,24 +758,37 @@ resources:
       dependsOn:
         - ${ingress-nlb-bs-{{ $p._0 }}}
 
-  {{- $prevBackend := printf "ingress-nlb-ln-%s" $p._0 }}
-  {{- range $i := until $nc }}
-  ingress-nlb-be-{{ $p._0 }}-{{ $i }}:
-    type: oci:NetworkLoadBalancer/backend:Backend
-    properties:
-      networkLoadBalancerId: ${ingress-nlb.id}
-      backendSetName: {{ printf "bs-%s" $p._0 | quote }}
-      targetId: {{ printf "${poolInstances[%d].instanceId}" $i }}
-      port: {{ $p._2 }}
-    options:
-      dependsOn:
-        - {{ printf "${%s}" $prevBackend }}
-  {{- $prevBackend = printf "ingress-nlb-be-%s-%d" $p._0 $i }}
-  {{- end }}
-  {{- $prevNlbResource = printf "ingress-nlb-be-%s-%d" $p._0 (sub $nc 1) }}
+  {{- $prevNlbResource = printf "ingress-nlb-ln-%s" $p._0 }}
 
   {{- end }}
   {{- end }}
+
+  # ── Agent backend set + listener (primary only, for Nebula mesh) ──
+  agent-bs:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${ingress-nlb.id}
+      name: "agent-bs"
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: 22
+    options:
+      dependsOn:
+        - {{ printf "${%s}" $prevNlbResource }}
+
+  agent-ln:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${ingress-nlb.id}
+      name: "agent-listener"
+      defaultBackendSetName: "agent-bs"
+      protocol: UDP
+      port: 41821
+    options:
+      dependsOn:
+        - ${agent-bs}
 
   # ── Cross-tenancy IAM policies (Phase 2) ──
   {{- $workerOcids := splitList "," (index .Config "workerTenancyOcids" | default "") }}
@@ -918,9 +931,34 @@ resources:
       placementConfigurations:
         - availabilityDomain: ${availabilityDomains[0].name}
           primarySubnetId: ${nodes-subnet.id}
+{{- if eq .Config.role "primary" }}
+      loadBalancers:
+  {{- range $idx, $portEntry := $exposedPorts }}
+  {{- if ne $portEntry "" }}
+  {{- $p := split ":" $portEntry }}
+        - loadBalancerId: ${ingress-nlb.id}
+          backendSetName: {{ printf "bs-%s" $p._0 | quote }}
+          port: {{ $p._2 }}
+          vnicSelection: "PrimaryVnic"
+  {{- end }}
+  {{- end }}
+        - loadBalancerId: ${ingress-nlb.id}
+          backendSetName: "agent-bs"
+          port: 41820
+          vnicSelection: "PrimaryVnic"
+{{- end }}
     options:
       dependsOn:
         - ${cluster-instance-config}
+{{- if eq .Config.role "primary" }}
+  {{- range $idx, $portEntry := $exposedPorts }}
+  {{- if ne $portEntry "" }}
+  {{- $p := split ":" $portEntry }}
+        - ${ingress-nlb-bs-{{ $p._0 }}}
+  {{- end }}
+  {{- end }}
+        - ${agent-bs}
+{{- end }}
 
 outputs:
   instancePrivateIp: ${firstPoolInstance.privateIp}
