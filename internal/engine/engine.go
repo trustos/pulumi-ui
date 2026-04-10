@@ -275,7 +275,13 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 			} else {
 				sanitized = injected
 				e.computeCounts[stackName] = injectedCount
-				log.Printf("[agent-inject] bootstrap injected for stack %s (%d instance(s))", stackName, injectedCount)
+				// For InstancePool blueprints, the injectedCount is 1 (the InstanceConfiguration
+				// template). Override with nodeCount from config for correct per-node NLB discovery.
+				if nc, err := strconv.Atoi(cfg["nodeCount"]); err == nil && nc > injectedCount {
+					e.computeCounts[stackName] = nc
+					log.Printf("[agent-inject] pool nodeCount override: %d → %d for stack %s", injectedCount, nc, stackName)
+				}
+				log.Printf("[agent-inject] bootstrap injected for stack %s (%d instance(s))", stackName, e.computeCounts[stackName])
 			}
 		} else {
 			log.Printf("[agent-inject] WARNING: no agent vars for stack %s — bootstrap NOT injected (check Nebula PKI)", stackName)
@@ -292,7 +298,7 @@ func (e *Engine) getOrCreateYAMLStack(ctx context.Context, stackName string, pro
 			sanitized = netInjected
 			log.Printf("[agent-inject] networking resources injected for stack %s", stackName)
 		} else {
-			log.Printf("[agent-inject] agentAccess is ON for stack %s but no networking context found (no VCN/subnet/NSG/NLB resources and no createVnicDetails.subnetId on compute instances). Agent networking was NOT injected.", stackName)
+			log.Printf("[agent-inject] networking injection skipped for stack %s (blueprint handles NSG/NLB or uses InstancePool native loadBalancers)", stackName)
 		}
 	}
 
