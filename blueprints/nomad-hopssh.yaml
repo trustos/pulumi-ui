@@ -22,6 +22,8 @@ meta:
         mappings:
           - output: drgOcid
             config: drgOcid
+          - output: instancePrivateIp
+            config: primaryPrivateIp
           - output: nlbPublicIp
             config: nlbPublicIp
         accountMappings:

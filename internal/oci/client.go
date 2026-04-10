@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -232,4 +233,62 @@ func (c *Client) ListAvailabilityDomains() ([]AvailabilityDomain, error) {
 		return nil, err
 	}
 	return ads, nil
+}
+
+// InstancePoolInstance represents a member instance of an InstancePool.
+type InstancePoolInstance struct {
+	ID         string `json:"id"`
+	InstanceID string `json:"instanceId"`
+	State      string `json:"state"`
+}
+
+// ListInstancePoolInstances returns all instances in the given pool.
+func (c *Client) ListInstancePoolInstances(compartmentID, poolID string) ([]InstancePoolInstance, error) {
+	var instances []InstancePoolInstance
+	u := fmt.Sprintf("%s/instancePools/%s/instances?compartmentId=%s",
+		computeBase(c.region), url.PathEscape(poolID), url.QueryEscape(compartmentID))
+	if err := c.get(u, &instances); err != nil {
+		return nil, err
+	}
+	return instances, nil
+}
+
+// InstanceDetail contains the fields we need from GET /instances/{id}.
+type InstanceDetail struct {
+	ID        string `json:"id"`
+	PrivateIP string `json:"-"` // resolved separately via VNIC
+}
+
+// VnicAttachment represents a VNIC attachment for an instance.
+type VnicAttachment struct {
+	VnicID string `json:"vnicId"`
+}
+
+// Vnic represents a VNIC with its private IP.
+type Vnic struct {
+	PrivateIP string `json:"privateIp"`
+	PublicIP  string `json:"publicIp"`
+}
+
+// GetInstancePrivateIP resolves the private IP of a compute instance via its VNIC.
+func (c *Client) GetInstancePrivateIP(compartmentID, instanceID string) (string, error) {
+	// List VNIC attachments for the instance
+	var attachments []VnicAttachment
+	u := fmt.Sprintf("%s/vnicAttachments?compartmentId=%s&instanceId=%s",
+		computeBase(c.region), url.QueryEscape(compartmentID), url.QueryEscape(instanceID))
+	if err := c.get(u, &attachments); err != nil {
+		return "", fmt.Errorf("list VNIC attachments: %w", err)
+	}
+	if len(attachments) == 0 {
+		return "", fmt.Errorf("no VNIC attachments for instance %s", instanceID)
+	}
+
+	// Get the VNIC details
+	var vnic Vnic
+	vnicURL := fmt.Sprintf("https://virtualnetwork.%s.oraclecloud.com/20160918/vnics/%s",
+		c.region, url.PathEscape(attachments[0].VnicID))
+	if err := c.get(vnicURL, &vnic); err != nil {
+		return "", fmt.Errorf("get VNIC: %w", err)
+	}
+	return vnic.PrivateIP, nil
 }

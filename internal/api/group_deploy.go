@@ -13,9 +13,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/trustos/pulumi-ui/internal/blueprints"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
+	"github.com/trustos/pulumi-ui/internal/oci"
 	"github.com/trustos/pulumi-ui/internal/stacks"
 )
 
@@ -213,6 +215,16 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	send(engine.SSEEvent{Type: "output", Data: fmt.Sprintf("Primary outputs captured: %d keys", len(outputs))})
 
+	// Resolve primary pool instance IPs via OCI API (data sources fail at deploy time).
+	primaryIPs, err := h.resolvePoolInstanceIPs(primaryMember, outputs)
+	if err != nil {
+		log.Printf("[group-deploy] WARNING: could not resolve primary pool IPs: %v", err)
+	} else if len(primaryIPs) > 0 {
+		log.Printf("[group-deploy] primary pool IPs: %v", primaryIPs)
+		// Store first IP as the primary's private IP for worker wiring
+		outputs["instancePrivateIp"] = auto.OutputValue{Value: primaryIPs[0]}
+	}
+
 	// ── Phase 2: Create cross-tenancy IAM policies on primary ────────────
 	// This must happen BEFORE deploying workers, because workers need
 	// permission to reference the primary's DRG for cross-tenancy routing.
@@ -390,11 +402,14 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[group-deploy] phase 4: worker %s vcnOcid=%s", worker.stackName, val)
 			}
 		}
-		if ip, ok := wOutputs["instancePrivateIp"]; ok {
-			if val, ok := ip.Value.(string); ok && val != "" {
-				workerPrivateIps = append(workerPrivateIps, val)
-				log.Printf("[group-deploy] phase 4: worker %s privateIp=%s", worker.stackName, val)
-			}
+		// Resolve worker pool instance IPs via OCI API
+		wIPs, err := h.resolvePoolInstanceIPs(worker, wOutputs)
+		if err != nil {
+			log.Printf("[group-deploy] phase 4: WARNING: could not resolve pool IPs for %s: %v", worker.stackName, err)
+		}
+		workerPrivateIps = append(workerPrivateIps, wIPs...)
+		for _, ip := range wIPs {
+			log.Printf("[group-deploy] phase 4: worker %s poolInstanceIp=%s", worker.stackName, ip)
 		}
 	}
 
@@ -662,4 +677,53 @@ func (h *PlatformHandler) updateStackConfig(stackName, blueprint string, config 
 	}
 	log.Printf("[group-deploy] saving config for %s (%d bytes)", stackName, len(yamlStr))
 	return h.Stacks.Upsert(stackName, blueprint, yamlStr, accountID, passphraseID, nil, accountID)
+}
+
+// resolvePoolInstanceIPs queries OCI API to get private IPs for all instances
+// in an InstancePool. Uses poolId and compartmentId from Pulumi stack outputs.
+func (h *PlatformHandler) resolvePoolInstanceIPs(member *memberWithCreds, outputs auto.OutputMap) ([]string, error) {
+	poolID := ""
+	compartmentID := ""
+	if v, ok := outputs["poolId"]; ok {
+		poolID, _ = v.Value.(string)
+	}
+	if v, ok := outputs["compartmentId"]; ok {
+		compartmentID, _ = v.Value.(string)
+	}
+	if poolID == "" || compartmentID == "" {
+		return nil, fmt.Errorf("missing poolId or compartmentId outputs")
+	}
+
+	// Build OCI client from member credentials
+	ociCred := member.creds.OCI
+	if ociCred.TenancyOCID == "" {
+		return nil, fmt.Errorf("no OCI credentials for %s", member.stackName)
+	}
+	client, err := oci.NewClient(ociCred.TenancyOCID, ociCred.UserOCID, ociCred.Fingerprint, ociCred.PrivateKey, ociCred.Region)
+	if err != nil {
+		return nil, fmt.Errorf("create OCI client: %w", err)
+	}
+
+	// List pool instances
+	instances, err := client.ListInstancePoolInstances(compartmentID, poolID)
+	if err != nil {
+		return nil, fmt.Errorf("list pool instances: %w", err)
+	}
+
+	// Resolve private IPs for each instance
+	var ips []string
+	for _, inst := range instances {
+		if inst.State != "Running" {
+			log.Printf("[group-deploy] pool instance %s state=%s, skipping", inst.InstanceID, inst.State)
+			continue
+		}
+		ip, err := client.GetInstancePrivateIP(compartmentID, inst.InstanceID)
+		if err != nil {
+			log.Printf("[group-deploy] failed to get IP for instance %s: %v", inst.InstanceID, err)
+			continue
+		}
+		ips = append(ips, ip)
+		log.Printf("[group-deploy] pool instance %s privateIp=%s", inst.InstanceID, ip)
+	}
+	return ips, nil
 }
