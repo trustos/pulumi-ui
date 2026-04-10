@@ -236,10 +236,12 @@ func (c *Client) ListAvailabilityDomains() ([]AvailabilityDomain, error) {
 }
 
 // InstancePoolInstance represents a member instance of an InstancePool.
+// OCI REST API returns InstanceSummary objects from ListInstancePoolInstances.
 type InstancePoolInstance struct {
-	ID         string `json:"id"`
-	InstanceID string `json:"instanceId"`
-	State      string `json:"state"`
+	ID             string `json:"id"`
+	State          string `json:"state"`
+	LifecycleState string `json:"lifecycleState"`
+	DisplayName    string `json:"displayName"`
 }
 
 // ListInstancePoolInstances returns all instances in the given pool.

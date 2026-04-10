@@ -709,21 +709,33 @@ func (h *PlatformHandler) resolvePoolInstanceIPs(member *memberWithCreds, output
 	if err != nil {
 		return nil, fmt.Errorf("list pool instances: %w", err)
 	}
+	log.Printf("[group-deploy] pool %s: %d instances found", poolID[len(poolID)-12:], len(instances))
+	for i, inst := range instances {
+		state := inst.State
+		if state == "" {
+			state = inst.LifecycleState
+		}
+		log.Printf("[group-deploy]   instance[%d] id=%s state=%s name=%s", i, inst.ID, state, inst.DisplayName)
+	}
 
 	// Resolve private IPs for each instance
 	var ips []string
 	for _, inst := range instances {
-		if inst.State != "Running" {
-			log.Printf("[group-deploy] pool instance %s state=%s, skipping", inst.InstanceID, inst.State)
+		state := inst.State
+		if state == "" {
+			state = inst.LifecycleState
+		}
+		if state != "Running" && state != "RUNNING" {
+			log.Printf("[group-deploy] pool instance %s state=%s, skipping", inst.ID, state)
 			continue
 		}
-		ip, err := client.GetInstancePrivateIP(compartmentID, inst.InstanceID)
+		ip, err := client.GetInstancePrivateIP(compartmentID, inst.ID)
 		if err != nil {
-			log.Printf("[group-deploy] failed to get IP for instance %s: %v", inst.InstanceID, err)
+			log.Printf("[group-deploy] failed to get IP for instance %s: %v", inst.ID, err)
 			continue
 		}
 		ips = append(ips, ip)
-		log.Printf("[group-deploy] pool instance %s privateIp=%s", inst.InstanceID, ip)
+		log.Printf("[group-deploy] pool instance %s privateIp=%s", inst.ID, ip)
 	}
 	return ips, nil
 }
