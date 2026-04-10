@@ -120,6 +120,7 @@ LOG_LEVEL="INFO"
 NOMAD_CLIENT_CPU="{{ .Vars.NOMAD_CLIENT_CPU }}"
 NOMAD_CLIENT_MEMORY="{{ .Vars.NOMAD_CLIENT_MEMORY }}"
 NOMAD_BOOTSTRAP_EXPECT={{ .Vars.NOMAD_BOOTSTRAP_EXPECT }}
+NODE_COUNT={{ .Vars.NODE_COUNT }}
 
 # --- IMDS discovery (called after setup_os + wait_for_network to ensure jq and network) ---
 # OCI IMDS v2 /vnics/ does NOT return subnetId — only vnicId, privateIp, subnetCidrBlock.
@@ -170,8 +171,8 @@ discover_node_ips() {
     ip_count=$(echo "$private_ips" | grep -c '^')
     echo "Discovered $ip_count IPs: $private_ips"
 
-    if [ "$ip_count" -eq "$NOMAD_BOOTSTRAP_EXPECT" ]; then
-      echo "Bootstrap IP count matches expected ($NOMAD_BOOTSTRAP_EXPECT)."
+    if [ "$ip_count" -eq "$NODE_COUNT" ]; then
+      echo "Node IP count matches expected ($NODE_COUNT)."
       export ALL_NODE_IPS="$(echo "$private_ips" | xargs)"
       return 0
     fi

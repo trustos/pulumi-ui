@@ -36,6 +36,7 @@ func buildCloudInit(
 		"NOMAD_CLIENT_CPU":       strconv.Itoa(ocpus * 3000),
 		"NOMAD_CLIENT_MEMORY":    strconv.Itoa(memoryGb*1024 - 512),
 		"NOMAD_BOOTSTRAP_EXPECT": strconv.Itoa(nodeCount),
+		"NODE_COUNT":             strconv.Itoa(nodeCount),
 		"NOMAD_VERSION":          nomadVersion,
 		"CONSUL_VERSION":         consulVersion,
 	}
