@@ -1,0 +1,926 @@
+name: nomad-hopssh
+runtime: yaml
+description: "Multi-account Nomad cluster with hopssh. Primary private behind NLB, worker has public IP for Nebula lighthouse UDP."
+
+meta:
+  agentAccess: true
+  displayName: Nomad + hopssh Cluster
+  multiAccount:
+    roles:
+      - key: primary
+        label: "Primary (Server)"
+        min: 1
+        max: 1
+      - key: worker
+        label: "Worker (Client)"
+        min: 1
+        max: 3
+    deployOrder: [primary, worker]
+    wiring:
+      - fromRole: primary
+        toRole: worker
+        mappings:
+          - output: drgOcid
+            config: drgOcid
+          - output: instancePrivateIp
+            config: primaryPrivateIp
+          - output: nlbPublicIp
+            config: nlbPublicIp
+        accountMappings:
+          - accountField: tenancyOcid
+            config: primaryTenancyOcid
+      - fromRole: worker
+        toRole: primary
+        collectMappings:
+          - accountField: tenancyOcid
+            config: workerTenancyOcids
+            separator: ","
+    perRoleConfig:
+      - key: vcnCidr
+        pattern: "10.{index}.0.0/16"
+      - key: nodesSubnetCidr
+        pattern: "10.{index}.2.0/24"
+  groups:
+    - key: cluster
+      label: "Cluster Role"
+      fields: [role, drgOcid, primaryPrivateIp, primaryTenancyOcid, gossipKey, workerTenancyOcids, workerVcnOcids, workerPrivateIps, drgAttached, nlbPublicIp, nlbAgentPort, peerCidrs, bootstrapExpect]
+    - key: networking
+      label: "Networking & Ports"
+      fields: [exposedPorts, vcnCidr, nlbSubnetCidr, nodesSubnetCidr]
+    - key: infrastructure
+      label: "Infrastructure"
+      fields: [compartmentName, shape, imageId]
+    - key: compute
+      label: "Compute & Storage"
+      fields: [serverMode, nodeCount, ocpus, memoryInGbs, bootVolSizeGb, sshPublicKey]
+    - key: software
+      label: "Software Versions"
+      fields: [nomadVersion, consulVersion]
+  fields:
+    role:
+      ui_type: select
+      options: ["primary", "worker"]
+      label: "Infrastructure Role"
+      description: "Primary: owns NLB, DRG, public ingress. Worker: joins cluster via DRG."
+    drgOcid:
+      hidden: true
+    primaryPrivateIp:
+      hidden: true
+    primaryTenancyOcid:
+      hidden: true
+    gossipKey:
+      hidden: true
+    workerTenancyOcids:
+      hidden: true
+    workerVcnOcids:
+      hidden: true
+    workerPrivateIps:
+      hidden: true
+    drgAttached:
+      hidden: true
+    nlbPublicIp:
+      hidden: true
+    nlbAgentPort:
+      hidden: true
+    peerCidrs:
+      hidden: true
+    serverMode:
+      ui_type: select
+      options: ["server+client", "server", "client"]
+      label: "Nomad/Consul Mode"
+      description: "Server+Client: quorum + workloads. Server: quorum only. Client: workloads only."
+    bootstrapExpect:
+      hidden: true
+    exposedPorts:
+      ui_type: port-list
+      label: "Exposed Ports"
+      description: "Ports exposed publicly on the Network Load Balancer"
+      roles: [primary]
+    nodeCount:
+      ui_type: number
+    nlbSubnetCidr:
+      hidden: true
+    imageId:
+      ui_type: oci-image
+    shape:
+      ui_type: oci-shape
+    sshPublicKey:
+      ui_type: ssh-public-key
+  applications:
+    - key: traefik
+      name: Traefik Reverse Proxy
+      description: "HTTP/HTTPS ingress with automatic Let's Encrypt certificates and Consul/Nomad service discovery"
+      tier: workload
+      target: first
+      port: 8080
+      required: false
+      defaultOn: true
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
+      configFields:
+        - key: acmeEmail
+          label: ACME Email
+          type: text
+          required: true
+          description: "Email for Let's Encrypt certificate notifications"
+        - key: instances
+          label: Traefik Instances
+          type: number
+          required: false
+          default: "1"
+          description: "Number of Traefik instances. >1 enables HA with ACME cert distribution via Consul KV."
+    - key: postgres
+      name: PostgreSQL
+      description: "PostgreSQL 16 database. Credentials auto-generated and stored in Consul KV."
+      tier: workload
+      target: first
+      port: 5432
+      required: false
+      defaultOn: false
+      dependsOn: [traefik]
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
+      configFields:
+        - key: dbUser
+          label: Database User
+          type: text
+          required: false
+          default: "admin"
+          description: "PostgreSQL admin username"
+        - key: dbPassword
+          label: Database Password
+          type: text
+          required: false
+          secret: true
+          description: "PostgreSQL admin password (auto-generated if empty)"
+    - key: pgadmin
+      name: pgAdmin
+      description: "Web-based PostgreSQL administration UI. Connects to PostgreSQL using admin credentials from Consul KV."
+      tier: workload
+      target: first
+      port: 80
+      required: false
+      defaultOn: false
+      dependsOn: [postgres]
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
+      configFields:
+        - key: email
+          label: pgAdmin Email
+          type: text
+          required: true
+          description: "Login email for pgAdmin web UI"
+    - key: hopssh
+      name: hopssh
+      description: "Nebula mesh access platform — browser SSH, port forwarding, DNS. Requires worker public IP."
+      tier: workload
+      target: first
+      port: 9473
+      required: false
+      defaultOn: true
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
+      configFields:
+        - key: endpoint
+          label: hopssh Endpoint URL
+          type: text
+          required: true
+          description: "Public URL for hopssh API (e.g., https://hopssh.yourdomain.com)"
+    - key: github-runner
+      name: GitHub Actions Runner
+      description: "Self-hosted GitHub Actions runner for CI/CD deployment to this cluster"
+      tier: workload
+      target: first
+      required: false
+      defaultOn: false
+      consulEnv:
+        NOMAD_TOKEN: "nomad/bootstrap-token"
+      configFields:
+        - key: githubToken
+          label: GitHub Token
+          type: text
+          required: true
+          description: "Personal access token with repo/org runner registration scope"
+        - key: githubRepo
+          label: Repository URL
+          type: text
+          required: true
+          description: "e.g. https://github.com/org/repo"
+        - key: runnerLabels
+          label: Runner Labels
+          type: text
+          required: false
+          default: "self-hosted,nomad"
+          description: "Comma-separated labels for workflow targeting"
+
+config:
+  # ── Cluster config ──
+  role:
+    type: string
+    default: "primary"
+  drgOcid:
+    type: string
+    default: ""
+  primaryPrivateIp:
+    type: string
+    default: ""
+  primaryTenancyOcid:
+    type: string
+    default: ""
+  gossipKey:
+    type: string
+    default: ""
+  workerTenancyOcids:
+    type: string
+    default: ""
+  workerVcnOcids:
+    type: string
+    default: ""
+  workerPrivateIps:
+    type: string
+    default: ""
+  drgAttached:
+    type: string
+    default: ""
+  nlbPublicIp:
+    type: string
+    default: ""
+  nlbAgentPort:
+    type: string
+    default: ""
+  peerCidrs:
+    type: string
+    default: ""
+  bootstrapExpect:
+    type: string
+    default: ""
+
+  # ── Networking ──
+  exposedPorts:
+    type: string
+    default: "http:TCP:80:80;https:TCP:443:443"
+
+  # ── Infrastructure ──
+  compartmentName:
+    type: string
+    default: "nomad-cluster"
+  vcnCidr:
+    type: string
+    default: "10.0.0.0/16"
+  nlbSubnetCidr:
+    type: string
+    default: "10.0.1.0/24"
+  nodesSubnetCidr:
+    type: string
+    default: "10.0.2.0/24"
+  shape:
+    type: string
+    default: "VM.Standard.A1.Flex"
+  imageId:
+    type: string
+
+  # ── Compute ──
+  serverMode:
+    type: string
+    default: "server+client"
+  nodeCount:
+    type: integer
+    default: 1
+  ocpus:
+    type: integer
+    default: 4
+  memoryInGbs:
+    type: integer
+    default: 24
+  bootVolSizeGb:
+    type: integer
+    default: 200
+  sshPublicKey:
+    type: string
+
+  # ── Software ──
+  nomadVersion:
+    type: string
+    default: "1.11.3"
+  consulVersion:
+    type: string
+    default: "1.22.6"
+
+variables:
+  availabilityDomains:
+    fn::invoke:
+      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
+      arguments:
+        compartmentId: ${oci:tenancyOcid}
+      return: availabilityDomains
+
+  # Look up pool member instances for NLB backend wiring and IP output
+  poolInstances:
+    fn::invoke:
+      function: oci:Core/getInstancePoolInstances:getInstancePoolInstances
+      arguments:
+        compartmentId: ${cluster-compartment.id}
+        instancePoolId: ${cluster-instance-pool.id}
+      return: instances
+
+  # Get first pool instance details (for privateIp output used in wiring)
+  firstPoolInstance:
+    fn::invoke:
+      function: oci:Core/getInstance:getInstance
+      arguments:
+        instanceId: ${poolInstances[0].id}
+
+resources:
+{{- $peerCidrs := splitList "," (index .Config "peerCidrs" | default "") }}
+# --- section: identity ---
+  cluster-compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: {{ .Config.compartmentName }}
+      description: "Nomad multi-account cluster"
+      enableDelete: false
+
+  cluster-dg:
+    type: oci:Identity/dynamicGroup:DynamicGroup
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: nomad-cluster-dg
+      description: "Dynamic group for cluster instances"
+      matchingRule: "ALL {instance.compartment.id = '${cluster-compartment.id}'}"
+
+  cluster-policy:
+    type: oci:Identity/policy:Policy
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      name: nomad-cluster-policy
+      description: "Allow cluster nodes to read network/instance metadata"
+      statements:
+        - "Allow dynamic-group nomad-cluster-dg to read virtual-network-family in compartment id ${cluster-compartment.id}"
+        - "Allow dynamic-group nomad-cluster-dg to read instance-family in compartment id ${cluster-compartment.id}"
+    options:
+      dependsOn:
+        - ${cluster-dg}
+
+# --- section: networking ---
+  cluster-vcn:
+    type: oci:Core/vcn:Vcn
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      cidrBlocks: [{{ .Config.vcnCidr | quote }}]
+      displayName: "nomad-vcn"
+      dnsLabel: "nomadvcn"
+
+  # IGW: primary needs it for NLB subnet, worker needs it for public IP
+  cluster-igw:
+    type: oci:Core/internetGateway:InternetGateway
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      enabled: true
+      displayName: "cluster-igw"
+
+  # NAT gateway for private nodes (outbound internet only)
+  cluster-natgw:
+    type: oci:Core/natGateway:NatGateway
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      displayName: "cluster-natgw"
+      blockTraffic: false
+
+{{- if eq .Config.role "primary" }}
+  # ── Public subnet for NLB only (primary) ──
+  nlb-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      displayName: "nlb-rt"
+      routeRules:
+        - networkEntityId: ${cluster-igw.id}
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+  {{- range $peerCidrs }}
+  {{- if ne (trim .) "" }}
+        - networkEntityId: ${cluster-drg.id}
+          destination: {{ trim . | quote }}
+          destinationType: CIDR_BLOCK
+  {{- end }}
+  {{- end }}
+    options:
+      dependsOn:
+        - ${cluster-igw}
+        - ${cluster-drg}
+
+  nlb-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      cidrBlock: {{ .Config.nlbSubnetCidr | quote }}
+      displayName: "nlb-subnet"
+      dnsLabel: "nlb"
+      prohibitPublicIpOnVnic: false
+      routeTableId: ${nlb-rt.id}
+      dhcpOptionsId: ${cluster-vcn.defaultDhcpOptionsId}
+    options:
+      dependsOn:
+        - ${nlb-rt}
+{{- end }}
+
+  # ── Nodes subnet ──
+  nodes-rt:
+    type: oci:Core/routeTable:RouteTable
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      displayName: "nodes-rt"
+      routeRules:
+{{- if eq .Config.role "primary" }}
+        # Primary nodes are private — outbound via NAT GW
+        - networkEntityId: ${cluster-natgw.id}
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+{{- else }}
+        # Worker nodes have public IP — outbound via IGW
+        - networkEntityId: ${cluster-igw.id}
+          destination: "0.0.0.0/0"
+          destinationType: CIDR_BLOCK
+{{- end }}
+{{- if eq .Config.role "primary" }}
+  {{- range $peerCidrs }}
+  {{- if ne (trim .) "" }}
+        - networkEntityId: ${cluster-drg.id}
+          destination: {{ trim . | quote }}
+          destinationType: CIDR_BLOCK
+  {{- end }}
+  {{- end }}
+{{- end }}
+{{- if and (ne .Config.role "primary") (eq (index .Config "drgAttached" | default "") "true") }}
+  {{- range $peerCidrs }}
+  {{- if ne (trim .) "" }}
+        - networkEntityId: {{ index $.Config "drgOcid" | default "" }}
+          destination: {{ trim . | quote }}
+          destinationType: CIDR_BLOCK
+  {{- end }}
+  {{- end }}
+{{- end }}
+    options:
+      dependsOn:
+        - ${cluster-natgw}
+
+  nodes-subnet:
+    type: oci:Core/subnet:Subnet
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      cidrBlock: {{ .Config.nodesSubnetCidr | quote }}
+      displayName: "nodes-subnet"
+      dnsLabel: "nodes"
+      prohibitPublicIpOnVnic: {{ if eq .Config.role "primary" }}true{{ else }}false{{ end }}
+      routeTableId: ${nodes-rt.id}
+      dhcpOptionsId: ${cluster-vcn.defaultDhcpOptionsId}
+    options:
+      dependsOn:
+        - ${nodes-rt}
+
+  # ── NSG: cluster nodes ──
+  cluster-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      displayName: "cluster-nsg"
+
+  # All TCP from local VCN (cluster-internal: Consul, Nomad, Docker, etc.)
+  nsg-cluster-tcp:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.vcnCidr | quote }}
+      sourceType: CIDR_BLOCK
+      description: "All TCP from local VCN (cluster-internal)"
+
+  nsg-cluster-udp:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: INGRESS
+      protocol: "17"
+      source: {{ .Config.vcnCidr | quote }}
+      sourceType: CIDR_BLOCK
+      description: "All UDP from local VCN (cluster-internal)"
+
+  # All TCP/UDP from peer VCNs (cross-tenancy via DRG)
+  {{- range $idx, $cidr := $peerCidrs }}
+  {{- if ne (trim $cidr) "" }}
+  nsg-cluster-peer-tcp-{{ $idx }}:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ trim $cidr | quote }}
+      sourceType: CIDR_BLOCK
+      description: {{ printf "All TCP from peer %s (cluster-internal via DRG)" (trim $cidr) | quote }}
+
+  nsg-cluster-peer-udp-{{ $idx }}:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: INGRESS
+      protocol: "17"
+      source: {{ trim $cidr | quote }}
+      sourceType: CIDR_BLOCK
+      description: {{ printf "All UDP from peer %s (cluster-internal via DRG)" (trim $cidr) | quote }}
+  {{- end }}
+  {{- end }}
+
+{{- if eq .Config.role "primary" }}
+  # Nebula agent UDP from NLB subnet (NLB forwards to instances)
+  nsg-nebula-from-nlb:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: INGRESS
+      protocol: "17"
+      source: {{ .Config.nlbSubnetCidr | quote }}
+      sourceType: CIDR_BLOCK
+      udpOptions:
+        destinationPortRange: { min: 41820, max: 41820 }
+      description: "Nebula agent from NLB (UDP)"
+
+  # Traefik HTTP/HTTPS from NLB subnet
+  nsg-traefik-http:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.nlbSubnetCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange: { min: 80, max: 80 }
+      description: "HTTP from NLB"
+
+  nsg-traefik-https:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: INGRESS
+      protocol: "6"
+      source: {{ .Config.nlbSubnetCidr | quote }}
+      sourceType: CIDR_BLOCK
+      tcpOptions:
+        destinationPortRange: { min: 443, max: 443 }
+      description: "HTTPS from NLB"
+{{- end }}
+
+{{- if ne .Config.role "primary" }}
+  # hopssh Nebula lighthouse UDP from internet (direct to public IP)
+  nsg-hopssh-lighthouse:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: INGRESS
+      protocol: "17"
+      source: "0.0.0.0/0"
+      sourceType: CIDR_BLOCK
+      udpOptions:
+        destinationPortRange: { min: 42001, max: 42100 }
+      description: "hopssh Nebula lighthouse (UDP)"
+
+  # hopssh DNS from internet
+  nsg-hopssh-dns:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: INGRESS
+      protocol: "17"
+      source: "0.0.0.0/0"
+      sourceType: CIDR_BLOCK
+      udpOptions:
+        destinationPortRange: { min: 15300, max: 15400 }
+      description: "hopssh DNS (UDP)"
+
+  # Worker: Nebula agent UDP from primary NLB subnet (via DRG)
+  nsg-nebula-from-nlb:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: INGRESS
+      protocol: "17"
+      source: "10.0.1.0/24"
+      sourceType: CIDR_BLOCK
+      udpOptions:
+        destinationPortRange: { min: 41820, max: 41820 }
+      description: "Nebula agent from primary NLB via DRG (UDP)"
+{{- end }}
+
+  # Egress: allow all outbound
+  nsg-egress:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${cluster-nsg.id}
+      direction: EGRESS
+      protocol: all
+      destination: "0.0.0.0/0"
+      destinationType: CIDR_BLOCK
+
+# --- section: drg (primary only) ---
+{{- if eq .Config.role "primary" }}
+  cluster-drg:
+    type: oci:Core/drg:Drg
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      displayName: "nomad-cluster-drg"
+
+  # Primary's own VCN attachment to DRG
+  drg-attachment:
+    type: oci:Core/drgAttachment:DrgAttachment
+    properties:
+      drgId: ${cluster-drg.id}
+      displayName: "primary-vcn-attachment"
+      networkDetails:
+        id: ${cluster-vcn.id}
+        type: VCN
+    options:
+      dependsOn:
+        - ${cluster-drg}
+
+  # ── NLB: public ingress (primary only) ──
+  ingress-nsg:
+    type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      vcnId: ${cluster-vcn.id}
+      displayName: "ingress-nsg"
+
+  # ── Dynamic NSG rules from exposedPorts config ──
+  {{- $exposedPorts := splitList ";" (index .Config "exposedPorts" | default "http:TCP:80:80;https:TCP:443:443") }}
+  {{- range $idx, $portEntry := $exposedPorts }}
+  {{- if ne $portEntry "" }}
+  {{- $pp := split ":" $portEntry }}
+  ingress-nsg-{{ $pp._0 }}:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${ingress-nsg.id}
+      direction: INGRESS
+      protocol: {{ if eq $pp._1 "UDP" }}"17"{{ else if eq $pp._1 "TCP_AND_UDP" }}"all"{{ else }}"6"{{ end }}
+      source: "0.0.0.0/0"
+      sourceType: CIDR_BLOCK
+      {{- if and (ne $pp._2 "0") (ne $pp._3 "0") }}
+      {{- if eq $pp._1 "UDP" }}
+      udpOptions:
+        destinationPortRange: { min: {{ $pp._2 }}, max: {{ $pp._3 }} }
+      {{- else if ne $pp._1 "TCP_AND_UDP" }}
+      tcpOptions:
+        destinationPortRange: { min: {{ $pp._2 }}, max: {{ $pp._3 }} }
+      {{- end }}
+      {{- end }}
+      description: {{ if eq $pp._2 "0" }}{{ printf "%s (%s all ports)" $pp._0 $pp._1 | quote }}{{ else }}{{ printf "%s (%s %s-%s)" $pp._0 $pp._1 $pp._2 $pp._3 | quote }}{{ end }}
+  {{- end }}
+  {{- end }}
+
+  nsg-nebula-ingress:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${ingress-nsg.id}
+      direction: INGRESS
+      protocol: "17"
+      source: "0.0.0.0/0"
+      sourceType: CIDR_BLOCK
+      udpOptions:
+        destinationPortRange: { min: 41821, max: 41853 }
+      description: "Nebula agent per-node UDP ports"
+
+  nsg-nlb-egress:
+    type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
+    properties:
+      networkSecurityGroupId: ${ingress-nsg.id}
+      direction: EGRESS
+      protocol: all
+      destination: "0.0.0.0/0"
+      destinationType: CIDR_BLOCK
+      description: "NLB egress to backends"
+
+  ingress-nlb:
+    type: oci:NetworkLoadBalancer/networkLoadBalancer:NetworkLoadBalancer
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      subnetId: ${nlb-subnet.id}
+      displayName: "ingress-nlb"
+      isPrivate: false
+      networkSecurityGroupIds: ["${ingress-nsg.id}"]
+
+  # ── Dynamic NLB listeners + backends from exposedPorts config ──
+  {{- $nc := atoi (.Config.nodeCount | default "1") }}
+  {{- $prevNlbResource := "ingress-nlb" }}
+
+  {{- range $idx, $portEntry := $exposedPorts }}
+  {{- if ne $portEntry "" }}
+  {{- $p := split ":" $portEntry }}
+
+  ingress-nlb-bs-{{ $p._0 }}:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${ingress-nlb.id}
+      name: {{ printf "bs-%s" $p._0 | quote }}
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: {{ if eq $p._2 "0" }}22{{ else }}{{ $p._2 }}{{ end }}
+    options:
+      dependsOn:
+        - {{ printf "${%s}" $prevNlbResource }}
+
+  ingress-nlb-ln-{{ $p._0 }}:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${ingress-nlb.id}
+      name: {{ printf "ln-%s" $p._0 | quote }}
+      defaultBackendSetName: {{ printf "bs-%s" $p._0 | quote }}
+      protocol: {{ $p._1 }}
+      port: {{ $p._2 }}
+    options:
+      dependsOn:
+        - ${ingress-nlb-bs-{{ $p._0 }}}
+
+  {{- $prevBackend := printf "ingress-nlb-ln-%s" $p._0 }}
+  {{- range $i := until $nc }}
+  ingress-nlb-be-{{ $p._0 }}-{{ $i }}:
+    type: oci:NetworkLoadBalancer/backend:Backend
+    properties:
+      networkLoadBalancerId: ${ingress-nlb.id}
+      backendSetName: {{ printf "bs-%s" $p._0 | quote }}
+      targetId: {{ printf "${poolInstances[%d].id}" $i }}
+      port: {{ $p._2 }}
+    options:
+      dependsOn:
+        - {{ printf "${%s}" $prevBackend }}
+  {{- $prevBackend = printf "ingress-nlb-be-%s-%d" $p._0 $i }}
+  {{- end }}
+  {{- $prevNlbResource = printf "ingress-nlb-be-%s-%d" $p._0 (sub $nc 1) }}
+
+  {{- end }}
+  {{- end }}
+
+  # ── Cross-tenancy IAM policies (Phase 2) ──
+  {{- $workerOcids := splitList "," (index .Config "workerTenancyOcids" | default "") }}
+  {{- range $idx, $ocid := $workerOcids }}
+  {{- if ne (trim $ocid) "" }}
+  cross-tenancy-policy-{{ $idx }}:
+    type: oci:Identity/policy:Policy
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: {{ printf "cross-tenancy-worker-%d" $idx }}
+      description: "Cross-tenancy DRG policy for worker {{ $idx }}"
+      statements:
+        - {{ printf "Define tenancy WorkerTenancy%d as %s" $idx (trim $ocid) | quote }}
+        - {{ printf "Endorse any-user to manage drg-attachment in tenancy WorkerTenancy%d" $idx | quote }}
+        - {{ printf "Endorse any-user to manage virtual-network-family in tenancy WorkerTenancy%d" $idx | quote }}
+        - {{ printf "Admit any-user of tenancy WorkerTenancy%d to manage drg in tenancy" $idx | quote }}
+    options:
+      dependsOn:
+        - ${cluster-drg}
+  {{- end }}
+  {{- end }}
+
+  # ── Cross-tenancy DRG attachments to worker VCNs (Phase 4) ──
+  {{- $workerVcns := splitList "," (index .Config "workerVcnOcids" | default "") }}
+  {{- range $idx, $vcnOcid := $workerVcns }}
+  {{- if ne (trim $vcnOcid) "" }}
+  worker-vcn-attachment-{{ $idx }}:
+    type: oci:Core/drgAttachment:DrgAttachment
+    properties:
+      drgId: ${cluster-drg.id}
+      displayName: {{ printf "worker-vcn-attachment-%d" $idx | quote }}
+      networkDetails:
+        id: {{ trim $vcnOcid }}
+        type: VCN
+    options:
+      dependsOn:
+        - ${cluster-drg}
+  {{- end }}
+  {{- end }}
+
+  # ── Worker NLB agent backends — IP-based over DRG (Phase 4) ──
+  {{- $workerIps := splitList "," (index .Config "workerPrivateIps" | default "") }}
+  {{- $prevWorkerNlbRes := $prevNlbResource }}
+  {{- range $idx, $ip := $workerIps }}
+  {{- if ne (trim $ip) "" }}
+  worker-agent-bs-{{ $idx }}:
+    type: oci:NetworkLoadBalancer/backendSet:BackendSet
+    properties:
+      networkLoadBalancerId: ${ingress-nlb.id}
+      name: {{ printf "agent-bs-worker-%d" $idx | quote }}
+      policy: FIVE_TUPLE
+      isPreserveSource: false
+      healthChecker:
+        protocol: TCP
+        port: 22
+    options:
+      dependsOn:
+        - {{ printf "${%s}" $prevWorkerNlbRes }}
+
+  worker-agent-ln-{{ $idx }}:
+    type: oci:NetworkLoadBalancer/listener:Listener
+    properties:
+      networkLoadBalancerId: ${ingress-nlb.id}
+      name: {{ printf "agent-listener-worker-%d" $idx | quote }}
+      defaultBackendSetName: {{ printf "agent-bs-worker-%d" $idx | quote }}
+      protocol: UDP
+      port: {{ add (add 41821 $nc) $idx }}
+    options:
+      dependsOn:
+        - ${worker-agent-bs-{{ $idx }}}
+
+  worker-agent-be-{{ $idx }}:
+    type: oci:NetworkLoadBalancer/backend:Backend
+    properties:
+      networkLoadBalancerId: ${ingress-nlb.id}
+      backendSetName: {{ printf "agent-bs-worker-%d" $idx | quote }}
+      port: 41820
+      ipAddress: {{ trim $ip | quote }}
+    options:
+      dependsOn:
+        - ${worker-agent-ln-{{ $idx }}}
+  {{- $prevWorkerNlbRes = printf "worker-agent-be-%d" $idx }}
+  {{- end }}
+  {{- end }}
+{{- end }}
+
+# --- section: worker cross-tenancy policy ---
+{{- if and (ne .Config.role "primary") (ne (index .Config "primaryTenancyOcid" | default "") "") }}
+  cross-tenancy-policy:
+    type: oci:Identity/policy:Policy
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: "cross-tenancy-drg-policy"
+      description: "Cross-tenancy DRG policy for primary cluster"
+      statements:
+        - {{ printf "Define tenancy PrimaryTenancy as %s" (index .Config "primaryTenancyOcid" | default "") | quote }}
+        - "Admit any-user of tenancy PrimaryTenancy to manage drg-attachment in tenancy"
+        - "Admit any-user of tenancy PrimaryTenancy to manage virtual-network-family in tenancy"
+        - "Endorse any-user to manage drg in tenancy PrimaryTenancy"
+{{- end }}
+
+# --- section: compute ---
+  cluster-instance-config:
+    type: oci:Core/instanceConfiguration:InstanceConfiguration
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      displayName: {{ if eq .Config.role "primary" }}"nomad-server-config"{{ else }}"nomad-worker-config"{{ end }}
+      instanceDetails:
+        instanceType: compute
+        launchDetails:
+          compartmentId: ${cluster-compartment.id}
+          availabilityDomain: ${availabilityDomains[0].name}
+          displayName: {{ if eq .Config.role "primary" }}"nomad-server"{{ else }}"nomad-worker"{{ end }}
+          shape: {{ .Config.shape }}
+          shapeConfig:
+            ocpus: {{ .Config.ocpus }}
+            memoryInGbs: {{ .Config.memoryInGbs }}
+          sourceDetails:
+            sourceType: image
+            imageId: {{ .Config.imageId }}
+            bootVolumeSizeInGbs: {{ .Config.bootVolSizeGb | quote }}
+          createVnicDetails:
+            subnetId: ${nodes-subnet.id}
+            assignPublicIp: {{ if eq .Config.role "primary" }}false{{ else }}true{{ end }}
+            nsgIds: ["${cluster-nsg.id}"]
+          metadata:
+            ssh_authorized_keys: {{ .Config.sshPublicKey }}
+            user_data: {{ cloudInit 0 .Config }}
+    options:
+      dependsOn:
+        - ${nodes-subnet}
+
+  cluster-instance-pool:
+    type: oci:Core/instancePool:InstancePool
+    properties:
+      compartmentId: ${cluster-compartment.id}
+      instanceConfigurationId: ${cluster-instance-config.id}
+      displayName: {{ if eq .Config.role "primary" }}"nomad-server-pool"{{ else }}"nomad-worker-pool"{{ end }}
+      size: {{ .Config.nodeCount | default "1" }}
+      placementConfigurations:
+        - availabilityDomain: ${availabilityDomains[0].name}
+          primarySubnetId: ${nodes-subnet.id}
+    options:
+      dependsOn:
+        - ${cluster-instance-config}
+
+outputs:
+  instancePrivateIp: ${firstPoolInstance.privateIp}
+  nodeCount: {{ .Config.nodeCount | default "1" }}
+{{- if eq .Config.role "primary" }}
+  drgOcid: ${cluster-drg.id}
+  nlbPublicIp: ${ingress-nlb.ipAddresses[0].ipAddress}
+{{- else }}
+  vcnOcid: ${cluster-vcn.id}
+  instancePublicIp: ${firstPoolInstance.publicIp}
+{{- end }}
