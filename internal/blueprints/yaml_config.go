@@ -93,7 +93,7 @@ func truncateAtResources(yamlBody string) string {
 	lines := strings.Split(yamlBody, "\n")
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if strings.HasPrefix(line, "resources:") {
+		if strings.HasPrefix(line, "resources:") || strings.HasPrefix(line, "variables:") {
 			break
 		}
 		out = append(out, line)
