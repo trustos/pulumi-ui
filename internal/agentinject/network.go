@@ -228,16 +228,21 @@ func InjectNetworkingIntoYAML(yamlBody string) (string, error) {
 			}
 		}
 
-		for i, compute := range computes {
-			port := AgentNLBPortBase + i
-			bsName := fmt.Sprintf("__agent_bs_%s_%d", nlb.name, i)
-			lnName := fmt.Sprintf("__agent_ln_%s_%d", nlb.name, i)
-			addResource(resourcesNode, bsName, buildNLBBackendSetResourceNWithDep(nlb.name, i, prevNlbResource))
-			addResource(resourcesNode, lnName, buildNLBListenerResourceN(nlb.name, bsName, port))
-			beName := fmt.Sprintf("__agent_be_%s_%d", nlb.name, i)
-			addResource(resourcesNode, beName, buildNLBBackendResource(nlb.name, bsName, compute.name, lnName))
-			prevNlbResource = beName // chain next iteration after this backend
-			modified = true
+		// When pools exist, skip per-compute NLB injection — InstanceConfigurations
+		// are pool templates, not standalone instances. The blueprint template handles
+		// NLB wiring via the pool's native loadBalancers property.
+		if len(pools) == 0 {
+			for i, compute := range computes {
+				port := AgentNLBPortBase + i
+				bsName := fmt.Sprintf("__agent_bs_%s_%d", nlb.name, i)
+				lnName := fmt.Sprintf("__agent_ln_%s_%d", nlb.name, i)
+				addResource(resourcesNode, bsName, buildNLBBackendSetResourceNWithDep(nlb.name, i, prevNlbResource))
+				addResource(resourcesNode, lnName, buildNLBListenerResourceN(nlb.name, bsName, port))
+				beName := fmt.Sprintf("__agent_be_%s_%d", nlb.name, i)
+				addResource(resourcesNode, beName, buildNLBBackendResource(nlb.name, bsName, compute.name, lnName))
+				prevNlbResource = beName // chain next iteration after this backend
+				modified = true
+			}
 		}
 
 		// Pool NLB integration: skip backend injection for pools.
