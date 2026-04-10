@@ -340,6 +340,7 @@ variables:
 
 resources:
 {{- $peerCidrs := splitList "," (index .Config "peerCidrs" | default "") }}
+{{- $exposedPorts := splitList ";" (index .Config "exposedPorts" | default "http:TCP:80:80;https:TCP:443:443") }}
 # --- section: identity ---
   cluster-compartment:
     type: oci:Identity/compartment:Compartment
@@ -668,7 +669,6 @@ resources:
       displayName: "ingress-nsg"
 
   # ── Dynamic NSG rules from exposedPorts config ──
-  {{- $exposedPorts := splitList ";" (index .Config "exposedPorts" | default "http:TCP:80:80;https:TCP:443:443") }}
   {{- range $idx, $portEntry := $exposedPorts }}
   {{- if ne $portEntry "" }}
   {{- $pp := split ":" $portEntry }}
