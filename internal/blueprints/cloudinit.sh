@@ -217,10 +217,25 @@ discover_peers() {
         IS_FIRST_NODE=true
         echo "This is the first/bootstrapping node."
       fi
+      # Write node_index for agent bootstrap cert selection (InstancePool).
+      # Sort IPs and find own position — must match the order used by the server
+      # when generating per-node Nebula certs.
+      local sorted_ips
+      sorted_ips=$(echo "$ALL_NODE_IPS" | tr ' ' '\n' | sort)
+      local node_idx=0
+      for ip in $sorted_ips; do
+        if [ "$ip" = "$SELF_PRIVATE_IP" ]; then break; fi
+        node_idx=$((node_idx + 1))
+      done
+      mkdir -p /etc/pulumi-ui-agent
+      echo "$node_idx" > /etc/pulumi-ui-agent/node_index
+      echo "Wrote node_index=$node_idx for agent cert selection"
     else
       echo "Cluster role: PRIMARY (single-node, self-bootstrap)"
       NOMAD_IPS="[\"$SELF_PRIVATE_IP\"]"
       IS_FIRST_NODE=true
+      mkdir -p /etc/pulumi-ui-agent
+      echo "0" > /etc/pulumi-ui-agent/node_index
     fi
     export NOMAD_IPS IS_FIRST_NODE SELF_PRIVATE_IP NOMAD_BOOTSTRAP_EXPECT
     return 0
@@ -236,6 +251,9 @@ discover_peers() {
     else
       NOMAD_BOOTSTRAP_EXPECT=1
     fi
+    # Worker with nodeCount=1: always node-0
+    mkdir -p /etc/pulumi-ui-agent
+    echo "0" > /etc/pulumi-ui-agent/node_index
     export NOMAD_IPS IS_FIRST_NODE SELF_PRIVATE_IP NOMAD_BOOTSTRAP_EXPECT
     return 0
   fi

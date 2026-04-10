@@ -67,11 +67,19 @@ func InjectIntoYAML(yamlBody string, agentVarsList []AgentVars) (string, int, er
 		}
 
 		// Pick the vars for this node; clamp to last entry for extra instances.
+		// For InstancePool templates (InstanceConfiguration), embed ALL node
+		// certs so each pool instance can select its own cert at boot time.
 		idx := computeIndex
 		if idx >= len(agentVarsList) {
 			idx = len(agentVarsList) - 1
 		}
-		agentScript := RenderAgentBootstrap(agentVarsList[idx])
+		isPoolTemplate := typeNode.Value == "oci:Core/instanceConfiguration:InstanceConfiguration"
+		var agentScript []byte
+		if isPoolTemplate && len(agentVarsList) > 1 {
+			agentScript = RenderAgentBootstrapForPool(agentVarsList)
+		} else {
+			agentScript = RenderAgentBootstrap(agentVarsList[idx])
+		}
 
 		if injectUserData(propsNode, udPath.PropertyPath, agentScript) {
 			modified = true

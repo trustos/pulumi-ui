@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -410,6 +411,7 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	// Worker pool instances are now RUNNING. Re-up with poolReady=true so
 	// data sources resolve instancePrivateIp for NLB backend wiring.
 	send(engine.SSEEvent{Type: "output", Data: "── Resolving worker instance IPs ──"})
+	workerResolvedIPs := map[string][]string{} // stackName → []privateIP (from OCI API)
 	for _, worker := range workerMembers {
 		// Resolve worker pool IPs via OCI API
 		wOutputs, err := h.Engine.GetStackOutputs(opCtx, worker.stackName, group.Blueprint, worker.config, worker.creds)
@@ -423,6 +425,7 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 		} else if len(wIPs) > 0 {
 			log.Printf("[group-deploy] phase 3.5: worker %s pool IPs: %v", worker.stackName, wIPs)
 			worker.config["primaryNodeIps"] = strings.Join(wIPs, ",")
+			workerResolvedIPs[worker.stackName] = wIPs
 		}
 		worker.config["poolReady"] = "true"
 		if err := h.updateStackConfig(worker.stackName, group.Blueprint, worker.config, worker.passphraseID, worker.accountID); err != nil {
@@ -448,10 +451,15 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[group-deploy] phase 4: worker %s vcnOcid=%s", worker.stackName, val)
 			}
 		}
-		if ip, ok := wOutputs["instancePrivateIp"]; ok {
+		// Use OCI API-resolved IPs from Phase 3.5 (reliable — Pulumi outputs
+		// may not have instancePrivateIp if the worker wasn't re-upped with poolReady).
+		if ips, ok := workerResolvedIPs[worker.stackName]; ok && len(ips) > 0 {
+			workerPrivateIps = append(workerPrivateIps, ips...)
+			log.Printf("[group-deploy] phase 4: worker %s IPs from OCI API: %v", worker.stackName, ips)
+		} else if ip, ok := wOutputs["instancePrivateIp"]; ok {
 			if val, ok := ip.Value.(string); ok && val != "" {
 				workerPrivateIps = append(workerPrivateIps, val)
-				log.Printf("[group-deploy] phase 4: worker %s instancePrivateIp=%s", worker.stackName, val)
+				log.Printf("[group-deploy] phase 4: worker %s instancePrivateIp=%s (from Pulumi output)", worker.stackName, val)
 			}
 		}
 	}
@@ -770,6 +778,9 @@ func resolvePoolInstanceIPs(member *memberWithCreds, outputs auto.OutputMap) ([]
 		ips = append(ips, ip)
 		log.Printf("[group-deploy] pool instance %s privateIp=%s", inst.ID, ip)
 	}
+	// Sort IPs so the ordering matches cloud-init's discover_node_ips() sort.
+	// This ensures NLB backend index N routes to the instance that picks cert N.
+	sort.Strings(ips)
 	return ips, nil
 }
 

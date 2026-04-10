@@ -293,6 +293,54 @@ ensure_dns() {
 }
 ensure_dns
 
+# --- Multi-node cert selection ---
+# For InstancePool deployments with nodeCount > 1, all instances share the
+# same user_data but need distinct Nebula identities. The cloud-init script
+# (MIME part 0) writes /etc/pulumi-ui-agent/node_index after discovering all
+# node IPs in the subnet. We read it here and swap in the matching cert.
+POOL_NODE_COUNT=@@POOL_NODE_COUNT@@
+select_node_cert() {
+  if [ "$POOL_NODE_COUNT" -le 1 ]; then
+    return 0
+  fi
+
+  echo "[agent-bootstrap] Multi-node pool detected (nodeCount=$POOL_NODE_COUNT), selecting per-node cert..."
+
+  # Write all per-node certs (replaced at injection time)
+@@MULTI_NODE_CERTS@@
+
+  # Wait for cloud-init to write the node index (max 10 min).
+  # cloud-init runs as MIME part 0 and completes before this script (part 1),
+  # but on some images cloud-init may fork background tasks. Be defensive.
+  local node_index_file="/etc/pulumi-ui-agent/node_index"
+  local waited=0
+  while [ ! -f "$node_index_file" ] && [ $waited -lt 600 ]; do
+    echo "[agent-bootstrap] Waiting for node index file (${waited}s)..."
+    sleep 10
+    waited=$((waited + 10))
+  done
+
+  if [ ! -f "$node_index_file" ]; then
+    echo "[agent-bootstrap] WARNING: node_index not found after 10min, using default node-0 cert"
+    return 0
+  fi
+
+  local idx
+  idx=$(cat "$node_index_file")
+  echo "[agent-bootstrap] Node index: $idx (of $POOL_NODE_COUNT)"
+
+  if [ -f "/etc/nebula/host_${idx}.crt" ] && [ -f "/etc/nebula/host_${idx}.key" ]; then
+    cp "/etc/nebula/host_${idx}.crt" /etc/nebula/host.crt
+    cp "/etc/nebula/host_${idx}.key" /etc/nebula/host.key
+    chmod 600 /etc/nebula/host.key
+    echo "[agent-bootstrap] Selected cert for node-${idx}, restarting Nebula..."
+    systemctl restart nebula
+  else
+    echo "[agent-bootstrap] WARNING: cert files for node-${idx} not found, using default"
+  fi
+}
+
 install_nebula
+select_node_cert
 install_agent
 echo "[agent-bootstrap] Complete."
