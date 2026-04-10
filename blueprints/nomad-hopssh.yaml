@@ -22,8 +22,6 @@ meta:
         mappings:
           - output: drgOcid
             config: drgOcid
-          - output: instancePrivateIp
-            config: primaryPrivateIp
           - output: nlbPublicIp
             config: nlbPublicIp
         accountMappings:
@@ -321,22 +319,6 @@ variables:
       arguments:
         compartmentId: ${oci:tenancyOcid}
       return: availabilityDomains
-
-  # Look up pool member instances for NLB backend wiring and IP output
-  poolInstances:
-    fn::invoke:
-      function: oci:Core/getInstancePoolInstances:getInstancePoolInstances
-      arguments:
-        compartmentId: ${cluster-compartment.id}
-        instancePoolId: ${cluster-instance-pool.id}
-      return: instances
-
-  # Get first pool instance details (for privateIp output used in wiring)
-  firstPoolInstance:
-    fn::invoke:
-      function: oci:Core/getInstance:getInstance
-      arguments:
-        instanceId: ${poolInstances[0].instanceId}
 
 resources:
 {{- $peerCidrs := splitList "," (index .Config "peerCidrs" | default "") }}
@@ -961,12 +943,12 @@ resources:
 {{- end }}
 
 outputs:
-  instancePrivateIp: ${firstPoolInstance.privateIp}
+  poolId: ${cluster-instance-pool.id}
+  compartmentId: ${cluster-compartment.id}
   nodeCount: {{ .Config.nodeCount | default "1" }}
 {{- if eq .Config.role "primary" }}
   drgOcid: ${cluster-drg.id}
   nlbPublicIp: ${ingress-nlb.ipAddresses[0].ipAddress}
 {{- else }}
   vcnOcid: ${cluster-vcn.id}
-  instancePublicIp: ${firstPoolInstance.publicIp}
 {{- end }}
