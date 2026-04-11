@@ -7,6 +7,7 @@ import (
 	"testing"
 	"text/template"
 
+	"github.com/Masterminds/sprig/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	builtins "github.com/trustos/pulumi-ui/blueprints"
@@ -150,7 +151,7 @@ func TestJobTemplateRendering_Traefik(t *testing.T) {
 	content, err := builtins.ReadJobFile("traefik.nomad.hcl")
 	require.NoError(t, err)
 
-	tmpl, err := template.New("test").Delims("[[", "]]").Parse(content)
+	tmpl, err := template.New("test").Delims("[[", "]]").Funcs(sprig.TxtFuncMap()).Parse(content)
 	require.NoError(t, err)
 
 	data := map[string]string{
@@ -174,7 +175,7 @@ func TestJobTemplateRendering_Traefik_DashboardPort(t *testing.T) {
 	content, err := builtins.ReadJobFile("traefik.nomad.hcl")
 	require.NoError(t, err)
 
-	tmpl, err := template.New("test").Delims("[[", "]]").Parse(content)
+	tmpl, err := template.New("test").Delims("[[", "]]").Funcs(sprig.TxtFuncMap()).Parse(content)
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
