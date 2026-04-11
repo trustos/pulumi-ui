@@ -182,7 +182,7 @@ func (e *Engine) getOrCreateStack(ctx context.Context, stackName, projectName st
 // ociPinnedVersion is the OCI provider version used for all YAML programs.
 // Pinned explicitly so that the plugins: path injection below selects this
 // exact binary rather than whatever is newest in $PULUMI_HOME/plugins/.
-const ociPinnedVersion = "4.4.0"
+const ociPinnedVersion = "4.6.0"
 
 // ociPluginDir returns the directory where the pinned OCI provider binary is
 // installed, or an empty string if it cannot be found.
