@@ -29,10 +29,10 @@ setup_os() {
   if [[ "${operating_system:-}" == "ubuntu" ]]; then
     if ! iptables -t nat -L DOCKER -n >/dev/null 2>&1; then
       if [ -x /usr/sbin/netfilter-persistent ]; then
-        /usr/sbin/netfilter-persistent stop
-        /usr/sbin/netfilter-persistent flush
-        systemctl stop netfilter-persistent.service
-        systemctl disable netfilter-persistent.service
+        /usr/sbin/netfilter-persistent stop || true
+        /usr/sbin/netfilter-persistent flush || true
+        systemctl stop netfilter-persistent.service 2>/dev/null || true
+        systemctl disable netfilter-persistent.service 2>/dev/null || true
       fi
     fi
 
@@ -60,7 +60,7 @@ setup_os() {
     pipx install oci-cli || true
     export PATH=$PATH:/root/.local/bin
     if ! command -v oci &>/dev/null; then
-      python3 -m pip install --user oci-cli
+      python3 -m pip install --user oci-cli || true
       export PATH=$PATH:~/.local/bin
     fi
 
