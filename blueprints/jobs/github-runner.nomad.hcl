@@ -63,7 +63,8 @@ job "github-runner" {
       driver = "docker"
 
       config {
-        image = "myoung34/github-runner:latest"
+        image        = "myoung34/github-runner:latest"
+        network_mode = "host"
         volumes = [
           "/usr/local/bin/nomad:/usr/local/bin/nomad:ro",
           "/usr/local/bin/consul:/usr/local/bin/consul:ro",
