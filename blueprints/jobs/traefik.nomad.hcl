@@ -26,7 +26,10 @@ job "traefik" {
         command = "bash"
         args    = ["-c", "mkdir -p /opt/traefik/acme /opt/traefik/dynamic && chmod 600 /opt/traefik/acme"]
       }
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "init-acme-redirect" {
@@ -52,7 +55,10 @@ REDIR
 SCRIPT
         ]
       }
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "traefik" {
@@ -170,7 +176,10 @@ SCRIPT
         ]
       }
 
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
   }
 
@@ -191,7 +200,10 @@ SCRIPT
         command = "bash"
         args    = ["-c", "mkdir -p /opt/traefik/acme /opt/traefik/dynamic && chmod 600 /opt/traefik/acme"]
       }
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "init-acme-redirect" {
@@ -217,7 +229,10 @@ REDIR
 SCRIPT
         ]
       }
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "consul-to-acme" {
@@ -240,7 +255,10 @@ SCRIPT
         ]
       }
 
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "traefik" {
@@ -350,7 +368,10 @@ EOF
         command = "bash"
         args    = ["-c", "mkdir -p /opt/traefik/acme /opt/traefik/dynamic && chmod 600 /opt/traefik/acme"]
       }
-      resources { cpu = 50; memory = 32 }
+      resources {
+        cpu    = 50
+        memory = 32
+      }
     }
 
     task "traefik" {
