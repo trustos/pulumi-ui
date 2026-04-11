@@ -26,11 +26,11 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
 # Install Pulumi CLI (pinned version for reproducibility)
-RUN curl -fsSL https://get.pulumi.com | sh -s -- --version 3.227.0
+RUN curl -fsSL https://get.pulumi.com | sh -s -- --version 3.230.0
 ENV PATH="/root/.pulumi/bin:$PATH"
 
 # Pre-warm Pulumi resource plugins (avoids runtime downloads).
-RUN pulumi plugin install resource oci 4.3.1
+RUN pulumi plugin install resource oci 4.6.0
 
 # Copy the single Go binary
 COPY --from=go-build /app/pulumi-ui /usr/local/bin/pulumi-ui
