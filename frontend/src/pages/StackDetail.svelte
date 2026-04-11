@@ -194,6 +194,9 @@
   let fwdOpen = $state(false);
   let stoppingForwards = $state<Set<string>>(new Set());
 
+  // Track which node's services are currently displayed
+  let servicesNodeIndex = $state(0);
+
   // Lifecycle hooks
   let hooks = $state<Hook[]>([]);
   let hooksLoading = $state(false);
@@ -483,6 +486,25 @@
       nodeErrorMap = new Map();
       agentStatusLoaded = false;
     }
+  });
+
+  // Reload services + nomad jobs when the node selector changes.
+  $effect(() => {
+    const nodeIdx = fwdNodeIndex;
+    if (!agentStatusLoaded || nodeIdx === servicesNodeIndex) return;
+    servicesNodeIndex = nodeIdx;
+    (async () => {
+      try {
+        agentServices = await getAgentServices(name, nodeIdx);
+      } catch {
+        agentServices = [];
+      }
+      try {
+        nomadJobs = await getNomadJobs(name, nodeIdx);
+      } catch {
+        nomadJobs = [];
+      }
+    })();
   });
 
   $effect(() => {
@@ -1370,8 +1392,8 @@
               {#if agentServices.length > 0}
                 {#each agentServices as svc}
                   {@const svcPort = INFRA_PORTS[svc.name]}
-                  {@const isForwarded = svcPort ? portForwards.some(f => f.remotePort === svcPort) : false}
-                  {@const fwdInfo = isForwarded ? portForwards.find(f => f.remotePort === svcPort) : null}
+                  {@const fwdInfo = svcPort ? portForwards.find(f => f.remotePort === svcPort && f.nodeIndex === fwdNodeIndex) : null}
+                  {@const isForwarded = !!fwdInfo}
                   <span class="inline-flex items-center gap-1.5">
                     <span class="w-1.5 h-1.5 rounded-full {svc.active === 'active' ? 'bg-green-500' : 'bg-zinc-500'}"></span>
                     <span class="text-muted-foreground">{svc.name}</span>
@@ -1385,7 +1407,7 @@
                             target="_blank"
                             rel="noopener"
                             class="rounded bg-primary/10 text-primary px-1.5 py-0.5 font-mono hover:bg-primary/20 transition-colors"
-                          >:{fwdInfo.localPort}</a>
+                          >:{fwdInfo.localPort}{#if info?.nodes && info.nodes.length > 1}<span class="text-primary/60 ml-0.5">n{fwdInfo.nodeIndex}</span>{/if}</a>
                           <button class="text-muted-foreground hover:text-destructive transition-colors" onclick={() => { if (fwdInfo) doStopForward(fwdInfo.id); }}>×</button>
                         {/if}
                       {:else}
@@ -1407,9 +1429,12 @@
                   {#if stoppingForwards.has(fwd.id)}
                     <span class="text-muted-foreground">stopping...</span>
                   {:else}
-                    <a href={forwardProxyUrl(name, fwd.id, fwd.localPort)} target="_blank" rel="noopener" class="text-primary hover:underline">fwd:{fwd.remotePort}</a>
+                    <a href={forwardProxyUrl(name, fwd.id, fwd.localPort)} target="_blank" rel="noopener" class="text-primary hover:underline">:{fwd.localPort}</a>
                     <span class="text-muted-foreground">→</span>
                     <span class="text-muted-foreground">{fwd.remotePort}</span>
+                    {#if info?.nodes && info.nodes.length > 1}
+                      <span class="text-muted-foreground/60">n{fwd.nodeIndex}</span>
+                    {/if}
                     <button class="ml-0.5 text-muted-foreground hover:text-destructive transition-colors" onclick={() => doStopForward(fwd.id)}>×</button>
                   {/if}
                 </span>
