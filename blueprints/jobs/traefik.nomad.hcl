@@ -23,7 +23,7 @@ job "traefik" {
       driver = "raw_exec"
       lifecycle { hook = "prestart" }
       config {
-        command = "bash"
+        command = "/bin/bash"
         args    = ["-c", "mkdir -p /opt/traefik/acme /opt/traefik/dynamic && chmod 600 /opt/traefik/acme"]
       }
       resources {
@@ -36,7 +36,7 @@ job "traefik" {
       driver = "raw_exec"
       lifecycle { hook = "prestart" }
       config {
-        command = "bash"
+        command = "/bin/bash"
         args = ["-c", <<-SCRIPT
 cat > /opt/traefik/dynamic/acme-redirect.yaml <<'REDIR'
 http:
@@ -158,8 +158,9 @@ EOF
       }
 
       config {
-        command = "bash"
+        command = "/bin/bash"
         args = ["-c", <<-SCRIPT
+export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
 LAST_HASH=""
 while true; do
   if [ -f /opt/traefik/acme/acme.json ]; then
@@ -197,7 +198,7 @@ SCRIPT
       driver = "raw_exec"
       lifecycle { hook = "prestart" }
       config {
-        command = "bash"
+        command = "/bin/bash"
         args    = ["-c", "mkdir -p /opt/traefik/acme /opt/traefik/dynamic && chmod 600 /opt/traefik/acme"]
       }
       resources {
@@ -210,7 +211,7 @@ SCRIPT
       driver = "raw_exec"
       lifecycle { hook = "prestart" }
       config {
-        command = "bash"
+        command = "/bin/bash"
         args = ["-c", <<-SCRIPT
 cat > /opt/traefik/dynamic/acme-redirect.yaml <<'REDIR'
 http:
@@ -244,13 +245,27 @@ SCRIPT
       }
 
       config {
-        command = "bash"
+        command = "/bin/bash"
         args = ["-c", <<-SCRIPT
+export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
 # Initial sync: fetch cert if it already exists in Consul KV
-consul kv get traefik/acme-json > /opt/traefik/acme/acme.json 2>/dev/null || true
-# Watch for changes and sync
-consul watch -type=key -key=traefik/acme-json \
-  bash -c 'consul kv get traefik/acme-json > /opt/traefik/acme/acme.json && echo "Cert synced from Consul KV"'
+consul kv get traefik/acme-json > /opt/traefik/acme/acme.json 2>/dev/null || echo '{}' > /opt/traefik/acme/acme.json
+chmod 600 /opt/traefik/acme/acme.json
+echo "Watching Consul KV for ACME cert updates..."
+LAST_HASH=""
+while true; do
+  CERT=$(consul kv get traefik/acme-json 2>/dev/null || true)
+  if [ -n "$CERT" ]; then
+    NEW_HASH=$(echo "$CERT" | md5sum | awk '{print $1}')
+    if [ "$LAST_HASH" != "$NEW_HASH" ]; then
+      echo "$CERT" > /opt/traefik/acme/acme.json
+      chmod 600 /opt/traefik/acme/acme.json
+      LAST_HASH="$NEW_HASH"
+      echo "Cert synced from Consul KV (hash: $NEW_HASH)"
+    fi
+  fi
+  sleep 30
+done
 SCRIPT
         ]
       }
@@ -365,7 +380,7 @@ EOF
       driver = "raw_exec"
       lifecycle { hook = "prestart" }
       config {
-        command = "bash"
+        command = "/bin/bash"
         args    = ["-c", "mkdir -p /opt/traefik/acme /opt/traefik/dynamic && chmod 600 /opt/traefik/acme"]
       }
       resources {
