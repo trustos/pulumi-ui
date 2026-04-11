@@ -226,8 +226,8 @@ func (pf *PortForward) handleConn(ctx context.Context, local net.Conn) {
 		return
 	}
 
-	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer dialCancel()
 
 	remote, err := tunnel.DialPort(dialCtx, pf.RemotePort)
 	if err != nil {
@@ -235,6 +235,24 @@ func (pf *PortForward) handleConn(ctx context.Context, local net.Conn) {
 		return
 	}
 	defer remote.Close()
+
+	// Keep the tunnel alive while this connection is active. Without this,
+	// long-lived connections (e.g., Nomad UI WebSocket) appear idle to the
+	// reaper because lastUsed is only set at Dial time, not during io.Copy.
+	keepaliveCtx, keepaliveCancel := context.WithCancel(ctx)
+	defer keepaliveCancel()
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-keepaliveCtx.Done():
+				return
+			case <-ticker.C:
+				tunnel.Touch()
+			}
+		}
+	}()
 
 	done := make(chan struct{})
 

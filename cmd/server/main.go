@@ -172,6 +172,10 @@ func main() {
 
 	// Handler groups
 	fwdMgr := mesh.NewForwardManager(meshMgr)
+	// Prevent the idle reaper from killing tunnels that have active port forwards.
+	meshMgr.SetForwardChecker(func(stackName string) bool {
+		return len(fwdMgr.List(stackName)) > 0
+	})
 	restartCh := make(chan struct{}, 1)
 
 	authH := &api.AuthHandler{Users: users, Sessions: sessions}

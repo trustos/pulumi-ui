@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,15 +46,24 @@ func (t *Tunnel) Pin() {
 	t.mu.Unlock()
 }
 
+// Touch updates lastUsed to prevent idle reaping. Called by port forward
+// keepalive goroutines to keep the tunnel alive during active data transfer.
+func (t *Tunnel) Touch() {
+	t.mu.Lock()
+	t.lastUsed = time.Now()
+	t.mu.Unlock()
+}
+
 // Manager creates and caches on-demand Nebula tunnels per stack.
 type Manager struct {
 	connStore     *db.StackConnectionStore
 	nodeCertStore *db.NodeCertStore
 
-	mu         sync.Mutex
-	tunnels    map[string]*Tunnel
-	connecting sync.Map // key → *sync.Once (prevents concurrent retry loops)
-	done       chan struct{}
+	mu                sync.Mutex
+	tunnels           map[string]*Tunnel
+	connecting        sync.Map // key → *sync.Once (prevents concurrent retry loops)
+	done              chan struct{}
+	hasActiveForwards func(stackName string) bool // callback to check port forwards
 }
 
 func NewManager(connStore *db.StackConnectionStore) *Manager {
@@ -69,6 +79,15 @@ func NewManager(connStore *db.StackConnectionStore) *Manager {
 // WithNodeCertStore enables per-node tunnel support.
 func (m *Manager) WithNodeCertStore(s *db.NodeCertStore) {
 	m.nodeCertStore = s
+}
+
+// SetForwardChecker registers a callback the reaper uses to check whether
+// any port forward is active for a given tunnel key (stack name or stack:node).
+// Tunnels with active forwards are not reaped even if idle.
+func (m *Manager) SetForwardChecker(fn func(stackName string) bool) {
+	m.mu.Lock()
+	m.hasActiveForwards = fn
+	m.mu.Unlock()
 }
 
 // GetOrStartPassive returns a cached tunnel for the stack, or creates a new one
@@ -612,12 +631,28 @@ func (m *Manager) reaper() {
 			return
 		case <-ticker.C:
 			m.mu.Lock()
+			checker := m.hasActiveForwards
 			for name, t := range m.tunnels {
 				t.mu.Lock()
 				idle := time.Since(t.lastUsed) > idleTimeout
 				pinned := t.pinned
 				t.mu.Unlock()
 				if idle && !pinned {
+					// Don't reap tunnels that have active port forwards.
+					// The name may be "stackName" or "stackName:nodeIndex";
+					// extract the stack name prefix for the forward check.
+					if checker != nil {
+						stackBase := name
+						if idx := strings.LastIndex(name, ":"); idx > 0 {
+							stackBase = name[:idx]
+						}
+						if checker(stackBase) {
+							t.mu.Lock()
+							t.lastUsed = time.Now() // reset so we don't log every 30s
+							t.mu.Unlock()
+							continue
+						}
+					}
 					log.Printf("[mesh] closing idle tunnel for stack %s", name)
 					t.Close()
 					delete(m.tunnels, name)
