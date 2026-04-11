@@ -329,7 +329,8 @@ certificatesResolvers:
     acme:
       email: [[.acmeEmail]]
       storage: /etc/traefik/acme/acme.json
-      httpChallenge: {}
+      httpChallenge:
+        entryPoint: web
 EOF
         destination = "local/traefik.yaml"
         change_mode = "restart"
