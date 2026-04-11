@@ -145,8 +145,11 @@
   // Per-node health: nodeIndex -> AgentHealth | null (null = unreachable, undefined = not yet checked)
   let nodeHealthMap = $state<Map<number, AgentHealth | null>>(new Map());
   let nodeErrorMap = $state<Map<number, string>>(new Map());
-  // Services come from the first node (index 0) or the single mesh node
-  let agentServices = $state<AgentService[]>([]);
+  // Per-node services: nodeIndex → AgentService[] (loaded for all reachable nodes)
+  let nodeServicesMap = $state<Map<number, AgentService[]>>(new Map());
+  let servicesNodeIndex = $state(0); // which node's services are shown in the info strip
+  // agentServices is kept as a derived for backward compat (Apps tab, info strip for single-node)
+  let agentServices = $derived<AgentService[]>(nodeServicesMap.get(servicesNodeIndex) ?? nodeServicesMap.get(0) ?? []);
   let nomadJobs = $state<NomadJob[]>([]);
   let agentError = $state('');
   // Terminal sessions (multi-tab)
@@ -193,9 +196,6 @@
   let fwdStarting = $state(false);
   let fwdOpen = $state(false);
   let stoppingForwards = $state<Set<string>>(new Set());
-
-  // Track which node's services are currently displayed
-  let servicesNodeIndex = $state(0);
 
   // Lifecycle hooks
   let hooks = $state<Hook[]>([]);
@@ -373,13 +373,24 @@
       });
       nodeHealthMap = newHealth;
       nodeErrorMap = newErrors;
-      // Services + Nomad jobs from node 0 (primary)
-      try {
-        agentServices = await getAgentServices(name, nodes[0].nodeIndex);
-      } catch {
-        agentServices = [];
+      // Load services for all reachable nodes
+      const svcMap = new Map<number, AgentService[]>();
+      for (const [idx, h] of newHealth) {
+        if (h) {
+          try {
+            svcMap.set(idx, await getAgentServices(name, idx));
+          } catch {
+            svcMap.set(idx, []);
+          }
+        }
       }
-      nomadJobs = await getNomadJobs(name, nodes[0].nodeIndex);
+      nodeServicesMap = svcMap;
+      // Nomad jobs from node 0 (cluster-wide view)
+      try {
+        nomadJobs = await getNomadJobs(name, nodes[0].nodeIndex);
+      } catch {
+        nomadJobs = [];
+      }
     } else {
       // Single-node (legacy mesh path)
       try {
@@ -387,12 +398,13 @@
         const health = await getAgentHealth(name);
         nodeHealthMap = new Map([[0, health]]);
         nodeErrorMap = new Map([[0, '']]);
-        agentServices = await getAgentServices(name);
+        const svcs = await getAgentServices(name);
+        nodeServicesMap = new Map([[0, svcs]]);
         nomadJobs = await getNomadJobs(name);
       } catch (err) {
         agentError = err instanceof Error ? err.message : String(err);
         nodeHealthMap = new Map([[0, null]]);
-        agentServices = [];
+        nodeServicesMap = new Map();
         nomadJobs = [];
       }
     }
@@ -480,7 +492,7 @@
     }
     // Clear stale agent data when infra is destroyed
     if (!isInfraDeployed && agentStatusLoaded) {
-      agentServices = [];
+      nodeServicesMap = new Map();
       nomadJobs = [];
       nodeHealthMap = new Map();
       nodeErrorMap = new Map();
@@ -488,23 +500,9 @@
     }
   });
 
-  // Reload services + nomad jobs when the node selector changes.
+  // Track node selection for the info strip (single-node compat).
   $effect(() => {
-    const nodeIdx = fwdNodeIndex;
-    if (!agentStatusLoaded || nodeIdx === servicesNodeIndex) return;
-    servicesNodeIndex = nodeIdx;
-    (async () => {
-      try {
-        agentServices = await getAgentServices(name, nodeIdx);
-      } catch {
-        agentServices = [];
-      }
-      try {
-        nomadJobs = await getNomadJobs(name, nodeIdx);
-      } catch {
-        nomadJobs = [];
-      }
-    })();
+    servicesNodeIndex = fwdNodeIndex;
   });
 
   $effect(() => {
@@ -1321,6 +1319,61 @@
                         </Button>
                       </div>
                     </div>
+                    <!-- Per-node services + port forwards -->
+                    {@const nodeSvcs = nodeServicesMap.get(node.nodeIndex) ?? []}
+                    {@const nodeFwds = portForwards.filter(f => f.nodeIndex === node.nodeIndex)}
+                    {#if nodeSvcs.length > 0 || nodeFwds.length > 0}
+                      <div class="flex items-center gap-1.5 text-xs flex-wrap pl-4 pb-1">
+                        {#each nodeSvcs as svc}
+                          {@const svcPort = INFRA_PORTS[svc.name]}
+                          {@const fwdInfo = svcPort ? nodeFwds.find(f => f.remotePort === svcPort) : null}
+                          <span class="inline-flex items-center gap-1">
+                            <span class="w-1 h-1 rounded-full {svc.active === 'active' ? 'bg-green-500' : 'bg-zinc-400'}"></span>
+                            <span class="text-muted-foreground">{svc.name}</span>
+                            {#if svcPort && svc.active === 'active'}
+                              {#if fwdInfo}
+                                {#if stoppingForwards.has(fwdInfo.id)}
+                                  <span class="rounded bg-muted px-1 py-0.5 font-mono text-muted-foreground">...</span>
+                                {:else}
+                                  <a href={forwardProxyUrl(name, fwdInfo.id, fwdInfo.localPort)} target="_blank" rel="noopener" class="rounded bg-primary/10 text-primary px-1 py-0.5 font-mono hover:bg-primary/20 transition-colors">:{fwdInfo.localPort}</a>
+                                  <button class="text-muted-foreground hover:text-destructive transition-colors" onclick={() => { if (fwdInfo) doStopForward(fwdInfo.id); }}>×</button>
+                                {/if}
+                              {:else}
+                                <button
+                                  class="rounded bg-muted px-1 py-0.5 font-mono text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                                  onclick={() => { fwdNodeIndex = node.nodeIndex; fwdRemotePort = String(svcPort); doStartForward(); }}
+                                  disabled={fwdStarting}
+                                >:{svcPort}</button>
+                              {/if}
+                            {/if}
+                          </span>
+                        {/each}
+                        {#each nodeFwds.filter(f => !Object.values(INFRA_PORTS).includes(f.remotePort)) as fwd}
+                          <span class="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 font-mono">
+                            {#if stoppingForwards.has(fwd.id)}
+                              <span class="text-muted-foreground">...</span>
+                            {:else}
+                              <a href={forwardProxyUrl(name, fwd.id, fwd.localPort)} target="_blank" rel="noopener" class="text-primary hover:underline">:{fwd.localPort}</a>
+                              <span class="text-muted-foreground">→{fwd.remotePort}</span>
+                              <button class="text-muted-foreground hover:text-destructive transition-colors" onclick={() => doStopForward(fwd.id)}>×</button>
+                            {/if}
+                          </span>
+                        {/each}
+                        <input
+                          type="number"
+                          placeholder="port"
+                          class="h-5 w-14 rounded border bg-background px-1.5 text-xs font-mono ml-auto"
+                          onkeydown={(e: KeyboardEvent) => {
+                            if (e.key === 'Enter') {
+                              fwdNodeIndex = node.nodeIndex;
+                              fwdRemotePort = (e.currentTarget as HTMLInputElement).value;
+                              doStartForward();
+                              (e.currentTarget as HTMLInputElement).value = '';
+                            }
+                          }}
+                        />
+                      </div>
+                    {/if}
                   {/each}
                 </div>
               </Card.Content>
