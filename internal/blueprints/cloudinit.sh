@@ -365,6 +365,10 @@ client_addr = "0.0.0.0"
 $consul_bootstrap
 $consul_encrypt
 ui = true
+
+limits {
+  kv_max_value_size = 10485760
+}
 EOF
   chown consul:consul /etc/consul.d/consul.hcl
 
