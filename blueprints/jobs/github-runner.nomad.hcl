@@ -83,6 +83,10 @@ job "github-runner" {
 
       config {
         image = "myoung34/github-runner:latest"
+        volumes = [
+          "/usr/local/bin/nomad:/usr/local/bin/nomad:ro",
+          "/usr/local/bin/consul:/usr/local/bin/consul:ro",
+        ]
       }
 
       env {
