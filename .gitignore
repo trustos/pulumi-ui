@@ -1,7 +1,9 @@
 # ── Binary & build outputs ────────────────────────────────────────────────────
 pulumi-ui
 cmd/server/frontend/dist/
+cmd/server/dist/
 server
+!server/
 /agent
 /dist/
 node_modules/
