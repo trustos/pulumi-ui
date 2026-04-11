@@ -113,8 +113,8 @@
             if (group?.status === 'deploying' && $machineState.matches('idle')) {
                 send({ type: 'EXTERNAL_DEPLOY_DETECTED' });
             }
-            // Restore persisted deploy log when not actively deploying
-            if (group?.deployLog && !deploying) {
+            // Show persisted deploy log (both when idle and when external deploying)
+            if (group?.deployLog) {
                 persistedLog = parsePersistedLog(group.deployLog);
             }
         } catch {
@@ -140,19 +140,23 @@
         }
     });
 
-    // Poll for external deploy completion (every 5s)
+    // Poll for external deploy completion (every 5s) + show live log
     $effect(() => {
         if (!$machineState.matches('externalDeploying')) return;
         const interval = setInterval(async () => {
             try {
                 const g = await getGroup(id);
-                if (g && g.status !== 'deploying') {
+                if (!g) return;
+                // Always update the log so the user sees progress
+                if (g.deployLog) {
                     persistedLog = parsePersistedLog(g.deployLog);
                     group = g;
+                }
+                if (g.status !== 'deploying') {
                     send({ type: 'EXTERNAL_DEPLOY_ENDED' });
                 }
             } catch { /* retry next interval */ }
-        }, 5000);
+        }, 3000); // 3s for better log responsiveness
         return () => clearInterval(interval);
     });
 
