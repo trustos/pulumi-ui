@@ -13,6 +13,8 @@ type DeploymentGroup struct {
 	Status       string // configuring, deploying, deployed, partial, failed
 	SharedConfig *string
 	DeployLog    string
+	Applications string // JSON: map[string]bool (app key → enabled)
+	AppConfig    string // JSON: map[string]string ("app.field" → value)
 	CreatedAt    int64
 	UpdatedAt    int64
 }
@@ -37,18 +39,18 @@ func NewDeploymentGroupStore(p *DBPair) *DeploymentGroupStore {
 
 func (s *DeploymentGroupStore) Create(g *DeploymentGroup) error {
 	_, err := s.wdb.Exec(`
-		INSERT INTO deployment_groups (id, name, blueprint, status, shared_config, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, g.ID, g.Name, g.Blueprint, g.Status, g.SharedConfig, time.Now().Unix(), time.Now().Unix())
+		INSERT INTO deployment_groups (id, name, blueprint, status, shared_config, applications, app_config, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, g.ID, g.Name, g.Blueprint, g.Status, g.SharedConfig, g.Applications, g.AppConfig, time.Now().Unix(), time.Now().Unix())
 	return err
 }
 
 func (s *DeploymentGroupStore) Get(id string) (*DeploymentGroup, error) {
 	g := &DeploymentGroup{}
 	err := s.rdb.QueryRow(`
-		SELECT id, name, blueprint, status, shared_config, deploy_log, created_at, updated_at
+		SELECT id, name, blueprint, status, shared_config, deploy_log, applications, app_config, created_at, updated_at
 		FROM deployment_groups WHERE id = ?
-	`, id).Scan(&g.ID, &g.Name, &g.Blueprint, &g.Status, &g.SharedConfig, &g.DeployLog, &g.CreatedAt, &g.UpdatedAt)
+	`, id).Scan(&g.ID, &g.Name, &g.Blueprint, &g.Status, &g.SharedConfig, &g.DeployLog, &g.Applications, &g.AppConfig, &g.CreatedAt, &g.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -58,9 +60,9 @@ func (s *DeploymentGroupStore) Get(id string) (*DeploymentGroup, error) {
 func (s *DeploymentGroupStore) GetByName(name string) (*DeploymentGroup, error) {
 	g := &DeploymentGroup{}
 	err := s.rdb.QueryRow(`
-		SELECT id, name, blueprint, status, shared_config, deploy_log, created_at, updated_at
+		SELECT id, name, blueprint, status, shared_config, deploy_log, applications, app_config, created_at, updated_at
 		FROM deployment_groups WHERE name = ?
-	`, name).Scan(&g.ID, &g.Name, &g.Blueprint, &g.Status, &g.SharedConfig, &g.DeployLog, &g.CreatedAt, &g.UpdatedAt)
+	`, name).Scan(&g.ID, &g.Name, &g.Blueprint, &g.Status, &g.SharedConfig, &g.DeployLog, &g.Applications, &g.AppConfig, &g.CreatedAt, &g.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -117,6 +119,13 @@ func (s *DeploymentGroupStore) UpdateStatus(id, status string) error {
 	_, err := s.wdb.Exec(`
 		UPDATE deployment_groups SET status = ?, updated_at = ? WHERE id = ?
 	`, status, time.Now().Unix(), id)
+	return err
+}
+
+func (s *DeploymentGroupStore) UpdateApps(id, applications, appConfig string) error {
+	_, err := s.wdb.Exec(`
+		UPDATE deployment_groups SET applications = ?, app_config = ?, updated_at = ? WHERE id = ?
+	`, applications, appConfig, time.Now().Unix(), id)
 	return err
 }
 

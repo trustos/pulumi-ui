@@ -7,7 +7,7 @@
   import ConfigForm from './ConfigForm.svelte';
   import { createGroup, listGroups } from '$lib/api';
   import { navigate } from '$lib/router';
-  import type { BlueprintMeta, OciAccount, Passphrase, MultiAccountMeta, ConfigField } from '$lib/types';
+  import type { BlueprintMeta, OciAccount, Passphrase, MultiAccountMeta, ConfigField, ApplicationDef } from '$lib/types';
 
   let {
     open = $bindable(false),
@@ -23,7 +23,7 @@
 
   const multiAccount = $derived(blueprint.multiAccount as MultiAccountMeta);
 
-  let step = $state<1 | 2 | 3>(1);
+  let step = $state<1 | 2 | 3 | 4>(1);
   let groupName = $state('');
   let selectedPassphraseId = $state('');
   let saving = $state(false);
@@ -36,6 +36,12 @@
   // Step 2: Per-member configs (keyed by accountId)
   let memberConfigs = $state<Record<string, Record<string, string>>>({});
   let activeTab = $state('');
+
+  // Step 3: Application selection
+  const appCatalog = $derived<ApplicationDef[]>(blueprint?.applications ?? []);
+  const hasApps = $derived(appCatalog.length > 0);
+  let selectedApps = $state<Record<string, boolean>>({});
+  let appConfig = $state<Record<string, string>>({});
 
   // Config fields visible in the per-account form (exclude hidden + auto-wired)
   const visibleFields = $derived<ConfigField[]>(
@@ -85,6 +91,22 @@
   $effect(() => {
     if (!groupName && blueprint) {
       groupName = blueprint.name + '-cluster';
+    }
+  });
+
+  // Initialize app selections from catalog defaults
+  $effect(() => {
+    if (appCatalog.length > 0 && Object.keys(selectedApps).length === 0) {
+      const defaults: Record<string, boolean> = {};
+      const cfgDefaults: Record<string, string> = {};
+      for (const app of appCatalog) {
+        defaults[app.key] = app.required || app.defaultOn;
+        for (const cf of app.configFields ?? []) {
+          if (cf.default) cfgDefaults[`${app.key}.${cf.key}`] = cf.default;
+        }
+      }
+      selectedApps = defaults;
+      appConfig = cfgDefaults;
     }
   });
 
@@ -158,6 +180,12 @@
     saving = true;
     error = '';
     try {
+      // Filter to only enabled apps
+      const enabledApps: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(selectedApps)) {
+        if (v) enabledApps[k] = true;
+      }
+
       const result = await createGroup({
         name: groupName.trim(),
         blueprint: blueprint.name,
@@ -166,8 +194,10 @@
           role: m.role,
           config: memberConfigs[m.accountId] ?? {},
         })),
-        config: {}, // shared config is empty — all config is per-member now
+        config: {},
         passphraseId: selectedPassphraseId,
+        applications: Object.keys(enabledApps).length > 0 ? enabledApps : undefined,
+        appConfig: Object.keys(appConfig).length > 0 ? appConfig : undefined,
       });
       open = false;
       navigate(`/groups/${result.id}`);
@@ -185,6 +215,8 @@
       members = [];
       memberConfigs = {};
       activeTab = '';
+      selectedApps = {};
+      appConfig = {};
       error = '';
     }
   });
@@ -198,6 +230,8 @@
           Select Accounts & Roles
         {:else if step === 2}
           Configure Per Account
+        {:else if step === 3}
+          Select Applications
         {:else}
           Review & Create
         {/if}
@@ -328,8 +362,64 @@
           {/if}
         </div>
 
+      {:else if step === 3}
+        <!-- Step 3: Application selection -->
+        <div class="space-y-3">
+          {#if appCatalog.length === 0}
+            <p class="text-sm text-muted-foreground">This blueprint has no application catalog. Skip to review.</p>
+          {:else}
+            <p class="text-sm text-muted-foreground">Select applications to deploy after infrastructure is ready. Apps deploy to the primary node; Nomad schedules them across all cluster nodes.</p>
+            <div class="space-y-2">
+              {#each appCatalog as app (app.key)}
+                {@const enabled = selectedApps[app.key] ?? false}
+                {@const depsMet = (app.dependsOn ?? []).every(d => selectedApps[d])}
+                <div class="border rounded p-3 space-y-2 {enabled ? 'border-primary bg-primary/5' : 'border-border'}">
+                  <div class="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      disabled={app.required || (!enabled && !depsMet)}
+                      onchange={() => { selectedApps = { ...selectedApps, [app.key]: !enabled }; }}
+                    />
+                    <div class="flex-1">
+                      <p class="text-sm font-medium">{app.name}</p>
+                      <p class="text-xs text-muted-foreground">{app.description ?? ''}</p>
+                    </div>
+                    {#if app.required}
+                      <Badge variant="default" class="text-[10px]">Required</Badge>
+                    {/if}
+                    {#if !depsMet && !enabled}
+                      <span class="text-[10px] text-muted-foreground">Requires: {(app.dependsOn ?? []).join(', ')}</span>
+                    {/if}
+                  </div>
+                  {#if enabled && (app.configFields ?? []).length > 0}
+                    <div class="pl-6 space-y-1.5">
+                      {#each app.configFields ?? [] as cf (cf.key)}
+                        <div class="flex items-center gap-2">
+                          <label class="text-xs text-muted-foreground w-28 shrink-0" for="app-{app.key}-{cf.key}">
+                            {cf.label}{#if cf.required}<span class="text-destructive">*</span>{/if}
+                          </label>
+                          <Input
+                            id="app-{app.key}-{cf.key}"
+                            type={cf.secret ? 'password' : 'text'}
+                            value={appConfig[`${app.key}.${cf.key}`] ?? ''}
+                            placeholder={cf.description ?? ''}
+                            class="h-7 text-xs font-mono"
+                            oninput={(e) => { appConfig = { ...appConfig, [`${app.key}.${cf.key}`]: e.currentTarget.value }; }}
+                          />
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
       {:else}
-        <!-- Step 3: Review -->
+        <!-- Step 4: Review -->
+        {@const enabledAppNames = appCatalog.filter(a => selectedApps[a.key]).map(a => a.name)}
         <div class="space-y-3">
           <div class="p-3 bg-muted rounded space-y-2">
             <p class="text-sm font-medium">{groupName}</p>
@@ -346,14 +436,26 @@
               </div>
             {/each}
           </div>
+          {#if enabledAppNames.length > 0}
+            <p class="text-sm font-medium">Applications:</p>
+            <div class="flex flex-wrap gap-1.5">
+              {#each enabledAppNames as name}
+                <Badge variant="outline" class="text-[10px]">{name}</Badge>
+              {/each}
+            </div>
+          {/if}
 
           <p class="text-sm font-medium">Deployment order:</p>
-          <div class="flex items-center gap-2 text-xs text-muted-foreground">
+          <div class="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
             <Badge variant="default" class="text-[10px]">1. Primary</Badge>
             <span>→</span>
-            <Badge variant="secondary" class="text-[10px]">2. Workers (parallel)</Badge>
+            <Badge variant="secondary" class="text-[10px]">2. Workers</Badge>
             <span>→</span>
-            <Badge variant="outline" class="text-[10px]">3. Primary IAM update</Badge>
+            <Badge variant="outline" class="text-[10px]">3. DRG + Routes</Badge>
+            {#if enabledAppNames.length > 0}
+              <span>→</span>
+              <Badge variant="outline" class="text-[10px]">4. Apps</Badge>
+            {/if}
           </div>
 
           <p class="text-xs text-muted-foreground">
@@ -370,7 +472,7 @@
     <Dialog.Footer class="flex items-center justify-between">
       <div>
         {#if step > 1}
-          <Button variant="ghost" onclick={() => { step = (step - 1) as 1 | 2; }}>Back</Button>
+          <Button variant="ghost" onclick={() => { step = (step - 1) as 1 | 2 | 3; }}>Back</Button>
         {/if}
       </div>
       <div class="flex gap-2">
@@ -378,7 +480,9 @@
         {#if step === 1}
           <Button disabled={!canProceedStep1} onclick={() => { step = 2; }}>Next</Button>
         {:else if step === 2}
-          <Button onclick={() => { step = 3; }}>Review</Button>
+          <Button onclick={() => { step = hasApps ? 3 : 4; }}>{hasApps ? 'Applications' : 'Review'}</Button>
+        {:else if step === 3}
+          <Button onclick={() => { step = 4; }}>Review</Button>
         {:else}
           <Button disabled={saving} onclick={handleCreate}>
             {saving ? 'Creating...' : 'Create & Open'}

@@ -105,6 +105,8 @@ export interface DeploymentGroupSummary {
   status: string;
   members: GroupMemberView[];
   deployLog?: string;
+  applications?: Record<string, boolean>;
+  appConfig?: Record<string, string>;
   createdAt: number;
 }
 

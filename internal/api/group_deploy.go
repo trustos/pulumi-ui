@@ -558,18 +558,67 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Set final status.
-	finalStatus := "failed"
-	if len(failedRoutes) == 0 {
-		finalStatus = "deployed"
-		h.Groups.UpdateStatus(groupID, "deployed")
-		send(engine.SSEEvent{Type: "output", Data: "═══ Cluster deployment complete ═══"})
-	} else {
-		finalStatus = "partial"
+	if len(failedRoutes) > 0 {
 		h.Groups.UpdateStatus(groupID, "partial")
 		send(engine.SSEEvent{Type: "output", Data: fmt.Sprintf("═══ Partial deployment — %d worker route update(s) failed: %s ═══", len(failedRoutes), strings.Join(failedRoutes, ", "))})
+		send(engine.SSEEvent{Type: "complete", Data: `{"status":"partial"}`})
+		return
 	}
 
+	// ── Phase 6: Deploy applications on primary stack (optional) ─────────
+	var applications map[string]bool
+	var appConfig map[string]string
+	if group.Applications != "" {
+		json.Unmarshal([]byte(group.Applications), &applications)
+	}
+	if group.AppConfig != "" {
+		json.Unmarshal([]byte(group.AppConfig), &appConfig)
+	}
+
+	// Check if any apps are selected
+	hasApps := false
+	for _, enabled := range applications {
+		if enabled {
+			hasApps = true
+			break
+		}
+	}
+
+	finalStatus := "deployed"
+	if hasApps {
+		send(engine.SSEEvent{Type: "output", Data: "═══ Phase 6: Deploying applications ═══"})
+
+		// Save app selection to the primary stack config so the Apps tab reflects it.
+		primaryCfg, err := h.Stacks.Get(primaryMember.stackName)
+		if err == nil && primaryCfg != nil {
+			if sc, err := stacks.ParseYAML(primaryCfg.ConfigYAML); err == nil {
+				sc.Applications = applications
+				sc.AppConfig = appConfig
+				yamlStr, _ := sc.ToYAML()
+				h.Stacks.Upsert(primaryMember.stackName, group.Blueprint, yamlStr,
+					primaryMember.accountID, primaryMember.passphraseID, nil, primaryMember.accountID)
+			}
+		}
+
+		appStatus := h.Engine.DeployApps(opCtx, primaryMember.stackName, group.Blueprint,
+			applications, appConfig, func(ev engine.SSEEvent) { send(ev) })
+		if appStatus != "succeeded" {
+			log.Printf("[group-deploy] phase 6: app deployment status=%s", appStatus)
+			send(engine.SSEEvent{Type: "output", Data: "WARNING: Application deployment did not fully succeed — infrastructure is up, retry from the Apps tab"})
+			finalStatus = "deployed" // infra succeeded, apps are best-effort
+		} else {
+			// Persist any auto-generated secrets back to the group's appConfig
+			if primaryCfg2, err := h.Stacks.Get(primaryMember.stackName); err == nil && primaryCfg2 != nil {
+				if sc, err := stacks.ParseYAML(primaryCfg2.ConfigYAML); err == nil && len(sc.AppConfig) > 0 {
+					updatedAppCfg, _ := json.Marshal(sc.AppConfig)
+					h.Groups.UpdateApps(groupID, group.Applications, string(updatedAppCfg))
+				}
+			}
+		}
+	}
+
+	h.Groups.UpdateStatus(groupID, finalStatus)
+	send(engine.SSEEvent{Type: "output", Data: "═══ Cluster deployment complete ═══"})
 	log.Printf("[group-deploy] deploy complete: group=%s status=%s", group.Name, finalStatus)
 	send(engine.SSEEvent{Type: "complete", Data: fmt.Sprintf(`{"status":"%s"}`, finalStatus)})
 }

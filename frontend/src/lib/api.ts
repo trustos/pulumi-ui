@@ -721,6 +721,8 @@ export async function createGroup(body: {
   members: { accountId: string; role: string; config?: Record<string, string> }[];
   config: Record<string, string>;
   passphraseId: string;
+  applications?: Record<string, boolean>;
+  appConfig?: Record<string, string>;
 }): Promise<{ id: string; name: string }> {
   const res = await fetch('/api/groups', {
     method: 'POST',

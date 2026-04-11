@@ -17,11 +17,13 @@ import (
 
 // CreateGroupRequest is the JSON body for POST /api/groups.
 type CreateGroupRequest struct {
-	Name      string                  `json:"name"`
-	Blueprint string                  `json:"blueprint"`
-	Members   []CreateGroupMemberReq  `json:"members"`
-	Config    map[string]string       `json:"config"`    // shared config across all stacks
-	PassphraseID string              `json:"passphraseId"`
+	Name         string                  `json:"name"`
+	Blueprint    string                  `json:"blueprint"`
+	Members      []CreateGroupMemberReq  `json:"members"`
+	Config       map[string]string       `json:"config"`         // shared config across all stacks
+	PassphraseID string                  `json:"passphraseId"`
+	Applications map[string]bool         `json:"applications"`   // app key → enabled
+	AppConfig    map[string]string       `json:"appConfig"`      // "app.field" → value
 }
 
 type CreateGroupMemberReq struct {
@@ -32,13 +34,15 @@ type CreateGroupMemberReq struct {
 
 // GroupSummary is the JSON response for listing groups.
 type GroupSummary struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Blueprint string            `json:"blueprint"`
-	Status    string            `json:"status"`
-	Members   []GroupMemberView `json:"members"`
-	DeployLog string            `json:"deployLog,omitempty"`
-	CreatedAt int64             `json:"createdAt"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Blueprint    string            `json:"blueprint"`
+	Status       string            `json:"status"`
+	Members      []GroupMemberView `json:"members"`
+	DeployLog    string            `json:"deployLog,omitempty"`
+	Applications map[string]bool   `json:"applications,omitempty"`
+	AppConfig    map[string]string `json:"appConfig,omitempty"`
+	CreatedAt    int64             `json:"createdAt"`
 }
 
 type GroupMemberView struct {
@@ -102,15 +106,26 @@ func (h *PlatformHandler) GetGroup(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	var apps map[string]bool
+	if g.Applications != "" {
+		json.Unmarshal([]byte(g.Applications), &apps)
+	}
+	var appCfg map[string]string
+	if g.AppConfig != "" {
+		json.Unmarshal([]byte(g.AppConfig), &appCfg)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(GroupSummary{
-		ID:        g.ID,
-		Name:      g.Name,
-		Blueprint: g.Blueprint,
-		Status:    g.Status,
-		Members:   views,
-		DeployLog: g.DeployLog,
-		CreatedAt: g.CreatedAt,
+		ID:           g.ID,
+		Name:         g.Name,
+		Blueprint:    g.Blueprint,
+		Status:       g.Status,
+		Members:      views,
+		DeployLog:    g.DeployLog,
+		Applications: apps,
+		AppConfig:    appCfg,
+		CreatedAt:    g.CreatedAt,
 	})
 }
 
@@ -170,12 +185,24 @@ func (h *PlatformHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 	// Create group.
 	groupID := uuid.New().String()
 	sharedConfigJSON, _ := json.Marshal(body.Config)
+	appsJSON := ""
+	if len(body.Applications) > 0 {
+		b, _ := json.Marshal(body.Applications)
+		appsJSON = string(b)
+	}
+	appCfgJSON := ""
+	if len(body.AppConfig) > 0 {
+		b, _ := json.Marshal(body.AppConfig)
+		appCfgJSON = string(b)
+	}
 	group := &db.DeploymentGroup{
 		ID:           groupID,
 		Name:         body.Name,
 		Blueprint:    body.Blueprint,
 		Status:       "configuring",
 		SharedConfig: strPtr(string(sharedConfigJSON)),
+		Applications: appsJSON,
+		AppConfig:    appCfgJSON,
 	}
 	if err := h.Groups.Create(group); err != nil {
 		http.Error(w, "failed to create group: "+err.Error(), http.StatusInternalServerError)
