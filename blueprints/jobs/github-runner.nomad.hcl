@@ -39,7 +39,7 @@ job "github-runner" {
           fi
 
           # Check repo access with the token
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" \
             -H "Authorization: token $TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$OWNER_REPO")
