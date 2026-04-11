@@ -587,14 +587,79 @@ wait_for_nomad_leader() {
 setup_nomad_acl() {
   echo "Setting up Nomad ACLs..."
   wait_for_nomad
-  wait_for_nomad_leader
 
-  if [ ! -f /etc/nomad.d/nomad-bootstrap-token ]; then
-    nomad acl bootstrap -json > /etc/nomad.d/nomad-bootstrap-token
-    if command -v consul &>/dev/null; then
-      TOKEN=$(jq -r .SecretID /etc/nomad.d/nomad-bootstrap-token)
-      consul kv put nomad/bootstrap-token "$TOKEN" 2>/dev/null || true
+  # Wait for leader — retry with increasing patience. Without a leader,
+  # bootstrap will fail. On multi-node clusters, quorum takes longer.
+  local leader_ok=false
+  for attempt in 1 2 3; do
+    if wait_for_nomad_leader; then
+      leader_ok=true
+      break
     fi
+    echo "Leader not elected yet (attempt $attempt/3), waiting 30s..."
+    sleep 30
+  done
+  if [ "$leader_ok" != "true" ]; then
+    echo "ERROR: Nomad leader never elected — skipping ACL bootstrap"
+    echo "Run 'nomad acl bootstrap' manually once the cluster is stable"
+    return 0
+  fi
+
+  if [ -f /etc/nomad.d/nomad-bootstrap-token ]; then
+    # Already bootstrapped — verify token is valid
+    local existing_token
+    existing_token=$(jq -r .SecretID /etc/nomad.d/nomad-bootstrap-token 2>/dev/null || true)
+    if [ -n "$existing_token" ] && [ "$existing_token" != "null" ]; then
+      echo "Nomad ACL already bootstrapped."
+      # Ensure it's in Consul KV
+      if command -v consul &>/dev/null; then
+        consul kv put nomad/bootstrap-token "$existing_token" 2>/dev/null || true
+      fi
+      return 0
+    fi
+    # File exists but is corrupt — remove and re-bootstrap
+    rm -f /etc/nomad.d/nomad-bootstrap-token
+  fi
+
+  # Bootstrap with retries — the API may need a moment after leader election
+  local bootstrap_ok=false
+  for i in 1 2 3 4 5; do
+    if nomad acl bootstrap -json > /etc/nomad.d/nomad-bootstrap-token.tmp 2>/dev/null; then
+      mv /etc/nomad.d/nomad-bootstrap-token.tmp /etc/nomad.d/nomad-bootstrap-token
+      chmod 600 /etc/nomad.d/nomad-bootstrap-token
+      bootstrap_ok=true
+      break
+    fi
+    echo "ACL bootstrap attempt $i/5 failed, retrying in 10s..."
+    rm -f /etc/nomad.d/nomad-bootstrap-token.tmp
+    sleep 10
+  done
+
+  if [ "$bootstrap_ok" != "true" ]; then
+    echo "ERROR: Nomad ACL bootstrap failed after 5 attempts"
+    echo "Run 'nomad acl bootstrap -json > /etc/nomad.d/nomad-bootstrap-token' manually"
+    return 0
+  fi
+
+  # Verify token file is valid JSON with a SecretID
+  local TOKEN
+  TOKEN=$(jq -r .SecretID /etc/nomad.d/nomad-bootstrap-token 2>/dev/null || true)
+  if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+    echo "ERROR: Bootstrap token file is invalid"
+    rm -f /etc/nomad.d/nomad-bootstrap-token
+    return 0
+  fi
+
+  # Store in Consul KV — retry to handle Consul leadership transitions
+  if command -v consul &>/dev/null; then
+    for i in 1 2 3; do
+      if consul kv put nomad/bootstrap-token "$TOKEN" 2>/dev/null; then
+        echo "Nomad bootstrap token stored in Consul KV"
+        break
+      fi
+      echo "Consul KV write attempt $i/3 failed, retrying..."
+      sleep 5
+    done
   fi
   echo "Nomad ACL bootstrap complete."
 }
