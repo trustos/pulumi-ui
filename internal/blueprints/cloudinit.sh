@@ -520,6 +520,9 @@ client {
   cpu_total_compute = ${NOMAD_CLIENT_CPU}
   memory_total_mb   = ${NOMAD_CLIENT_MEMORY}
   ${nomad_client_servers}
+  meta {
+    cluster_role = "${CLUSTER_ROLE}"
+  }
 }
 
 plugin "docker" {
