@@ -657,6 +657,139 @@ func (h *PlatformHandler) IsGroupDeploying(groupID string) bool {
 	return ok
 }
 
+// DestroyGroup tears down all stacks in a deployment group in the correct order:
+// 1. Workers first (remove DRG routes, cross-tenancy policies, compute)
+// 2. Primary last (remove DRG attachments, NLB, pool, IAM)
+// Streams progress as SSE events, same format as DeployGroup.
+func (h *PlatformHandler) DestroyGroup(w http.ResponseWriter, r *http.Request) {
+	groupID := chi.URLParam(r, "id")
+	group, err := h.Groups.Get(groupID)
+	if err != nil || group == nil {
+		http.Error(w, "group not found", http.StatusNotFound)
+		return
+	}
+
+	if h.IsGroupDeploying(groupID) {
+		http.Error(w, "group is already deploying", http.StatusConflict)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, _ := w.(http.Flusher)
+
+	opCtx, cancel := context.WithCancel(r.Context())
+	h.groupMu.Lock()
+	h.groupCancels[groupID] = cancel
+	h.groupMu.Unlock()
+	defer func() {
+		cancel()
+		h.groupMu.Lock()
+		delete(h.groupCancels, groupID)
+		h.groupMu.Unlock()
+	}()
+
+	h.Groups.UpdateStatus(groupID, "destroying")
+	h.Groups.ClearDeployLog(groupID)
+
+	send := func(ev engine.SSEEvent) {
+		data, _ := json.Marshal(ev)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		if flusher != nil {
+			flusher.Flush()
+		}
+		h.Groups.AppendDeployLog(groupID, string(data))
+	}
+
+	log.Printf("[group-destroy] starting destroy for group %s (%s)", groupID, group.Name)
+	send(engine.SSEEvent{Type: "output", Data: "═══ Destroying group: " + group.Name + " ═══"})
+
+	// Resolve members + credentials (same as deploy)
+	members, _ := h.Groups.ListMembers(groupID)
+	var allMembers []*memberWithCreds
+	var primaryMember *memberWithCreds
+	var workerMembers []*memberWithCreds
+
+	for _, m := range members {
+		mc, err := h.resolveMemberCreds(m)
+		if err != nil {
+			send(engine.SSEEvent{Type: "error", Data: fmt.Sprintf("Failed to resolve credentials for %s: %v", m.StackName, err)})
+			continue
+		}
+		allMembers = append(allMembers, mc)
+		if m.Role == "primary" {
+			primaryMember = mc
+		} else {
+			workerMembers = append(workerMembers, mc)
+		}
+	}
+
+	if primaryMember == nil {
+		send(engine.SSEEvent{Type: "error", Data: "No primary member found"})
+		h.Groups.UpdateStatus(groupID, "failed")
+		send(engine.SSEEvent{Type: "complete", Data: `{"status":"failed"}`})
+		return
+	}
+	_ = allMembers
+
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[group-destroy] PANIC: %v", rec)
+				send(engine.SSEEvent{Type: "error", Data: fmt.Sprintf("Panic: %v", rec)})
+			}
+			log.Printf("[group-destroy] destroy goroutine finished for group %s", groupID)
+		}()
+
+		// Phase 1: Destroy workers (parallel)
+		if len(workerMembers) > 0 {
+			send(engine.SSEEvent{Type: "output", Data: "═══ Phase 1: Destroying worker stacks ═══"})
+			var wg sync.WaitGroup
+			var mu sync.Mutex
+			var failedWorkers []string
+
+			for _, worker := range workerMembers {
+				wg.Add(1)
+				go func(w *memberWithCreds) {
+					defer wg.Done()
+					send(engine.SSEEvent{Type: "output", Data: fmt.Sprintf("── Destroying %s ──", w.stackName)})
+					status := h.trackedDestroy(opCtx, w.stackName, group.Blueprint, w.config, w.creds, send)
+					log.Printf("[group-destroy] worker %s destroy status=%s", w.stackName, status)
+					if status != "succeeded" {
+						mu.Lock()
+						failedWorkers = append(failedWorkers, w.stackName)
+						mu.Unlock()
+					}
+				}(worker)
+			}
+			wg.Wait()
+
+			if len(failedWorkers) > 0 {
+				send(engine.SSEEvent{Type: "output", Data: fmt.Sprintf("WARNING: %d worker(s) failed to destroy: %s (continuing with primary)", len(failedWorkers), strings.Join(failedWorkers, ", "))})
+			}
+		}
+
+		// Phase 2: Destroy primary
+		send(engine.SSEEvent{Type: "output", Data: "═══ Phase 2: Destroying primary stack ═══"})
+		send(engine.SSEEvent{Type: "output", Data: fmt.Sprintf("── Destroying %s ──", primaryMember.stackName)})
+		primaryStatus := h.trackedDestroy(opCtx, primaryMember.stackName, group.Blueprint, primaryMember.config, primaryMember.creds, send)
+		log.Printf("[group-destroy] primary %s destroy status=%s", primaryMember.stackName, primaryStatus)
+
+		finalStatus := "destroyed"
+		if primaryStatus != "succeeded" {
+			finalStatus = "failed"
+		}
+		h.Groups.UpdateStatus(groupID, finalStatus)
+		send(engine.SSEEvent{Type: "output", Data: "═══ Group destroy complete ═══"})
+		log.Printf("[group-destroy] destroy complete: group=%s status=%s", group.Name, finalStatus)
+		send(engine.SSEEvent{Type: "complete", Data: fmt.Sprintf(`{"status":"%s"}`, finalStatus)})
+	}()
+
+	// Block until the goroutine finishes or client disconnects.
+	<-opCtx.Done()
+}
+
 // trackedUp runs Engine.Up and records the operation in the operations table
 // so the stack shows correct status in the stack detail page.
 func (h *PlatformHandler) trackedUp(
@@ -675,6 +808,27 @@ func (h *PlatformHandler) trackedUp(
 		}
 	}
 	status := h.Engine.Up(ctx, stackName, blueprint, config, creds, logSend)
+	h.Ops.Finish(opID, status)
+	return status
+}
+
+// trackedDestroy runs Engine.Destroy and records the operation.
+func (h *PlatformHandler) trackedDestroy(
+	ctx context.Context,
+	stackName, blueprint string,
+	config map[string]string,
+	creds engine.Credentials,
+	send engine.SSESender,
+) string {
+	opID := uuid.New().String()
+	h.Ops.Create(opID, stackName, "destroy")
+	logSend := func(ev engine.SSEEvent) {
+		send(ev)
+		if ev.Type == "output" || ev.Type == "error" {
+			h.Ops.AppendLog(opID, ev.Data)
+		}
+	}
+	status := h.Engine.Destroy(ctx, stackName, blueprint, config, creds, logSend)
 	h.Ops.Finish(opID, status)
 	return status
 }

@@ -740,6 +740,10 @@ export async function deployGroup(id: string): Promise<Response> {
   return fetch(`/api/groups/${encodeURIComponent(id)}/deploy`, { method: 'POST' });
 }
 
+export async function destroyGroup(id: string): Promise<Response> {
+  return fetch(`/api/groups/${encodeURIComponent(id)}/destroy`, { method: 'POST' });
+}
+
 /**
  * Stream a group deployment as SSE events. Parses the 'complete' event's JSON
  * data to extract the real status (deployed/partial/failed), since readSSEStream
@@ -786,6 +790,45 @@ export function streamGroupDeploy(
 export async function cancelGroupDeploy(id: string): Promise<void> {
   const res = await fetch(`/api/groups/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+/**
+ * Stream a group destroy as SSE events. Same pattern as streamGroupDeploy.
+ */
+export function streamGroupDestroy(
+  groupId: string,
+  onEvent: (event: { type: string; data: string; timestamp: string }) => void,
+  onDone: (status: string) => void,
+): () => void {
+  const controller = new AbortController();
+  let cancelStream: (() => void) | undefined;
+
+  (async () => {
+    try {
+      const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/destroy`, {
+        method: 'POST',
+        signal: controller.signal,
+      });
+      let realStatus = 'failed';
+      cancelStream = readSSEStream(res, {
+        onEvent: (ev) => {
+          if (ev.type === 'complete') {
+            try { realStatus = JSON.parse(ev.data).status; } catch { /* use default */ }
+          }
+          onEvent(ev);
+        },
+        onDone: () => onDone(realStatus),
+        onError: (err) => {
+          onEvent({ type: 'error', data: err, timestamp: new Date().toISOString() });
+          onDone('failed');
+        },
+      });
+    } catch {
+      onDone('failed');
+    }
+  })();
+
+  return () => { cancelStream?.(); controller.abort(); };
 }
 
 export async function deleteGroup(id: string): Promise<void> {

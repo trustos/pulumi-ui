@@ -4,7 +4,7 @@
     import { Badge } from "$lib/components/ui/badge";
     import * as Card from "$lib/components/ui/card";
     import * as Dialog from "$lib/components/ui/dialog";
-    import { getGroup, listAccounts } from "$lib/api";
+    import { getGroup, listAccounts, streamGroupDestroy } from "$lib/api";
     import { useMachine } from "@xstate/svelte";
     import { groupDeployMachine } from "$lib/machines/group-deploy-machine";
     import { navigate } from "$lib/router";
@@ -182,6 +182,27 @@
         send({ type: 'DEPLOY' });
     }
 
+    let destroying = $state(false);
+    let destroyOpen = $state(false);
+
+    function confirmDestroy() {
+        destroyOpen = false;
+        destroying = true;
+        const logEvents: SSEEvent[] = [{ type: 'output', data: '─── destroy ───', timestamp: new Date().toISOString() }];
+        persistedLog = logEvents;
+
+        streamGroupDestroy(id,
+            (ev) => {
+                logEvents.push(ev);
+                persistedLog = [...logEvents];
+            },
+            (status) => {
+                destroying = false;
+                load();
+            }
+        );
+    }
+
     function handleDelete() {
         deleteOpen = false;
         send({ type: 'REQUEST_DELETE' });
@@ -230,12 +251,17 @@
                     <Button onclick={handleDeploy}>
                         Deploy Cluster
                     </Button>
-                {:else if group.status === "deployed"}
+                {:else if group.status === "deployed" || group.status === "destroyed"}
                     <Button variant="outline" onclick={handleDeploy}>
                         Redeploy
                     </Button>
+                    {#if group.status === "deployed"}
+                        <Button variant="outline" onclick={() => { destroyOpen = true; }} disabled={destroying}>
+                            {destroying ? "Destroying..." : "Destroy"}
+                        </Button>
+                    {/if}
                 {/if}
-                {#if !deploying}
+                {#if !deploying && !destroying}
                     <Button variant="outline" onclick={load} disabled={loading}>
                         Refresh
                     </Button>
@@ -243,7 +269,7 @@
                 <Button
                     variant="destructive"
                     onclick={() => { deleteOpen = true; }}
-                    disabled={deploying || deleting}
+                    disabled={deploying || deleting || destroying}
                 >{deleting ? "Deleting..." : "Delete Group"}</Button>
             </div>
         </div>
@@ -373,6 +399,25 @@
                 disabled={deleting}
             >
                 {deleting ? "Deleting..." : "Delete"}
+            </Button>
+        </Dialog.Footer>
+    </Dialog.Content>
+</Dialog.Root>
+
+<!-- Destroy confirmation -->
+<Dialog.Root bind:open={destroyOpen}>
+    <Dialog.Content class="max-w-sm">
+        <Dialog.Header>
+            <Dialog.Title>Destroy cluster resources</Dialog.Title>
+            <Dialog.Description>
+                Destroy all infrastructure for <strong>{group?.name}</strong>?
+                Workers will be destroyed first, then the primary. This removes all cloud resources but keeps the group configuration.
+            </Dialog.Description>
+        </Dialog.Header>
+        <Dialog.Footer>
+            <Button variant="outline" onclick={() => { destroyOpen = false; }}>Cancel</Button>
+            <Button variant="destructive" onclick={confirmDestroy} disabled={destroying}>
+                {destroying ? "Destroying..." : "Destroy All"}
             </Button>
         </Dialog.Footer>
     </Dialog.Content>
