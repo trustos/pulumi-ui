@@ -89,6 +89,16 @@ func (d *Deployer) DeployApps(
 			continue
 		}
 
+		// Create dynamic host volumes declared by the app (idempotent).
+		if len(app.Volumes) > 0 {
+			consulExports := d.buildEnvExports(app.ConsulEnv)
+			if err := d.ensureVolumes(ctx, tunnel, app, consulExports, send); err != nil {
+				send("error", fmt.Sprintf("Failed to create volumes for %s: %v", app.Name, err))
+				failed = append(failed, app.Key)
+				continue
+			}
+		}
+
 		// Register and monitor the Nomad job via the agent.
 		if err := d.deployWorkload(ctx, stackName, tunnel, app, send); err != nil {
 			send("error", fmt.Sprintf("Failed to deploy %s: %v", app.Name, err))
@@ -273,6 +283,93 @@ func (d *Deployer) uploadJobFile(
 	}
 
 	log.Printf("[deployer] uploaded %s to agent", destPath)
+	return nil
+}
+
+// ensureVolumes creates Nomad dynamic host volumes (via the built-in mkdir
+// plugin) for each volume declared by the application. Volumes are created
+// before the job runs so volume_mount blocks in the job spec resolve.
+// The operation is idempotent — existing volumes are left unchanged.
+func (d *Deployer) ensureVolumes(
+	ctx context.Context,
+	tunnel *mesh.Tunnel,
+	app blueprints.ApplicationDef,
+	consulEnvExports string,
+	send LogFunc,
+) error {
+	for _, vol := range app.Volumes {
+		mode := vol.Mode
+		if mode == "" {
+			mode = "0755"
+		}
+		spec := fmt.Sprintf(`type = "host"
+name = "%s"
+plugin_id = "mkdir"
+
+capability {
+  access_mode     = "single-node-writer"
+  attachment_mode = "file-system"
+}
+
+parameters {
+  mode = "%s"
+  uid  = %d
+  gid  = %d
+}
+`, vol.Name, mode, vol.UID, vol.GID)
+
+		// Upload volume spec to agent.
+		specPath := fmt.Sprintf("/opt/nomad-jobs/%s-volume.hcl", vol.Name)
+		if err := d.uploadData(ctx, tunnel, specPath, []byte(spec)); err != nil {
+			return fmt.Errorf("upload volume spec %s: %w", vol.Name, err)
+		}
+
+		// Create the volume. The command uses consulEnvExports to get NOMAD_TOKEN
+		// if ACLs are enabled (same pattern as deployWorkload).
+		cmd := fmt.Sprintf("%snomad volume create %s 2>&1", consulEnvExports, specPath)
+		output, exitCode, err := d.ExecOnAgent(ctx, tunnel, cmd)
+		if err != nil {
+			return fmt.Errorf("exec volume create %s: %w", vol.Name, err)
+		}
+		if exitCode != 0 {
+			if strings.Contains(output, "exists") {
+				send("output", fmt.Sprintf("  Volume %s already exists", vol.Name))
+				continue
+			}
+			return fmt.Errorf("nomad volume create %s failed (exit %d): %s", vol.Name, exitCode, output)
+		}
+		send("output", fmt.Sprintf("  Volume %s created", vol.Name))
+	}
+	return nil
+}
+
+// uploadData uploads raw bytes to a path on the agent via the /upload endpoint.
+func (d *Deployer) uploadData(ctx context.Context, tunnel *mesh.Tunnel, destPath string, data []byte) error {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+				return tunnel.Dial(dialCtx)
+			},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", tunnel.AgentURL()+"/upload", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tunnel.Token())
+	req.Header.Set("X-Dest-Path", destPath)
+	req.Header.Set("X-File-Mode", "0644")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("upload request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload failed (status %d): %s", resp.StatusCode, string(body))
+	}
 	return nil
 }
 

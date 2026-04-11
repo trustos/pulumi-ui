@@ -49,6 +49,11 @@ meta:
       dependsOn: [traefik]
       consulEnv:
         NOMAD_TOKEN: "nomad/bootstrap-token"
+      volumes:
+        - name: postgres-data
+          mode: "0700"
+          uid: 999
+          gid: 999
       configFields:
         - key: dbUser
           label: Database User
@@ -73,6 +78,11 @@ meta:
       dependsOn: [postgres]
       consulEnv:
         NOMAD_TOKEN: "nomad/bootstrap-token"
+      volumes:
+        - name: pgadmin-data
+          mode: "0755"
+          uid: 5050
+          gid: 5050
       configFields:
         - key: email
           label: pgAdmin Email
@@ -139,6 +149,11 @@ meta:
       dependsOn: [postgres]
       consulEnv:
         NOMAD_TOKEN: "nomad/bootstrap-token"
+      volumes:
+        - name: nocobase-storage
+          mode: "0755"
+          uid: 0
+          gid: 0
       configFields:
         - key: appKey
           label: App Secret Key

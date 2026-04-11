@@ -5,27 +5,22 @@ job "pgadmin" {
   group "pgadmin" {
     count = 1
 
+    volume "pgadmin-data" {
+      type   = "host"
+      source = "pgadmin-data"
+    }
+
     network {
       port "http" { to = 80 }
     }
 
-    task "init-dirs" {
-      driver = "raw_exec"
-      lifecycle {
-        hook = "prestart"
-      }
-      config {
-        command = "bash"
-        args    = ["-c", "mkdir -p /opt/postgres/pgadmin && chown -R 5050:5050 /opt/postgres/pgadmin"]
-      }
-      resources {
-        cpu    = 50
-        memory = 32
-      }
-    }
-
     task "pgadmin" {
       driver = "docker"
+
+      volume_mount {
+        volume      = "pgadmin-data"
+        destination = "/var/lib/pgadmin"
+      }
 
       template {
         data = <<EOH
@@ -60,8 +55,7 @@ EOH
         image = "dpage/pgadmin4"
         ports = ["http"]
         mounts = [
-          { type = "bind", source = "/opt/postgres/pgadmin",  target = "/var/lib/pgadmin",     readonly = false },
-          { type = "bind", source = "local/servers.json",     target = "/pgadmin4/servers.json", readonly = true },
+          { type = "bind", source = "local/servers.json", target = "/pgadmin4/servers.json", readonly = true },
         ]
       }
 

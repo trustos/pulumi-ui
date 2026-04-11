@@ -27,6 +27,16 @@ type ApplicationHook struct {
 	Description     string `json:"description" yaml:"description"`
 }
 
+// AppVolume declares a Nomad dynamic host volume that the deployer creates
+// (via `nomad volume create`) before running the job. Uses the built-in
+// `mkdir` plugin — no CSI driver or block volumes needed.
+type AppVolume struct {
+	Name string `json:"name" yaml:"name"` // volume name, referenced by job's volume block
+	Mode string `json:"mode" yaml:"mode"` // directory permissions, e.g. "0700"
+	UID  int    `json:"uid" yaml:"uid"`   // owner user ID
+	GID  int    `json:"gid" yaml:"gid"`   // owner group ID
+}
+
 // ApplicationDef describes one selectable application within a blueprint's catalog.
 type ApplicationDef struct {
 	Key          string             `json:"key"`                    // stable identifier: "traefik", "postgres"
@@ -41,6 +51,7 @@ type ApplicationDef struct {
 	ConsulEnv    map[string]string  `json:"consulEnv,omitempty"`    // env var name → Consul KV path (read before job run)
 	Port         int                `json:"port,omitempty"`         // default port for port forwarding (e.g., 80 for traefik)
 	Hooks        []ApplicationHook  `json:"hooks,omitempty"`        // lifecycle hooks registered on deploy
+	Volumes      []AppVolume        `json:"volumes,omitempty"`      // dynamic host volumes created before job run
 }
 
 // ApplicationProvider is an optional interface a Blueprint can implement to expose

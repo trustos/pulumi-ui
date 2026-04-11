@@ -40,6 +40,14 @@ type pulumiMetaApp struct {
 	ConsulEnv    map[string]string   `yaml:"consulEnv"`
 	Port         int                 `yaml:"port"`
 	Hooks        []pulumiMetaAppHook `yaml:"hooks"`
+	Volumes      []pulumiMetaAppVol  `yaml:"volumes"`
+}
+
+type pulumiMetaAppVol struct {
+	Name string `yaml:"name"`
+	Mode string `yaml:"mode"`
+	UID  int    `yaml:"uid"`
+	GID  int    `yaml:"gid"`
 }
 
 type pulumiMetaAppHook struct {
@@ -401,6 +409,14 @@ func ParseApplications(yamlBody string) []ApplicationDef {
 				ContinueOnError: h.ContinueOnError,
 				Priority:        h.Priority,
 				Description:     h.Description,
+			})
+		}
+		for _, v := range ma.Volumes {
+			app.Volumes = append(app.Volumes, AppVolume{
+				Name: v.Name,
+				Mode: v.Mode,
+				UID:  v.UID,
+				GID:  v.GID,
 			})
 		}
 		apps = append(apps, app)

@@ -5,23 +5,13 @@ job "nocobase" {
   group "nocobase" {
     count = 1
 
-    network {
-      port "http" { to = 13000 }
+    volume "nocobase-storage" {
+      type   = "host"
+      source = "nocobase-storage"
     }
 
-    task "init-dirs" {
-      driver = "raw_exec"
-      lifecycle {
-        hook = "prestart"
-      }
-      config {
-        command = "mkdir"
-        args    = ["-p", "/opt/nocobase/storage"]
-      }
-      resources {
-        cpu    = 50
-        memory = 32
-      }
+    network {
+      port "http" { to = 13000 }
     }
 
     task "init-secrets" {
@@ -131,12 +121,14 @@ EOH
     task "nocobase" {
       driver = "docker"
 
+      volume_mount {
+        volume      = "nocobase-storage"
+        destination = "/app/nocobase/storage"
+      }
+
       config {
         image = "nocobase/nocobase:latest"
         ports = ["http"]
-        mounts = [
-          { type = "bind", source = "/opt/nocobase/storage", target = "/app/nocobase/storage", readonly = false },
-        ]
       }
 
       env {

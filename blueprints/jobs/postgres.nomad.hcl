@@ -5,24 +5,14 @@ job "postgres" {
   group "postgres" {
     count = 1
 
+    volume "postgres-data" {
+      type   = "host"
+      source = "postgres-data"
+    }
+
     network {
       port "db" {
         static = 5432
-      }
-    }
-
-    task "init-dirs" {
-      driver = "raw_exec"
-      lifecycle {
-        hook = "prestart"
-      }
-      config {
-        command = "bash"
-        args    = ["-c", "mkdir -p /opt/postgres/data && chown -R 999:999 /opt/postgres/data"]
-      }
-      resources {
-        cpu    = 50
-        memory = 32
       }
     }
 
@@ -60,6 +50,11 @@ job "postgres" {
     task "postgres" {
       driver = "docker"
 
+      volume_mount {
+        volume      = "postgres-data"
+        destination = "/var/lib/postgresql/data"
+      }
+
       template {
         data = <<EOH
 POSTGRES_USER={{ key "postgres/adminuser" }}
@@ -72,9 +67,6 @@ EOH
       config {
         image = "postgres:16"
         ports = ["db"]
-        mounts = [
-          { type = "bind", source = "/opt/postgres/data", target = "/var/lib/postgresql/data", readonly = false },
-        ]
       }
 
       service {
