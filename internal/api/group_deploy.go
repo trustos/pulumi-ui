@@ -586,6 +586,20 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 
 	finalStatus := "deployed"
 	if hasApps {
+		// Wait for agents to boot on fresh instances. Cloud-init installs Nebula +
+		// agent binary, which takes 2-5 minutes after the instance starts. Phase 5
+		// completes as soon as the Pulumi up finishes (infra created), but the agent
+		// process may not be running yet.
+		send(engine.SSEEvent{Type: "output", Data: "═══ Waiting for agents to start on new instances ═══"})
+		send(engine.SSEEvent{Type: "output", Data: "Cloud-init is installing Docker, Consul, Nomad, and the mesh agent..."})
+		select {
+		case <-time.After(3 * time.Minute):
+		case <-opCtx.Done():
+			h.Groups.UpdateStatus(groupID, "deployed")
+			send(engine.SSEEvent{Type: "output", Data: "═══ Cluster deployed (app deployment cancelled) ═══"})
+			send(engine.SSEEvent{Type: "complete", Data: `{"status":"deployed"}`})
+			return
+		}
 		send(engine.SSEEvent{Type: "output", Data: "═══ Phase 6: Deploying applications ═══"})
 
 		// Save app selection to the primary stack config so the Apps tab reflects it.
