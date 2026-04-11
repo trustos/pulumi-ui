@@ -15,6 +15,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/Masterminds/sprig/v3"
 	builtins "github.com/trustos/pulumi-ui/blueprints"
 
 	"github.com/trustos/pulumi-ui/internal/db"
@@ -242,7 +243,7 @@ func (d *Deployer) uploadJobFile(
 		}
 	}
 
-	tmpl, err := template.New(app.Key).Delims("[[", "]]").Parse(templateContent)
+	tmpl, err := template.New(app.Key).Delims("[[", "]]").Funcs(sprig.TxtFuncMap()).Parse(templateContent)
 	if err != nil {
 		return fmt.Errorf("parse job template: %w", err)
 	}
