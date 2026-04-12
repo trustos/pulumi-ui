@@ -11,44 +11,61 @@ job "github-runner" {
       progress_deadline = "15m"
     }
 
-    task "validate-github" {
+    # The runner operates in ephemeral mode — it exits cleanly (code 0) after
+    # each GitHub Actions job and re-registers on restart. Allow generous
+    # restarts so Nomad doesn't put the allocation into "Recovering" state.
+    restart {
+      attempts = 100
+      interval = "1h"
+      delay    = "5s"
+      mode     = "delay"
+    }
+
+    task "init-secrets" {
       driver = "raw_exec"
-      lifecycle {
-        hook = "prestart"
-      }
+      lifecycle { hook = "prestart" }
       config {
         command = "bash"
         args = ["-c", <<-EOT
           set -e
+
+          # Persist config to Consul KV so the runner task can read them
+          # via Nomad template. Only write non-empty values to avoid
+          # overwriting existing KV entries on re-deploys.
           TOKEN="[[.githubToken]]"
-          REPO_URL="[[.githubRepo]]"
+          REPO="[[.githubRepo]]"
+          LABELS="[[.runnerLabels]]"
 
-          if [ -z "$TOKEN" ]; then
-            echo "ERROR: GitHub token is empty. Provide a Personal Access Token with 'repo' scope."
+          [ -n "$TOKEN" ]  && consul kv put github-runner/access-token "$TOKEN"
+          [ -n "$REPO" ]   && consul kv put github-runner/repo-url "$REPO"
+          [ -n "$LABELS" ] && consul kv put github-runner/labels "$LABELS"
+
+          # Validate GitHub access
+          STORED_TOKEN=$(consul kv get github-runner/access-token 2>/dev/null || true)
+          STORED_REPO=$(consul kv get github-runner/repo-url 2>/dev/null || true)
+
+          if [ -z "$STORED_TOKEN" ]; then
+            echo "ERROR: No GitHub token in Consul KV and none provided."
             exit 1
           fi
 
-          # Extract owner/repo from URL
-          OWNER_REPO=$(echo "$REPO_URL" | sed -E 's|https?://github\.com/||; s|\.git$||; s|/$||')
+          OWNER_REPO=$(echo "$STORED_REPO" | sed -E 's|https?://github\.com/||; s|\.git$||; s|/$||')
           if [ -z "$OWNER_REPO" ] || ! echo "$OWNER_REPO" | grep -qE '^[^/]+/[^/]+$'; then
-            echo "ERROR: Invalid repository URL: $REPO_URL"
-            echo "Expected format: https://github.com/owner/repo"
+            echo "ERROR: Invalid repository URL: $STORED_REPO"
             exit 1
           fi
 
-          # Check repo access — parse HTTP status from response header
-          # (avoid curl -w with percent-brace format which HCL heredocs reject)
-          HEADER=$(curl -sI -H "Authorization: token $TOKEN" \
+          HEADER=$(curl -sI -H "Authorization: token $STORED_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$OWNER_REPO" 2>/dev/null | head -1)
           HTTP_CODE=$(echo "$HEADER" | grep -oE '[0-9]{3}' | head -1)
 
           case "$HTTP_CODE" in
             200) echo "GitHub validation OK: $OWNER_REPO is accessible" ;;
-            401) echo "ERROR: GitHub token is invalid or expired. Create a new token at https://github.com/settings/tokens with 'repo' scope."; exit 1 ;;
-            403) echo "ERROR: GitHub token lacks permissions for $OWNER_REPO. Need 'repo' scope (Classic PAT) or 'Administration: Read & Write' (Fine-grained PAT)."; exit 1 ;;
-            404) echo "ERROR: Repository not found: $OWNER_REPO. Check URL and token access."; exit 1 ;;
-            *)   echo "WARNING: GitHub API returned HTTP $HTTP_CODE for $OWNER_REPO (continuing)" ;;
+            401) echo "ERROR: GitHub token is invalid or expired."; exit 1 ;;
+            403) echo "ERROR: GitHub token lacks permissions for $OWNER_REPO."; exit 1 ;;
+            404) echo "ERROR: Repository not found: $OWNER_REPO."; exit 1 ;;
+            *)   echo "WARNING: GitHub API returned HTTP $HTTP_CODE (continuing)" ;;
           esac
         EOT
         ]
@@ -62,6 +79,18 @@ job "github-runner" {
     task "runner" {
       driver = "docker"
 
+      # Read secrets from Consul KV — written by init-secrets on deploy.
+      # Job updates no longer need to carry credentials in the HCL.
+      template {
+        data = <<EOH
+ACCESS_TOKEN={{ key "github-runner/access-token" }}
+REPO_URL={{ key "github-runner/repo-url" }}
+LABELS={{ keyOrDefault "github-runner/labels" "self-hosted,nomad" }}
+EOH
+        destination = "secrets/env"
+        env         = true
+      }
+
       config {
         image        = "myoung34/github-runner:latest"
         network_mode = "host"
@@ -72,11 +101,8 @@ job "github-runner" {
       }
 
       env {
-        ACCESS_TOKEN        = "[[.githubToken]]"
-        REPO_URL            = "[[.githubRepo]]"
         RUNNER_NAME_PREFIX  = "nomad"
         RUNNER_SCOPE        = "repo"
-        LABELS              = "[[.runnerLabels]]"
         EPHEMERAL           = "false"
         DISABLE_AUTO_UPDATE = "true"
       }
