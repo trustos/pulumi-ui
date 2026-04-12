@@ -24,7 +24,7 @@ job "traefik" {
       lifecycle { hook = "prestart" }
       config {
         command = "/bin/bash"
-        args    = ["-c", "mkdir -p /opt/traefik/acme /opt/traefik/dynamic && chmod 600 /opt/traefik/acme"]
+        args    = ["-c", "mkdir -p /opt/traefik/acme /opt/traefik/dynamic && chmod 700 /opt/traefik/acme"]
       }
       resources {
         cpu    = 50
@@ -122,7 +122,7 @@ EOF
       }
 
       config {
-        image        = "traefik:v3.4"
+        image        = "traefik:v3.6.13"
         network_mode = "host"
         ports        = ["http", "https", "api"]
         mounts = [
@@ -175,6 +175,31 @@ while true; do
 done
 SCRIPT
         ]
+      }
+
+      resources {
+        cpu    = 50
+        memory = 32
+      }
+    }
+
+    task "kv-dynamic-config" {
+      driver = "raw_exec"
+
+      lifecycle {
+        hook    = "poststart"
+        sidecar = true
+      }
+
+      template {
+        data        = "{{ key \"traefik/dynamic-config\" }}"
+        destination = "/opt/traefik/dynamic/kv-dynamic.yaml"
+        change_mode = "noop"
+      }
+
+      config {
+        command = "/bin/bash"
+        args    = ["-c", "sleep infinity"]
       }
 
       resources {
@@ -337,7 +362,7 @@ EOF
       }
 
       config {
-        image        = "traefik:v3.4"
+        image        = "traefik:v3.6.13"
         network_mode = "host"
         ports        = ["http", "https", "api"]
         mounts = [
@@ -361,6 +386,31 @@ EOF
       resources {
         cpu    = 500
         memory = 256
+      }
+    }
+
+    task "kv-dynamic-config" {
+      driver = "raw_exec"
+
+      lifecycle {
+        hook    = "poststart"
+        sidecar = true
+      }
+
+      template {
+        data        = "{{ key \"traefik/dynamic-config\" }}"
+        destination = "/opt/traefik/dynamic/kv-dynamic.yaml"
+        change_mode = "noop"
+      }
+
+      config {
+        command = "/bin/bash"
+        args    = ["-c", "sleep infinity"]
+      }
+
+      resources {
+        cpu    = 50
+        memory = 32
       }
     }
   }
@@ -451,7 +501,7 @@ EOF
       }
 
       config {
-        image        = "traefik:v3.4"
+        image        = "traefik:v3.6.13"
         network_mode = "host"
         ports        = ["http", "https", "api"]
         mounts = [
@@ -475,6 +525,31 @@ EOF
       resources {
         cpu    = 500
         memory = 256
+      }
+    }
+
+    task "kv-dynamic-config" {
+      driver = "raw_exec"
+
+      lifecycle {
+        hook    = "poststart"
+        sidecar = true
+      }
+
+      template {
+        data        = "{{ key \"traefik/dynamic-config\" }}"
+        destination = "/opt/traefik/dynamic/kv-dynamic.yaml"
+        change_mode = "noop"
+      }
+
+      config {
+        command = "/bin/bash"
+        args    = ["-c", "sleep infinity"]
+      }
+
+      resources {
+        cpu    = 50
+        memory = 32
       }
     }
   }
