@@ -534,6 +534,10 @@ plugin "docker" {
 plugin "raw_exec" {
   config { enabled = true }
 }
+
+limits {
+  http_max_conns_per_client = 0
+}
 EOF
   chown nomad:nomad /etc/nomad.d/nomad.hcl 2>/dev/null || true
 
