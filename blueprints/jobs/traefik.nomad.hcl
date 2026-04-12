@@ -192,7 +192,7 @@ SCRIPT
       }
 
       template {
-        data        = "{{ key \"traefik/dynamic-config\" }}"
+        data        = "{{ keyOrDefault \"traefik/dynamic-config\" \"\" }}"
         destination = "/opt/traefik/dynamic/kv-dynamic.yaml"
         change_mode = "noop"
       }
@@ -398,7 +398,7 @@ EOF
       }
 
       template {
-        data        = "{{ key \"traefik/dynamic-config\" }}"
+        data        = "{{ keyOrDefault \"traefik/dynamic-config\" \"\" }}"
         destination = "/opt/traefik/dynamic/kv-dynamic.yaml"
         change_mode = "noop"
       }
@@ -537,7 +537,7 @@ EOF
       }
 
       template {
-        data        = "{{ key \"traefik/dynamic-config\" }}"
+        data        = "{{ keyOrDefault \"traefik/dynamic-config\" \"\" }}"
         destination = "/opt/traefik/dynamic/kv-dynamic.yaml"
         change_mode = "noop"
       }
