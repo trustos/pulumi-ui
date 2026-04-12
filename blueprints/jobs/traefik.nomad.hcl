@@ -291,12 +291,18 @@ while true; do
       # Restart Traefik so it re-reads acme.json (skip on first sync
       # since Traefik hasn't started yet — this is a prestart sidecar)
       if [ "$FIRST_SYNC" = "false" ]; then
-        curl -sf -X PUT \
-          "http://localhost:4646/v1/client/allocation/$${NOMAD_ALLOC_ID}/restart" \
-          -d '{"TaskName":"traefik"}' \
-          -H "X-Nomad-Token: $${NOMAD_TOKEN}" && \
-          echo "Restarted Traefik task via Nomad API to reload certs" || \
-          echo "WARNING: Failed to restart Traefik task"
+        ALLOC_ID=$${NOMAD_ALLOC_ID}
+        API_TOKEN=$(consul kv get nomad/bootstrap-token 2>/dev/null || true)
+        if [ -n "$ALLOC_ID" ] && [ -n "$API_TOKEN" ]; then
+          curl -sf -X PUT \
+            "http://localhost:4646/v1/client/allocation/$ALLOC_ID/restart" \
+            -d '{"TaskName":"traefik"}' \
+            -H "X-Nomad-Token: $API_TOKEN" && \
+            echo "Restarted Traefik task via Nomad API to reload certs" || \
+            echo "WARNING: Failed to restart Traefik task"
+        else
+          echo "WARNING: Missing NOMAD_ALLOC_ID or bootstrap token, cannot restart Traefik"
+        fi
       fi
       FIRST_SYNC=false
     fi
