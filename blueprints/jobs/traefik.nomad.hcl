@@ -278,6 +278,7 @@ consul kv get traefik/acme-json > /opt/traefik/acme/acme.json 2>/dev/null || ech
 chmod 600 /opt/traefik/acme/acme.json
 echo "Watching Consul KV for ACME cert updates..."
 LAST_HASH=""
+FIRST_SYNC=true
 while true; do
   CERT=$(consul kv get traefik/acme-json 2>/dev/null || true)
   if [ -n "$CERT" ]; then
@@ -287,9 +288,20 @@ while true; do
       chmod 600 /opt/traefik/acme/acme.json
       LAST_HASH="$NEW_HASH"
       echo "Cert synced from Consul KV (hash: $NEW_HASH)"
+      # Restart Traefik so it re-reads acme.json (skip on first sync
+      # since Traefik hasn't started yet — this is a prestart sidecar)
+      if [ "$FIRST_SYNC" = "false" ]; then
+        curl -sf -X PUT \
+          "http://localhost:4646/v1/client/allocation/${NOMAD_ALLOC_ID}/restart" \
+          -d '{"TaskName":"traefik"}' \
+          -H "X-Nomad-Token: ${NOMAD_TOKEN}" && \
+          echo "Restarted Traefik task via Nomad API to reload certs" || \
+          echo "WARNING: Failed to restart Traefik task"
+      fi
+      FIRST_SYNC=false
     fi
   fi
-  sleep 30
+  sleep 10
 done
 SCRIPT
         ]
