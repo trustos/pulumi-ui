@@ -292,9 +292,9 @@ while true; do
       # since Traefik hasn't started yet — this is a prestart sidecar)
       if [ "$FIRST_SYNC" = "false" ]; then
         curl -sf -X PUT \
-          "http://localhost:4646/v1/client/allocation/${NOMAD_ALLOC_ID}/restart" \
+          "http://localhost:4646/v1/client/allocation/$${NOMAD_ALLOC_ID}/restart" \
           -d '{"TaskName":"traefik"}' \
-          -H "X-Nomad-Token: ${NOMAD_TOKEN}" && \
+          -H "X-Nomad-Token: $${NOMAD_TOKEN}" && \
           echo "Restarted Traefik task via Nomad API to reload certs" || \
           echo "WARNING: Failed to restart Traefik task"
       fi
