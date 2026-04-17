@@ -14,7 +14,7 @@ const INSTANCE_RECIPE: ResourceRecipe = {
     { key: 'shape', value: '"{{ .Config.shape }}"' },
     { key: 'displayName', value: '"instance"' },
     { key: 'sourceDetails', value: '{ sourceType: "image", sourceId: "{{ .Config.imageId }}" }' },
-    { key: 'shapeConfig', value: '{ ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }' },
+    { key: 'shapeConfig', value: '{{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}' },
     { key: 'metadata', value: '{ ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }' },
     { key: 'createVnicDetails', value: '{ subnetId: "${subnet.id}", assignPublicIp: true }' },
   ],

@@ -123,7 +123,7 @@ resources:
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
       createVnicDetails: { subnetId: "${public-subnet.id}", assignPublicIp: true }
       metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
-      {{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}
+      shapeConfig: {{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}
     options:
       dependsOn:
         - ${public-subnet}
@@ -137,7 +137,7 @@ resources:
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
       createVnicDetails: { subnetId: "${private-subnet.id}", assignPublicIp: false }
       metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
-      {{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}
+      shapeConfig: {{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}
     options:
       dependsOn:
         - ${private-subnet}

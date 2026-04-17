@@ -191,7 +191,7 @@ resources:
       sourceDetails: { sourceType: "image", sourceId: "{{ $.Config.imageId }}" }
       createVnicDetails: { subnetId: "${private-subnet.id}", assignPublicIp: false, nsgIds: ["${nsg.id}"] }
       metadata: { ssh_authorized_keys: "{{ $.Config.sshPublicKey }}" }
-      {{ computeConfig "oci" "" $.Config.shape $.Config.ocpus $.Config.memoryInGbs }}
+      shapeConfig: {{ computeConfig "oci" "" $.Config.shape $.Config.ocpus $.Config.memoryInGbs }}
     options:
       dependsOn:
         - ${private-subnet}

@@ -39,18 +39,28 @@ func Factory(ctx context.Context, creds cloud.Credentials) (cloud.Provider, erro
 }
 
 // RenderComputeConfig is the pure renderer registered alongside the
-// factory via Registry.RegisterRenderer. Emits `shapeConfig: { ocpus:
-// X, memoryInGbs: Y }` for flex shapes only; empty string otherwise.
+// factory via Registry.RegisterRenderer. Emits just the VALUE side of
+// the shapeConfig assignment — the template wraps it in the key:
+//
+//	shapeConfig: {{ computeConfig ... }}
+//
+// Flex shape with values present → `{ ocpus: X, memoryInGbs: Y }` (an
+// inline YAML object). Fixed shape or missing values → `null`, which
+// Pulumi's OCI provider treats as an unset property and omits from the
+// resource input. Keeping the emission on the value side lets the
+// visual editor round-trip the property unchanged (bare template
+// expressions on their own line get dropped by the serializer).
+//
 // Uses the .Flex name suffix as the synchronous discriminator — OCI's
 // only flex family across every region.
 func RenderComputeConfig(region, computeType, cpu, memGiB string) string {
 	if !isFlexShape(computeType) {
-		return ""
+		return "null"
 	}
 	if cpu == "" || memGiB == "" {
-		return ""
+		return "null"
 	}
-	return fmt.Sprintf("shapeConfig: { ocpus: %s, memoryInGbs: %s }", cpu, memGiB)
+	return fmt.Sprintf("{ ocpus: %s, memoryInGbs: %s }", cpu, memGiB)
 }
 
 func (p *Provider) ID() string          { return ProviderID }
