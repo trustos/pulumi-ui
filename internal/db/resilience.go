@@ -93,3 +93,44 @@ func (r *ResilientWriter) retryExec(ctx context.Context, query string, args []in
 	log.Printf("[db] lock retry EXHAUSTED after %d attempts: %s", len(lockRetryIntervals), strings.TrimSpace(logQuery))
 	return nil, fmt.Errorf("database locked after %d retries: %w", len(lockRetryIntervals), lastErr)
 }
+
+// QueryRowScan wraps sql.DB.QueryRow + Scan with lock retry. Use this
+// for UPDATE ... RETURNING or any write-path query that reads a result.
+// The underlying *sql.Row defers error discovery to Scan, so wrapping
+// QueryRow alone is not enough — this method does the Scan internally
+// and retries the whole query+scan on a lock error.
+func (r *ResilientWriter) QueryRowScan(dst interface{}, query string, args ...interface{}) error {
+	return r.QueryRowScanContext(context.Background(), dst, query, args...)
+}
+
+// QueryRowScanContext is the context-aware variant of QueryRowScan.
+func (r *ResilientWriter) QueryRowScanContext(ctx context.Context, dst interface{}, query string, args ...interface{}) error {
+	err := r.DB.QueryRowContext(ctx, query, args...).Scan(dst)
+	if err == nil || !isLockError(err) {
+		return err
+	}
+	logQuery := query
+	if len(logQuery) > 80 {
+		logQuery = logQuery[:80] + "..."
+	}
+	log.Printf("[db] lock contention on query, starting retry: %s", strings.TrimSpace(logQuery))
+	var lastErr = err
+	for _, interval := range lockRetryIntervals {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+		err := r.DB.QueryRowContext(ctx, query, args...).Scan(dst)
+		if err == nil {
+			log.Printf("[db] lock retry succeeded")
+			return nil
+		}
+		if !isLockError(err) {
+			return err
+		}
+		lastErr = err
+	}
+	log.Printf("[db] lock retry EXHAUSTED after %d attempts: %s", len(lockRetryIntervals), strings.TrimSpace(logQuery))
+	return fmt.Errorf("database locked after %d retries: %w", len(lockRetryIntervals), lastErr)
+}

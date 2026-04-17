@@ -160,11 +160,16 @@ func (s *StackConnectionStore) Delete(stackName string) error {
 
 // AllocateSubnet atomically assigns the next /24 from the 10.42.0.0/8 range.
 // Returns a subnet string like "10.42.1.0/24".
+//
+// Uses the write pool's retry-wrapped QueryRowScan — the UPDATE ...
+// RETURNING is a write and must go through the single writer. Routing
+// it through the read pool (as it did historically) caused SQLITE_BUSY
+// under concurrent account + stack creation.
 func (s *StackConnectionStore) AllocateSubnet() (string, error) {
 	var idx int
-	err := s.rdb.QueryRow(`
+	err := s.wdb.QueryRowScan(&idx, `
 		UPDATE nebula_subnet_counter SET next = next + 1 WHERE id = 1 RETURNING next - 1
-	`).Scan(&idx)
+	`)
 	if err != nil {
 		return "", fmt.Errorf("allocate nebula subnet: %w", err)
 	}
