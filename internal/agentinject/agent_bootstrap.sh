@@ -207,7 +207,7 @@ install_agent() {
   if [ "$downloaded" != "true" ]; then
     AGENT_VERSION="@@AGENT_VERSION@@"
     if [ -z "$AGENT_VERSION" ] || [ "$AGENT_VERSION" = "latest" ]; then
-      AGENT_VERSION="v0.2.22"
+      AGENT_VERSION="v0.2.23"
     fi
     GH_URL="https://github.com/trustos/pulumi-ui/releases/download/${AGENT_VERSION}/agent_linux_${AGENT_ARCH}"
     echo "[agent-bootstrap] Trying GitHub releases: ${GH_URL}"
