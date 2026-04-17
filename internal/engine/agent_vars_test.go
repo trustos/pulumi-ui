@@ -86,7 +86,7 @@ func TestAgentVarsForStack_Normal(t *testing.T) {
 	assert.Equal(t, "agent-cert-pem", vars.NebulaHostCert)
 	assert.Equal(t, "agent-key-pem", vars.NebulaHostKey)
 	assert.Equal(t, "v1.10.3", vars.NebulaVersion)
-	assert.Equal(t, "v0.2.19", vars.AgentVersion)
+	assert.Equal(t, "v0.2.20", vars.AgentVersion)
 	assert.Equal(t, "hex-token-abc123", vars.AgentToken)
 	assert.Empty(t, vars.NebulaServerRealIP, "should be empty when PULUMI_UI_EXTERNAL_URL is unset")
 }
