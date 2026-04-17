@@ -40,11 +40,17 @@ func (RangeSizing) isSizing() {}
 // instance type. Provider-specific fields are carried in the private
 // extras field and accessed via a typed helper in the provider package
 // (e.g. oci.ExtrasFor).
+//
+// AvailabilityDomains lists the AD/AZ names (scoped to the account's
+// region) where this shape is offered. Empty means "unknown" — callers
+// should treat it as "available everywhere" and rely on Level-8
+// runtime validation to catch mismatches after deploy time.
 type ComputeType struct {
-	Name         string       `json:"name"`
-	DisplayName  string       `json:"displayName,omitempty"`
-	Architecture Architecture `json:"architecture,omitempty"`
-	Sizing       Sizing       `json:"sizing,omitempty"`
+	Name                string       `json:"name"`
+	DisplayName         string       `json:"displayName,omitempty"`
+	Architecture        Architecture `json:"architecture,omitempty"`
+	Sizing              Sizing       `json:"sizing,omitempty"`
+	AvailabilityDomains []string     `json:"availabilityDomains,omitempty"`
 
 	extras any
 }
@@ -73,13 +79,15 @@ func (ct ComputeType) MarshalJSON() ([]byte, error) {
 		DisplayName          string       `json:"displayName,omitempty"`
 		Architecture         Architecture `json:"architecture,omitempty"`
 		Sizing               any          `json:"sizing,omitempty"`
+		AvailabilityDomains  []string     `json:"availabilityDomains,omitempty"`
 		Extras               any          `json:"extras,omitempty"`
 	}{
-		Shape:        ct.Name,
-		Name:         ct.Name,
-		DisplayName:  ct.DisplayName,
-		Architecture: ct.Architecture,
-		Extras:       ct.extras,
+		Shape:               ct.Name,
+		Name:                ct.Name,
+		DisplayName:         ct.DisplayName,
+		Architecture:        ct.Architecture,
+		AvailabilityDomains: ct.AvailabilityDomains,
+		Extras:              ct.extras,
 	}
 	if extras, ok := ct.extras.(interface{ GetProcessorDescription() string }); ok {
 		out.ProcessorDescription = extras.GetProcessorDescription()

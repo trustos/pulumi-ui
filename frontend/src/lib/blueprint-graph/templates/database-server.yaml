@@ -28,17 +28,10 @@ config:
     type: string
     default: "100"
     description: "Block volume size in GB for data storage"
-  adCount:
-    type: integer
-    default: "1"
-
-variables:
-  availabilityDomains:
-    fn::invoke:
-      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
-      arguments:
-        compartmentId: ${oci:tenancyOcid}
-      return: availabilityDomains
+  availabilityDomain:
+    type: string
+    default: ""
+    description: "Availability domain that offers the selected shape"
 
 resources:
   # --- section: networking ---
@@ -108,7 +101,7 @@ resources:
     type: oci:Core/instance:Instance
     properties:
       compartmentId: {{ .Config.compartmentId }}
-      availabilityDomain: ${availabilityDomains[0].name}
+      availabilityDomain: "{{ .Config.availabilityDomain }}"
       shape: "{{ .Config.shape }}"
       displayName: "db-server"
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
@@ -123,7 +116,7 @@ resources:
     type: oci:Core/volume:Volume
     properties:
       compartmentId: {{ .Config.compartmentId }}
-      availabilityDomain: ${availabilityDomains[0].name}
+      availabilityDomain: "{{ .Config.availabilityDomain }}"
       displayName: "data-volume"
       sizeInGbs: {{ .Config.volumeSizeGbs }}
   volume-attach:

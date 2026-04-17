@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/trustos/pulumi-ui/internal/cloud"
 )
@@ -78,6 +79,32 @@ func (p *Provider) ListRegions(ctx context.Context) ([]cloud.Region, error) {
 }
 
 func (p *Provider) ListComputeTypes(ctx context.Context, region string) ([]cloud.ComputeType, error) {
+	// Fan out: list ADs once, then query shapes per-AD to build the
+	// shape → [ADs offering it] mapping. OCI returns different shape
+	// sets per AD (especially for Always-Free capacity); the merged
+	// union with per-shape AD list is the authoritative answer.
+	ads, adErr := p.client.ListAvailabilityDomains(ctx)
+	perAD := map[string][]Shape{}
+	if adErr == nil {
+		for _, ad := range ads {
+			shapes, err := p.client.ListShapesInAD(ctx, ad.Name)
+			if err != nil {
+				// Partial failure: fall back to region-wide listing below.
+				perAD = nil
+				break
+			}
+			perAD[ad.Name] = shapes
+		}
+	}
+
+	if perAD != nil && len(perAD) > 0 {
+		return mergeShapesAcrossADs(perAD), nil
+	}
+
+	// Fallback: a single region-wide listing with no AD metadata.
+	// Callers relying on AvailabilityDomains will see an empty list,
+	// which they must interpret as "unknown, all ADs" per the
+	// ComputeType contract.
 	shapes, err := p.client.ListShapes(ctx)
 	if err != nil {
 		return nil, err
@@ -92,6 +119,53 @@ func (p *Provider) ListComputeTypes(ctx context.Context, region string) ([]cloud
 		out = append(out, shapeToComputeType(s))
 	}
 	return out, nil
+}
+
+// mergeShapesAcrossADs takes a per-AD map of OCI Shape records and
+// produces a deduplicated ComputeType list where each entry carries
+// the sorted list of AD names that offer it.
+func mergeShapesAcrossADs(perAD map[string][]Shape) []cloud.ComputeType {
+	byShape := map[string]*cloud.ComputeType{}
+	adsByShape := map[string]map[string]struct{}{}
+
+	// Iterate AD names in sorted order so the output is deterministic.
+	adNames := make([]string, 0, len(perAD))
+	for ad := range perAD {
+		adNames = append(adNames, ad)
+	}
+	sort.Strings(adNames)
+
+	for _, ad := range adNames {
+		for _, s := range perAD[ad] {
+			if _, exists := byShape[s.Shape]; !exists {
+				ct := shapeToComputeType(s)
+				byShape[s.Shape] = &ct
+				adsByShape[s.Shape] = map[string]struct{}{}
+			}
+			adsByShape[s.Shape][ad] = struct{}{}
+		}
+	}
+
+	out := make([]cloud.ComputeType, 0, len(byShape))
+	// Emit shapes in the order they first appeared (iterate adNames again for stability).
+	emitted := map[string]struct{}{}
+	for _, ad := range adNames {
+		for _, s := range perAD[ad] {
+			if _, done := emitted[s.Shape]; done {
+				continue
+			}
+			emitted[s.Shape] = struct{}{}
+			ct := byShape[s.Shape]
+			ads := make([]string, 0, len(adsByShape[s.Shape]))
+			for ad := range adsByShape[s.Shape] {
+				ads = append(ads, ad)
+			}
+			sort.Strings(ads)
+			ct.AvailabilityDomains = ads
+			out = append(out, *ct)
+		}
+	}
+	return out
 }
 
 func (p *Provider) ListImages(ctx context.Context, region, computeType string) ([]cloud.Image, error) {

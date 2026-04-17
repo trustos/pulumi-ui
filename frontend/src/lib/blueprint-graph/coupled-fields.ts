@@ -3,7 +3,18 @@ import type { ConfigField, OciShape, Sizing } from '$lib/types';
 export interface CoupledFieldState {
   hiddenKeys: Set<string>;
   clearKeys: string[];
+  // Keys whose values the form should coerce to a specific string. Used
+  // for adCount clamping: rather than clearing (which would leave the
+  // template rendering with no value), we set adCount = min(stored, cap).
+  coerceValues: Record<string, string>;
   imageShapeByGroup: Record<string, string>;
+  // Per-group filtered AD lists and spread caps derived from the selected
+  // shape's availabilityDomains. Undefined/empty for a group means "no
+  // filtering" — the shape is unknown or has no AD metadata, so accept
+  // all ADs. Populated only when the selected shape explicitly lists the
+  // ADs where it's offered.
+  adFilterByGroup: Record<string, string[] | undefined>;
+  adCountMaxByGroup: Record<string, number | undefined>;
 }
 
 /**
@@ -24,7 +35,10 @@ export function getCoupledFieldState(
 ): CoupledFieldState {
   const hiddenKeys = new Set<string>();
   const clearKeys: string[] = [];
+  const coerceValues: Record<string, string> = {};
   const imageShapeByGroup: Record<string, string> = {};
+  const adFilterByGroup: Record<string, string[] | undefined> = {};
+  const adCountMaxByGroup: Record<string, number | undefined> = {};
 
   const shapeByName = new Map<string, OciShape>();
   for (const s of shapes) {
@@ -42,6 +56,38 @@ export function getCoupledFieldState(
     if (!selectedName) continue;
 
     const selectedShape = shapeByName.get(selectedName);
+
+    // Shape ↔ AD availability coupling. When the selected shape declares
+    // which ADs offer it (availabilityDomains populated by the backend
+    // fan-out), constrain sibling oci-ad and adCount inputs to that set.
+    // A shape with no availabilityDomains metadata falls back to "no
+    // filter" so that provider-neutral blueprints don't break.
+    const availableADs = selectedShape?.availabilityDomains;
+    if (availableADs && availableADs.length > 0) {
+      adFilterByGroup[groupKey] = availableADs;
+      adCountMaxByGroup[groupKey] = availableADs.length;
+
+      // Clear stored AD values that aren't in the filtered list.
+      for (const f of groupFields) {
+        if (f.type !== 'oci-ad') continue;
+        const stored = values[f.key];
+        if (stored && !availableADs.includes(stored)) {
+          clearKeys.push(f.key);
+        }
+      }
+
+      // Clamp adCount field: if its stored value exceeds the cap, coerce to cap.
+      // A clear would leave template rendering with no value; coerce keeps a
+      // sensible default (the max spread this shape supports).
+      const adCountField = groupFields.find(f => f.key === 'adCount' || f.key.endsWith('AdCount'));
+      if (adCountField) {
+        const stored = parseInt(values[adCountField.key] ?? '', 10);
+        if (Number.isFinite(stored) && stored > availableADs.length) {
+          coerceValues[adCountField.key] = String(availableADs.length);
+        }
+      }
+    }
+
     const isFlex = shapeIsFlex(selectedShape, selectedName);
     if (isFlex) continue;
 
@@ -54,7 +100,7 @@ export function getCoupledFieldState(
     }
   }
 
-  return { hiddenKeys, clearKeys, imageShapeByGroup };
+  return { hiddenKeys, clearKeys, coerceValues, imageShapeByGroup, adFilterByGroup, adCountMaxByGroup };
 }
 
 function groupFields(fields: ConfigField[]): Map<string, ConfigField[]> {

@@ -20,23 +20,16 @@ config:
     type: string
     default: "VM.Standard.A1.Flex"
     description: "Compute shape"
+  availabilityDomain:
+    type: string
+    default: ""
+    description: "Availability domain that offers the selected shape"
   ocpus:
     type: string
     default: "2"
   memoryInGbs:
     type: string
     default: "12"
-  adCount:
-    type: integer
-    default: "1"
-
-variables:
-  availabilityDomains:
-    fn::invoke:
-      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
-      arguments:
-        compartmentId: ${oci:tenancyOcid}
-      return: availabilityDomains
 
 resources:
   # --- section: networking ---
@@ -86,7 +79,7 @@ resources:
     type: oci:Core/instance:Instance
     properties:
       compartmentId: {{ .Config.compartmentId }}
-      availabilityDomain: ${availabilityDomains[0].name}
+      availabilityDomain: "{{ .Config.availabilityDomain }}"
       shape: "{{ .Config.shape }}"
       displayName: "instance"
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }

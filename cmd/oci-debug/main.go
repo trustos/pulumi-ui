@@ -71,7 +71,7 @@ func main() {
 	fmt.Println("=== Endpoint URLs ===")
 	fmt.Printf("  Verify (user profile): %s\n", oci.UserURL(*region, *userOCID))
 	fmt.Printf("  Tenancy info:          %s\n", oci.TenancyURL(*region, *tenancy))
-	fmt.Printf("  Shapes:                %s\n", oci.ShapesURL(*region, *tenancy))
+	fmt.Printf("  Shapes:                %s\n", oci.ShapesURL(*region, *tenancy, ""))
 	fmt.Printf("  Images (Oracle Linux): %s\n", oci.ImagesURL(*region, *tenancy, "Oracle Linux", ""))
 	fmt.Printf("  Images (Ubuntu):       %s\n\n", oci.ImagesURL(*region, *tenancy, "Canonical Ubuntu", ""))
 

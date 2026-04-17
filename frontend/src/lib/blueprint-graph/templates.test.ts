@@ -181,14 +181,16 @@ describe('built-in YAML templates — meta.displayName parsed', () => {
   });
 });
 
-// ── availabilityDomain normalizes to @auto ────────────────────────────────────
+// ── availabilityDomain handling ───────────────────────────────────────────────
 
-describe('built-in YAML templates — availabilityDomain normalizes to @auto', () => {
-  it('single-instance: standalone instance availabilityDomain is @auto', () => {
+describe('built-in YAML templates — availabilityDomain handling', () => {
+  // single-instance now uses an explicit `availabilityDomain` config field
+  // (user picks an AD that offers the selected shape); no @auto normalization.
+  it('single-instance: availabilityDomain is a config-backed template expression', () => {
     const { graph } = yamlToGraph(singleInstanceYaml);
     const allItems = graph.sections.flatMap(s => s.items);
     const ad = findAD(allItems);
-    expect(ad).toBe('@auto');
+    expect(ad).toContain('.Config.availabilityDomain');
   });
 
   it('ha-pair: first instance availabilityDomain is @auto', () => {

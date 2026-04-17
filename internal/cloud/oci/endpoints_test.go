@@ -24,10 +24,16 @@ func TestAvailabilityDomainsURL(t *testing.T) {
 }
 
 func TestShapesURL(t *testing.T) {
-	url := ShapesURL("us-ashburn-1", "ocid1.tenancy.oc1..ccc")
+	url := ShapesURL("us-ashburn-1", "ocid1.tenancy.oc1..ccc", "")
 	assert.Contains(t, url, "iaas.us-ashburn-1.oraclecloud.com")
 	assert.Contains(t, url, "/20160918/shapes")
 	assert.Contains(t, url, "compartmentId=ocid1.tenancy.oc1..ccc")
+	assert.NotContains(t, url, "availabilityDomain=")
+}
+
+func TestShapesURL_WithAD(t *testing.T) {
+	url := ShapesURL("eu-frankfurt-1", "ocid1.tenancy.oc1..ccc", "PpGL:EU-FRANKFURT-1-AD-3")
+	assert.Contains(t, url, "availabilityDomain=PpGL%3AEU-FRANKFURT-1-AD-3")
 }
 
 func TestImagesURL(t *testing.T) {

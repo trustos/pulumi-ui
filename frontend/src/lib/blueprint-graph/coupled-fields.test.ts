@@ -89,6 +89,94 @@ describe('getCoupledFieldState', () => {
   });
 });
 
+describe('getCoupledFieldState — shape ↔ AD coupling', () => {
+  const flexAllADs: OciShape = {
+    shape: 'VM.Standard.A1.Flex',
+    processorDescription: 'Ampere',
+    sizing: { kind: 'range', vcpuRange: { min: 1, max: 4 }, memGiBRange: { min: 1, max: 24 } },
+    availabilityDomains: ['AD-1', 'AD-2', 'AD-3'],
+  };
+  const microAD3Only: OciShape = {
+    shape: 'VM.Standard.E2.1.Micro',
+    processorDescription: 'AMD',
+    sizing: { kind: 'fixed', vcpu: 1, memGiB: 1 },
+    availabilityDomains: ['AD-3'],
+  };
+
+  it('restricts adFilter to the shape-available ADs and clears stale AD selection', () => {
+    const fs: ConfigField[] = [
+      { key: 'shape', label: 'Shape', type: 'oci-shape' },
+      { key: 'availabilityDomain', label: 'AD', type: 'oci-ad' },
+    ];
+    const state = getCoupledFieldState(fs, { shape: 'VM.Standard.E2.1.Micro', availabilityDomain: 'AD-1' }, [flexAllADs, microAD3Only]);
+    expect(state.adFilterByGroup['']).toEqual(['AD-3']);
+    expect(state.clearKeys).toContain('availabilityDomain');
+  });
+
+  it('keeps stored AD when it is in the shape-available list', () => {
+    const fs: ConfigField[] = [
+      { key: 'shape', label: 'Shape', type: 'oci-shape' },
+      { key: 'availabilityDomain', label: 'AD', type: 'oci-ad' },
+    ];
+    const state = getCoupledFieldState(fs, { shape: 'VM.Standard.E2.1.Micro', availabilityDomain: 'AD-3' }, [flexAllADs, microAD3Only]);
+    expect(state.clearKeys).not.toContain('availabilityDomain');
+  });
+
+  it('reports adCount cap equal to shape-available AD count', () => {
+    const fs: ConfigField[] = [
+      { key: 'shape', label: 'Shape', type: 'oci-shape' },
+      { key: 'adCount', label: 'AD Count', type: 'number' },
+    ];
+    const state = getCoupledFieldState(fs, { shape: 'VM.Standard.E2.1.Micro', adCount: '3' }, [flexAllADs, microAD3Only]);
+    expect(state.adCountMaxByGroup['']).toBe(1);
+    expect(state.coerceValues['adCount']).toBe('1');
+  });
+
+  it('leaves adCount alone when stored value is within cap', () => {
+    const fs: ConfigField[] = [
+      { key: 'shape', label: 'Shape', type: 'oci-shape' },
+      { key: 'adCount', label: 'AD Count', type: 'number' },
+    ];
+    const state = getCoupledFieldState(fs, { shape: 'VM.Standard.A1.Flex', adCount: '2' }, [flexAllADs, microAD3Only]);
+    expect(state.adCountMaxByGroup['']).toBe(3);
+    expect(state.coerceValues['adCount']).toBeUndefined();
+  });
+
+  it('no filter applied when shape has no availabilityDomains metadata', () => {
+    const shapeNoAds: OciShape = { shape: 'VM.Standard.A1.Flex', processorDescription: '' };
+    const fs: ConfigField[] = [
+      { key: 'shape', label: 'Shape', type: 'oci-shape' },
+      { key: 'availabilityDomain', label: 'AD', type: 'oci-ad' },
+    ];
+    const state = getCoupledFieldState(fs, { shape: 'VM.Standard.A1.Flex', availabilityDomain: 'AD-1' }, [shapeNoAds]);
+    expect(state.adFilterByGroup['']).toBeUndefined();
+    expect(state.clearKeys).toEqual([]);
+  });
+
+  it('multi-tier: primary and replica groups filter independently on their own shapes', () => {
+    const fs: ConfigField[] = [
+      { key: 'primaryShape', label: 'Primary Shape', type: 'oci-shape', group: 'primary' },
+      { key: 'primaryAd', label: 'Primary AD', type: 'oci-ad', group: 'primary' },
+      { key: 'replicaShape', label: 'Replica Shape', type: 'oci-shape', group: 'replica' },
+      { key: 'replicaAd', label: 'Replica AD', type: 'oci-ad', group: 'replica' },
+    ];
+    const state = getCoupledFieldState(
+      fs,
+      {
+        primaryShape: 'VM.Standard.A1.Flex',
+        primaryAd: 'AD-2',
+        replicaShape: 'VM.Standard.E2.1.Micro',
+        replicaAd: 'AD-1',
+      },
+      [flexAllADs, microAD3Only],
+    );
+    expect(state.adFilterByGroup.primary).toEqual(['AD-1', 'AD-2', 'AD-3']);
+    expect(state.adFilterByGroup.replica).toEqual(['AD-3']);
+    expect(state.clearKeys).toContain('replicaAd');
+    expect(state.clearKeys).not.toContain('primaryAd');
+  });
+});
+
 describe('shapeSupportsShapeConfig', () => {
   it('returns true for flex shapes', () => {
     expect(shapeSupportsShapeConfig(flex, flex.shape)).toBe(true);

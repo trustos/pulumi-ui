@@ -214,10 +214,22 @@ func (c *Client) GetTenancyName(ctx context.Context) string {
 	return resp.Name
 }
 
-// ListShapes returns all compute shapes available in the account's region.
+// ListShapes returns all compute shapes available in the account's
+// region (union across ADs). Use ListShapesInAD for a single-AD query.
 func (c *Client) ListShapes(ctx context.Context) ([]Shape, error) {
 	var shapes []Shape
-	if err := c.get(ctx, ShapesURL(c.region, c.tenancyOCID), &shapes); err != nil {
+	if err := c.get(ctx, ShapesURL(c.region, c.tenancyOCID, ""), &shapes); err != nil {
+		return nil, err
+	}
+	return shapes, nil
+}
+
+// ListShapesInAD returns compute shapes offered in a specific availability
+// domain. OCI's /shapes endpoint filters per-AD when the query parameter
+// is supplied, giving us the authoritative shape-per-AD mapping.
+func (c *Client) ListShapesInAD(ctx context.Context, adName string) ([]Shape, error) {
+	var shapes []Shape
+	if err := c.get(ctx, ShapesURL(c.region, c.tenancyOCID, adName), &shapes); err != nil {
 		return nil, err
 	}
 	return shapes, nil

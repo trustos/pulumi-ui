@@ -125,12 +125,19 @@
     }))
   );
 
-  const adItems = $derived(
-    ads.map(ad => ({
-      value: ad.name,
-      label: ad.name,
-    }))
-  );
+  // adItemsForField derives per-field filtered AD options. When the field's
+  // group has a shape-driven AD filter (shape declares a subset of ADs it's
+  // offered in), show only those; otherwise show all ADs.
+  function adItemsForField(fieldKey: string, group: string | undefined) {
+    const filter = coupledState.adFilterByGroup[group ?? ''];
+    const allowed = filter && filter.length > 0 ? new Set(filter) : null;
+    return ads
+      .filter(ad => (allowed === null ? true : allowed.has(ad.name)))
+      .map(ad => ({
+        value: ad.name,
+        label: ad.name,
+      }));
+  }
 
   $effect(() => {
     if (!needsSshKeys) return;
@@ -195,6 +202,20 @@
     untrack(() => {
       for (const k of toClear) {
         if ((values[k] ?? '') !== '') values[k] = '';
+      }
+    });
+  });
+
+  // Coerce values to specific targets (e.g. adCount clamp). Guarded to
+  // avoid self-trigger — only write when current != target.
+  $effect(() => {
+    const toCoerce = coupledState.coerceValues;
+    const keys = Object.keys(toCoerce);
+    if (keys.length === 0) return;
+    untrack(() => {
+      for (const k of keys) {
+        const target = toCoerce[k];
+        if (values[k] !== target) values[k] = target;
       }
     });
   });
@@ -406,8 +427,14 @@
               {:else if adsLoading}
                 <div class="h-9 rounded-md border bg-muted animate-pulse"></div>
               {:else if ads.length > 0}
+                {@const adFilter = coupledState.adFilterByGroup[field.group ?? '']}
+                {#if adFilter && adFilter.length > 0 && adFilter.length < ads.length}
+                  <p class="text-xs text-muted-foreground">
+                    Filtered to {adFilter.length}/{ads.length} AD{adFilter.length === 1 ? '' : 's'} that offer the selected shape.
+                  </p>
+                {/if}
                 <Combobox
-                  items={adItems}
+                  items={adItemsForField(field.key, field.group)}
                   bind:value={values[field.key]}
                   inputId={fid(field.key)}
                   inputName={fid(field.key)}
@@ -467,11 +494,20 @@
               <PortListEditor bind:value={values[field.key]} />
 
             {:else}
+              {@const adCountCap = (field.key === 'adCount' || field.key.endsWith('AdCount'))
+                ? coupledState.adCountMaxByGroup[field.group ?? '']
+                : undefined}
+              {#if adCountCap !== undefined && field.type === 'number'}
+                <p class="text-xs text-muted-foreground">
+                  Capped at {adCountCap} (ADs that offer the selected shape).
+                </p>
+              {/if}
               <Input
                 id={fid(field.key)}
                 name={fid(field.key)}
                 autocomplete="off"
                 type={field.type === 'number' ? 'number' : 'text'}
+                max={adCountCap !== undefined ? String(adCountCap) : undefined}
                 bind:value={values[field.key]}
                 placeholder={field.description ?? field.default}
                 required={field.required}

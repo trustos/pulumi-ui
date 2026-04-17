@@ -9,6 +9,10 @@ export interface OciShape {
   displayName?: string;
   architecture?: 'arm64' | 'x86_64' | string;
   sizing?: Sizing;
+  // List of AD names in the account's region where this shape is offered.
+  // Empty/undefined → unknown; treat as "available everywhere" and rely on
+  // Level-8 runtime validation as the safety net.
+  availabilityDomains?: string[];
   extras?: Record<string, unknown>;
 }
 

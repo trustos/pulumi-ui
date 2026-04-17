@@ -38,10 +38,20 @@ func TenancyURL(region, tenancyOCID string) string {
 }
 
 // ShapesURL returns the endpoint to list compute shapes in a compartment.
-//   GET /shapes?compartmentId={id}&limit=100
-func ShapesURL(region, compartmentID string) string {
-	return fmt.Sprintf("%s/shapes?compartmentId=%s&limit=100",
+// When adName is non-empty, the query is scoped to that availability
+// domain — OCI's API returns only shapes offered in that specific AD.
+// Critical for shape-per-AD availability lookups, since many shapes
+// (notably Always-Free micro instances) are only available in a subset
+// of ADs.
+//
+//	GET /shapes?compartmentId={id}&limit=100[&availabilityDomain={ad}]
+func ShapesURL(region, compartmentID, adName string) string {
+	base := fmt.Sprintf("%s/shapes?compartmentId=%s&limit=100",
 		computeBase(region), url.QueryEscape(compartmentID))
+	if adName != "" {
+		base += "&availabilityDomain=" + url.QueryEscape(adName)
+	}
+	return base
 }
 
 // ImagesURL returns the endpoint to list available platform images for

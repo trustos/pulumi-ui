@@ -53,9 +53,46 @@ func (p *Provider) Validate(ctx context.Context, graph cloud.ResourceGraph, ref 
 		}
 
 		errs = append(errs, checkShapeConfig(inst, ct)...)
+		errs = append(errs, checkAvailabilityDomain(inst, ct)...)
 		errs = append(errs, p.checkImage(ctx, ref.Region, inst, shape, imageListCache)...)
 	}
 	return errs
+}
+
+// checkAvailabilityDomain verifies the instance's chosen AD (if any) is
+// one where the selected shape is actually offered. When the shape
+// metadata omits AvailabilityDomains (unknown availability), skip the
+// check — we don't want to block on incomplete metadata. When the AD
+// property is a Pulumi expression (unresolved ${...} reference), skip
+// too: those resolve at apply time against the user's region-wide AD
+// list, and validation of each rendered instance catches specifics
+// separately.
+func checkAvailabilityDomain(inst cloud.ResourceNode, ct cloud.ComputeType) []cloud.ValidationError {
+	if len(ct.AvailabilityDomains) == 0 {
+		return nil
+	}
+	ad, _ := inst.Properties["availabilityDomain"].(string)
+	if ad == "" {
+		return nil
+	}
+	// Unresolved Pulumi reference — skip (this is a render-time expression).
+	if len(ad) > 1 && ad[0] == '$' {
+		return nil
+	}
+	for _, allowed := range ct.AvailabilityDomains {
+		if allowed == ad {
+			return nil
+		}
+	}
+	suggestion := ""
+	if len(ct.AvailabilityDomains) > 0 {
+		suggestion = fmt.Sprintf(" — try %q", ct.AvailabilityDomains[0])
+	}
+	return []cloud.ValidationError{{
+		Level:   cloud.LevelRuntimeCompat,
+		Field:   fmt.Sprintf("resources.%s.properties.availabilityDomain", inst.Name),
+		Message: fmt.Sprintf("shape %q is not available in AD %q%s", ct.Name, ad, suggestion),
+	}}
 }
 
 func collectInstances(graph cloud.ResourceGraph) []cloud.ResourceNode {
