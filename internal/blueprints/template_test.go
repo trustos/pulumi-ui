@@ -45,6 +45,56 @@ resources:
 	assert.Contains(t, result, "${my-vcn.id}")
 }
 
+func TestRenderTemplate_AdSetRoundRobin(t *testing.T) {
+	// The new multi-AD gallery templates split `deployAds` (comma-separated)
+	// into a list at render time and round-robin via index + mod + len.
+	// Sprig covers every primitive — no template-helper change needed.
+	tmpl := `name: multi-ad
+runtime: yaml
+resources:
+{{- range $i := until (atoi $.Config.nodeCount) }}
+  {{- $ads := splitList "," $.Config.deployAds }}
+  node-{{ $i }}:
+    type: oci:Core/instance:Instance
+    properties:
+      availabilityDomain: "{{ index $ads (mod $i (len $ads)) }}"
+{{- end }}`
+
+	result, err := RenderTemplate(tmpl, map[string]string{
+		"nodeCount": "3",
+		"deployAds": "AD-1,AD-3",
+	})
+	require.NoError(t, err)
+	// Round-robin: instance 0 → AD-1, instance 1 → AD-3, instance 2 → AD-1.
+	assert.Contains(t, result, "node-0")
+	assert.Contains(t, result, "node-1")
+	assert.Contains(t, result, "node-2")
+	// Count AD occurrences to verify round-robin distribution.
+	assert.Equal(t, 2, strings.Count(result, `availabilityDomain: "AD-1"`))
+	assert.Equal(t, 1, strings.Count(result, `availabilityDomain: "AD-3"`))
+}
+
+func TestRenderTemplate_AdSetSingleAd(t *testing.T) {
+	// 3 instances across 1 AD — all three land in the same AD.
+	tmpl := `name: single-ad
+runtime: yaml
+resources:
+{{- range $i := until (atoi $.Config.nodeCount) }}
+  {{- $ads := splitList "," $.Config.deployAds }}
+  node-{{ $i }}:
+    type: oci:Core/instance:Instance
+    properties:
+      availabilityDomain: "{{ index $ads (mod $i (len $ads)) }}"
+{{- end }}`
+
+	result, err := RenderTemplate(tmpl, map[string]string{
+		"nodeCount": "3",
+		"deployAds": "AD-3",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 3, strings.Count(result, `availabilityDomain: "AD-3"`))
+}
+
 func TestRenderTemplate_SprigFunctions(t *testing.T) {
 	tmpl := `name: {{ upper .Config.name }}`
 	result, err := RenderTemplate(tmpl, map[string]string{"name": "hello"})

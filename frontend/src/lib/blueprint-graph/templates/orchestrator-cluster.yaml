@@ -28,18 +28,10 @@ config:
   memoryInGbs:
     type: string
     default: "24"
-  adCount:
-    type: integer
-    default: "1"
-    description: "Number of availability domains to round-robin across"
-
-variables:
-  availabilityDomains:
-    fn::invoke:
-      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
-      arguments:
-        compartmentId: ${oci:tenancyOcid}
-      return: availabilityDomains
+  deployAds:
+    type: string
+    default: ""
+    description: "Availability domains to round-robin the nodes across (comma-separated)"
 
 resources:
   # --- section: networking ---
@@ -181,11 +173,12 @@ resources:
         - ${public-subnet}
   # --- section: compute ---
 {{- range $i := until (atoi $.Config.nodeCount) }}
+  {{- $ads := splitList "," $.Config.deployAds }}
   node-{{ $i }}:
     type: oci:Core/instance:Instance
     properties:
       compartmentId: {{ $.Config.compartmentId }}
-      availabilityDomain: ${availabilityDomains[{{ mod $i (atoi $.Config.adCount) }}].name}
+      availabilityDomain: "{{ index $ads (mod $i (len $ads)) }}"
       shape: "{{ $.Config.shape }}"
       displayName: "node-{{ $i }}"
       sourceDetails: { sourceType: "image", sourceId: "{{ $.Config.imageId }}" }

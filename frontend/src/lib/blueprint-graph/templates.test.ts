@@ -193,18 +193,20 @@ describe('built-in YAML templates — availabilityDomain handling', () => {
     expect(ad).toContain('.Config.availabilityDomain');
   });
 
-  it('ha-pair: first instance availabilityDomain is @auto', () => {
+  it('ha-pair: first instance availabilityDomain is a config-backed deployAds expression', () => {
     const { graph } = yamlToGraph(haPairYaml);
     const allItems = graph.sections.flatMap(s => s.items);
     const ad = findAD(allItems);
-    expect(ad).toBe('@auto');
+    expect(ad).toContain('.Config.deployAds');
   });
 
-  it('load-balanced-cluster: loop instance availabilityDomain is @auto', () => {
+  it('load-balanced-cluster: loop instance availabilityDomain is derived from the $ads list set outside the loop body', () => {
     const { graph } = yamlToGraph(loadBalancedClusterYaml);
     const allItems = graph.sections.flatMap(s => s.items);
     const ad = findAD(allItems);
-    expect(ad).toBe('@auto');
+    // The loop body indexes into $ads (defined from splitList on deployAds
+    // once per iteration). Round-trip preserves the inner expression as-is.
+    expect(ad).toContain('$ads');
   });
 });
 

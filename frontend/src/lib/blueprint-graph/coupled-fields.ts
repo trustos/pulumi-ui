@@ -86,6 +86,26 @@ export function getCoupledFieldState(
           coerceValues[adCountField.key] = String(availableADs.length);
         }
       }
+
+      // Seed/prune oci-ad-set fields: pre-populate with the full set of
+      // shape-compatible ADs when empty; on shape change drop any
+      // previously-selected AD that isn't compatible with the new shape.
+      // Always leave at least one AD selected (the form enforces ≥ 1 via
+      // an inline error at submit time).
+      for (const f of groupFields) {
+        if (f.type !== 'oci-ad-set') continue;
+        const stored = (values[f.key] ?? '').split(',').map(s => s.trim()).filter(Boolean);
+        if (stored.length === 0) {
+          coerceValues[f.key] = availableADs.join(',');
+          continue;
+        }
+        const pruned = stored.filter(a => availableADs.includes(a));
+        if (pruned.length === 0) {
+          coerceValues[f.key] = availableADs.join(',');
+        } else if (pruned.length !== stored.length) {
+          coerceValues[f.key] = pruned.join(',');
+        }
+      }
     }
 
     const isFlex = shapeIsFlex(selectedShape, selectedName);

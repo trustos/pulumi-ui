@@ -26,17 +26,10 @@ config:
     type: string
     default: "443"
     description: "TCP port for the NLB listener"
-  adCount:
-    type: integer
-    default: "1"
-
-variables:
-  availabilityDomains:
-    fn::invoke:
-      function: oci:Identity/getAvailabilityDomains:getAvailabilityDomains
-      arguments:
-        compartmentId: ${oci:tenancyOcid}
-      return: availabilityDomains
+  deployAds:
+    type: string
+    default: ""
+    description: "Availability domains to spread the pair across (comma-separated)"
 
 resources:
   # --- section: networking ---
@@ -117,7 +110,7 @@ resources:
     type: oci:Core/instance:Instance
     properties:
       compartmentId: {{ .Config.compartmentId }}
-      availabilityDomain: ${availabilityDomains[0].name}
+      availabilityDomain: "{{ index (splitList "," .Config.deployAds) (mod 0 (len (splitList "," .Config.deployAds))) }}"
       shape: "{{ .Config.shape }}"
       displayName: "node-a"
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
@@ -131,7 +124,7 @@ resources:
     type: oci:Core/instance:Instance
     properties:
       compartmentId: {{ .Config.compartmentId }}
-      availabilityDomain: ${availabilityDomains[1].name}
+      availabilityDomain: "{{ index (splitList "," .Config.deployAds) (mod 1 (len (splitList "," .Config.deployAds))) }}"
       shape: "{{ .Config.shape }}"
       displayName: "node-b"
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }

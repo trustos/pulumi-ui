@@ -38,7 +38,7 @@ export interface OciAvailabilityDomain {
 export interface ConfigField {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'textarea' | 'select' | 'oci-shape' | 'oci-image' | 'oci-compartment' | 'oci-ad' | 'ssh-public-key' | 'port-list';
+  type: 'text' | 'number' | 'textarea' | 'select' | 'oci-shape' | 'oci-image' | 'oci-compartment' | 'oci-ad' | 'oci-ad-set' | 'ssh-public-key' | 'port-list';
   required?: boolean;
   default?: string;
   description?: string;

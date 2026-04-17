@@ -11,6 +11,7 @@
   import { Combobox } from '$lib/components/ui/combobox';
   import { Button } from '$lib/components/ui/button';
   import PortListEditor from '$lib/components/PortListEditor.svelte';
+  import AdTagSelector from '$lib/components/AdTagSelector.svelte';
 
   let {
     fields,
@@ -87,7 +88,7 @@
   const needsShapes = $derived(fields.some(f => f.type === 'oci-shape'));
   const needsImages = $derived(fields.some(f => f.type === 'oci-image'));
   const needsCompartments = $derived(fields.some(f => f.type === 'oci-compartment'));
-  const needsADs = $derived(fields.some(f => f.type === 'oci-ad'));
+  const needsADs = $derived(fields.some(f => f.type === 'oci-ad' || f.type === 'oci-ad-set'));
   const needsSshKeys = $derived(fields.some(f => f.type === 'ssh-public-key'));
 
   const sshKeyItems = $derived(
@@ -492,6 +493,21 @@
 
             {:else if field.type === 'port-list'}
               <PortListEditor bind:value={values[field.key]} />
+
+            {:else if field.type === 'oci-ad-set'}
+              {#if adsError}
+                <p class="text-xs text-destructive">{adsError}</p>
+                <Input id={fid(field.key)} name={fid(field.key)} autocomplete="off" bind:value={values[field.key]} placeholder="AD-1,AD-3" />
+              {:else if adsLoading}
+                <div class="h-9 rounded-md border bg-muted animate-pulse"></div>
+              {:else}
+                <AdTagSelector
+                  bind:value={values[field.key]}
+                  regionADs={ads.map(a => a.name)}
+                  shapeADs={coupledState.adFilterByGroup[field.group ?? '']}
+                  ariaId={fid(field.key)}
+                />
+              {/if}
 
             {:else}
               {@const adCountCap = (field.key === 'adCount' || field.key.endsWith('AdCount'))

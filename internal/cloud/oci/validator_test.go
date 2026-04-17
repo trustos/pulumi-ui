@@ -68,7 +68,9 @@ func TestCheckAvailabilityDomain_SkipsUnresolvedReferences(t *testing.T) {
 	assert.Empty(t, errs, "unresolved Pulumi expressions are skipped")
 }
 
-func TestCheckAvailabilityDomain_SkipsEmptyAD(t *testing.T) {
+func TestCheckAvailabilityDomain_RejectsEmptyLiteral(t *testing.T) {
+	// Explicit empty string is a user error (no AD selected). Rejected
+	// at PutStack rather than letting OCI 400 opaquely at deploy time.
 	ct := cloud.ComputeType{
 		Name:                "VM.Standard.E2.1.Micro",
 		AvailabilityDomains: []string{"AD-3"},
@@ -78,5 +80,9 @@ func TestCheckAvailabilityDomain_SkipsEmptyAD(t *testing.T) {
 		Properties: map[string]any{"availabilityDomain": ""},
 	}
 	errs := checkAvailabilityDomain(inst, ct)
-	assert.Empty(t, errs)
+	if assert.Len(t, errs, 1) {
+		assert.Equal(t, cloud.LevelRuntimeCompat, errs[0].Level)
+		assert.Equal(t, "resources.instance.properties.availabilityDomain", errs[0].Field)
+		assert.Contains(t, errs[0].Message, "no availability domain selected")
+	}
 }

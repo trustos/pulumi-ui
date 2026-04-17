@@ -177,6 +177,62 @@ describe('getCoupledFieldState — shape ↔ AD coupling', () => {
   });
 });
 
+describe('getCoupledFieldState — oci-ad-set seeding and pruning', () => {
+  const flexAllADs: OciShape = {
+    shape: 'VM.Standard.A1.Flex',
+    processorDescription: 'Ampere',
+    sizing: { kind: 'range', vcpuRange: { min: 1, max: 4 }, memGiBRange: { min: 1, max: 24 } },
+    availabilityDomains: ['AD-1', 'AD-2', 'AD-3'],
+  };
+  const microAD3Only: OciShape = {
+    shape: 'VM.Standard.E2.1.Micro',
+    processorDescription: 'AMD',
+    sizing: { kind: 'fixed', vcpu: 1, memGiB: 1 },
+    availabilityDomains: ['AD-3'],
+  };
+
+  it('seeds an empty oci-ad-set with all shape-compatible ADs joined', () => {
+    const fs: ConfigField[] = [
+      { key: 'shape', label: 'Shape', type: 'oci-shape' },
+      { key: 'deployAds', label: 'ADs', type: 'oci-ad-set' },
+    ];
+    const state = getCoupledFieldState(fs, { shape: 'VM.Standard.A1.Flex', deployAds: '' }, [flexAllADs, microAD3Only]);
+    expect(state.coerceValues['deployAds']).toBe('AD-1,AD-2,AD-3');
+  });
+
+  it('preserves user-narrowed selection when still valid for the new shape', () => {
+    const fs: ConfigField[] = [
+      { key: 'shape', label: 'Shape', type: 'oci-shape' },
+      { key: 'deployAds', label: 'ADs', type: 'oci-ad-set' },
+    ];
+    // User had selected AD-1 + AD-3 with A1.Flex. Still valid.
+    const state = getCoupledFieldState(fs, { shape: 'VM.Standard.A1.Flex', deployAds: 'AD-1,AD-3' }, [flexAllADs, microAD3Only]);
+    expect(state.coerceValues['deployAds']).toBeUndefined();
+  });
+
+  it('prunes ADs that the new shape does not offer', () => {
+    const fs: ConfigField[] = [
+      { key: 'shape', label: 'Shape', type: 'oci-shape' },
+      { key: 'deployAds', label: 'ADs', type: 'oci-ad-set' },
+    ];
+    // User switched shape to E2.1.Micro; previous AD-1 + AD-3 selection
+    // drops AD-1 (not offered) and keeps AD-3.
+    const state = getCoupledFieldState(fs, { shape: 'VM.Standard.E2.1.Micro', deployAds: 'AD-1,AD-3' }, [flexAllADs, microAD3Only]);
+    expect(state.coerceValues['deployAds']).toBe('AD-3');
+  });
+
+  it('re-seeds to full set when nothing of the old selection remains valid', () => {
+    const fs: ConfigField[] = [
+      { key: 'shape', label: 'Shape', type: 'oci-shape' },
+      { key: 'deployAds', label: 'ADs', type: 'oci-ad-set' },
+    ];
+    // Selection was [AD-1, AD-2] with A1.Flex; now E2.1.Micro wants only AD-3.
+    // Nothing overlaps → re-seed to all-compatible.
+    const state = getCoupledFieldState(fs, { shape: 'VM.Standard.E2.1.Micro', deployAds: 'AD-1,AD-2' }, [flexAllADs, microAD3Only]);
+    expect(state.coerceValues['deployAds']).toBe('AD-3');
+  });
+});
+
 describe('shapeSupportsShapeConfig', () => {
   it('returns true for flex shapes', () => {
     expect(shapeSupportsShapeConfig(flex, flex.shape)).toBe(true);

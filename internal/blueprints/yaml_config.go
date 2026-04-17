@@ -260,8 +260,10 @@ func yamlTypeToFieldType(key, pulumiType string, uiTypeByField map[string]string
 		return "oci-compartment"
 	case "availabilityDomain":
 		return "oci-ad"
+	case "deployAds", "spreadAds":
+		return "oci-ad-set"
 	// Convention-based numeric fields — common OCI/infra integer parameters.
-	case "ocpus", "memoryInGbs", "bootVolSizeGb", "nodeCount":
+	case "ocpus", "memoryInGbs", "bootVolSizeGb", "nodeCount", "instanceCount":
 		return "number"
 	}
 	// Pulumi type → form field type.

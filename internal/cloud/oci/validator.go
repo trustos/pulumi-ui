@@ -59,25 +59,34 @@ func (p *Provider) Validate(ctx context.Context, graph cloud.ResourceGraph, ref 
 	return errs
 }
 
-// checkAvailabilityDomain verifies the instance's chosen AD (if any) is
-// one where the selected shape is actually offered. When the shape
-// metadata omits AvailabilityDomains (unknown availability), skip the
-// check — we don't want to block on incomplete metadata. When the AD
-// property is a Pulumi expression (unresolved ${...} reference), skip
-// too: those resolve at apply time against the user's region-wide AD
-// list, and validation of each rendered instance catches specifics
-// separately.
+// checkAvailabilityDomain verifies the instance's chosen AD is one where
+// the selected shape is actually offered.
+//
+// Skip rules:
+//   - Shape metadata has no AvailabilityDomains (unknown availability) →
+//     skip; we don't want to block on incomplete metadata.
+//   - AD property is a Pulumi expression (unresolved ${...} reference) →
+//     skip; those resolve at apply time. This is the back-compat path for
+//     blueprints still using `${availabilityDomains[N].name}`.
+//
+// An explicit empty string is a user error (tag selector deselected every
+// AD; hand-edited to blank) and is rejected with a clear message so the
+// user sees the problem at config submit rather than mid-deploy.
 func checkAvailabilityDomain(inst cloud.ResourceNode, ct cloud.ComputeType) []cloud.ValidationError {
 	if len(ct.AvailabilityDomains) == 0 {
 		return nil
 	}
 	ad, _ := inst.Properties["availabilityDomain"].(string)
-	if ad == "" {
-		return nil
-	}
 	// Unresolved Pulumi reference — skip (this is a render-time expression).
 	if len(ad) > 1 && ad[0] == '$' {
 		return nil
+	}
+	if ad == "" {
+		return []cloud.ValidationError{{
+			Level:   cloud.LevelRuntimeCompat,
+			Field:   fmt.Sprintf("resources.%s.properties.availabilityDomain", inst.Name),
+			Message: "no availability domain selected — pick at least one",
+		}}
 	}
 	for _, allowed := range ct.AvailabilityDomains {
 		if allowed == ad {
