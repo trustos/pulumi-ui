@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/trustos/pulumi-ui/internal/auth"
-	"github.com/trustos/pulumi-ui/internal/oci"
+	"github.com/trustos/pulumi-ui/internal/cloud/oci"
 )
 
 type accountResponse struct {
@@ -176,7 +176,8 @@ func (h *IdentityHandler) VerifyAccount(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	verifyErr := client.VerifyCredentials()
+	ctx := r.Context()
+	verifyErr := client.VerifyCredentials(ctx)
 	if verifyErr != nil {
 		_ = h.Accounts.SetStatus(id, "error", nil)
 		w.Header().Set("Content-Type", "application/json")
@@ -192,7 +193,7 @@ func (h *IdentityHandler) VerifyAccount(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Best-effort: fetch tenancy name. Fails silently if IAM policy is missing.
-	if tenancyName := client.GetTenancyName(); tenancyName != "" {
+	if tenancyName := client.GetTenancyName(ctx); tenancyName != "" {
 		_ = h.Accounts.SetTenancyName(id, tenancyName)
 		account.TenancyName = tenancyName
 	}
@@ -221,17 +222,18 @@ func (h *IdentityHandler) ListShapes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shapes, err := client.ListShapes()
+	shapes, err := client.ListShapes(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(shapes)
+	json.NewEncoder(w).Encode(oci.ShapesToComputeTypes(shapes))
 }
 
-// ListImages returns Oracle Linux ARM images for the account's region.
+// ListImages returns platform images compatible with the requested
+// compute shape (defaults to VM.Standard.A1.Flex when shape is absent).
 func (h *IdentityHandler) ListImages(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
@@ -248,14 +250,15 @@ func (h *IdentityHandler) ListImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	images, err := client.ListImages()
+	shape := r.URL.Query().Get("shape")
+	images, err := client.ListImages(r.Context(), shape)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(images)
+	json.NewEncoder(w).Encode(oci.ImagesToCloudImages(images))
 }
 
 // ListCompartments returns active compartments for the account's tenancy.
@@ -275,7 +278,7 @@ func (h *IdentityHandler) ListCompartments(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	compartments, err := client.ListCompartments()
+	compartments, err := client.ListCompartments(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -302,7 +305,7 @@ func (h *IdentityHandler) ListAvailabilityDomains(w http.ResponseWriter, r *http
 		return
 	}
 
-	ads, err := client.ListAvailabilityDomains()
+	ads, err := client.ListAvailabilityDomains(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

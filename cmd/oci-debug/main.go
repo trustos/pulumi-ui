@@ -18,11 +18,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 
-	"github.com/trustos/pulumi-ui/internal/oci"
+	"github.com/trustos/pulumi-ui/internal/cloud/oci"
 )
 
 func main() {
@@ -71,22 +72,21 @@ func main() {
 	fmt.Printf("  Verify (user profile): %s\n", oci.UserURL(*region, *userOCID))
 	fmt.Printf("  Tenancy info:          %s\n", oci.TenancyURL(*region, *tenancy))
 	fmt.Printf("  Shapes:                %s\n", oci.ShapesURL(*region, *tenancy))
-	fmt.Printf("  Images (Oracle Linux): %s\n", oci.ImagesURL(*region, *tenancy, "Oracle Linux"))
-	fmt.Printf("  Images (Ubuntu):       %s\n\n", oci.ImagesURL(*region, *tenancy, "Canonical Ubuntu"))
+	fmt.Printf("  Images (Oracle Linux): %s\n", oci.ImagesURL(*region, *tenancy, "Oracle Linux", ""))
+	fmt.Printf("  Images (Ubuntu):       %s\n\n", oci.ImagesURL(*region, *tenancy, "Canonical Ubuntu", ""))
 
-	// 1. Verify credentials via user profile.
+	ctx := context.Background()
+
 	run("GET user profile (credential verification)", func() error {
-		return client.VerifyCredentials()
+		return client.VerifyCredentials(ctx)
 	})
 
-	// 2. Tenancy info (requires 'inspect tenancy' policy — may fail for non-admin keys).
 	run("GET tenancy info (requires inspect-tenancy policy)", func() error {
-		return client.VerifyViaTenanacy()
+		return client.VerifyViaTenanacy(ctx)
 	})
 
-	// 3. List shapes.
 	run("GET compute shapes", func() error {
-		shapes, err := client.ListShapes()
+		shapes, err := client.ListShapes(ctx)
 		if err != nil {
 			return err
 		}
@@ -101,9 +101,8 @@ func main() {
 		return nil
 	})
 
-	// 4. List images.
 	run("GET Oracle Linux images (VM.Standard.A1.Flex)", func() error {
-		images, err := client.ListImages()
+		images, err := client.ListImages(ctx, "")
 		if err != nil {
 			return err
 		}

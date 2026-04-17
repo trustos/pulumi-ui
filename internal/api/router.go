@@ -6,7 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/trustos/pulumi-ui/internal/auth"
-	"github.com/trustos/pulumi-ui/internal/oci"
+	"github.com/trustos/pulumi-ui/internal/cloud/oci"
 )
 
 // RouterConfig holds all handler groups wired in main.go.

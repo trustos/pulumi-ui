@@ -114,7 +114,7 @@ resources:
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
       createVnicDetails: { subnetId: "${subnet.id}", assignPublicIp: false, nsgIds: ["${nsg.id}"] }
       metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
-      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+      {{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}
     options:
       dependsOn:
         - ${subnet}

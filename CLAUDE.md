@@ -107,7 +107,20 @@ internal/auth/       Session middleware
 internal/crypto/     AES-GCM encrypt / decrypt
 internal/services/   Service layer — business logic (refactoring in progress, see BE-1)
 internal/ports/      Repository interfaces for stores (see BE-3)
-internal/oci/        Minimal OCI REST client (credential verification + shapes/images + schema)
+internal/cloud/      Provider-neutral cloud-metadata layer — interface + types + registry
+  types.go           ComputeType (with tagged Sizing union), Image, Namespace, Zone, AccountRef, Credentials
+  provider.go        Provider interface, NoValidator default, ComputeConfigRenderer
+  registry.go        *Registry value — dep-injected, per-account Provider cache keyed on (tenant, account, fingerprint)
+  validation.go      ValidationError, ValidationLevel (incl. LevelRuntimeCompat = 8), ResourceGraph
+  errors.go          Sentinel errors: ErrNotFound, ErrUnauthenticated, ErrPermissionDenied, ErrRateLimited
+internal/cloud/oci/  OCI implementation of cloud.Provider (formerly internal/oci/)
+  provider.go        Provider impl + Factory + RenderComputeConfig (pure renderer)
+  convert.go         OCI Shape → cloud.ComputeType; Image → cloud.Image; Sizing inference (IsFlexible → RangeSizing vs FixedSizing)
+  extras.go          OCIExtras struct + ExtrasFor typed accessor (no map[string]any)
+  validator.go       Level-8 runtime validator: shape/shapeConfig + shape/image cross-check
+  resolver.go        AccountAdapter — bridges internal/db OCI account store to cloud.AccountResolver
+  client.go          Minimal OCI REST client; every public method takes context.Context; mapOCIError wraps 4xx/5xx as cloud sentinels
+  endpoints.go       ImagesURL takes shape parameter (back-compat defaults to VM.Standard.A1.Flex)
   schema.go          OCI provider schema parser with $ref resolution and fallback
   testdata/          JSON fixtures for schema tests
 internal/keystore/   Encryption key resolution (env → file → auto-generate)
@@ -118,7 +131,8 @@ frontend/            Svelte 5 SPA (src/ is the source; dist/ is embedded)
   src/lib/           Shared components, API client, stores, types
   src/lib/components/ Reusable UI components (ConfigForm, dialogs, pickers, ObjectPropertyEditor, ClaimStackDialog, DeploymentGroupWizard)
   src/pages/DeploymentGroupDetail.svelte  Group detail page with pipeline view + deploy orchestration
-  src/lib/blueprint-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking, schema-utils, user-data)
+  src/lib/blueprint-graph/ Pure utility modules (object-value, rename-resource, agent-access, scaffold-networking, schema-utils, user-data, coupled-fields)
+    coupled-fields.ts  Pure function — group-scoped shape/cpu/memory/image coupling for ConfigForm (hide+clear sibling fields for fixed shapes, scope image refetch to shape)
   src/lib/machines/  XState state machines
     stack-machine.ts Stack operation lifecycle (idle → running → cancelling → deployingApps → externalRunning)
     group-deploy-machine.ts Group deploy lifecycle (idle → deploying → externalDeploying, idle → deleting → deleted)
@@ -138,11 +152,13 @@ Browser
        └─ chi HTTP router  (internal/api/router.go)
             └─ Handler methods  (internal/api/*.go)
                  ├─ DB Stores  (internal/db/*.go)  — persistence
+                 ├─ Cloud Registry  (internal/cloud/)  — provider-neutral metadata + Level-8 validation
+                 │    └─ internal/cloud/oci/  — OCI Provider impl (first provider; more slot in here)
                  ├─ Mesh Manager  (internal/mesh/)  — on-demand Nebula tunnels per stack
                  │    ├─ Agent Proxy  (internal/api/agent_proxy.go)  — health/exec/upload/shell via mesh
                  │    └─ Forward Manager  (internal/mesh/forward.go)  — kubectl-style TCP port forwarding
                  └─ Engine  (internal/engine/engine.go)  — Pulumi orchestration + post-deploy discovery
-                      ├─ Blueprints  (internal/blueprints/)  — what to deploy
+                      ├─ Blueprints  (internal/blueprints/)  — what to deploy; `{{ computeConfig }}` helper delegates to cloud.Registry
                       ├─ AgentInject (internal/agentinject/) — auto-injects Nebula + agent into compute user_data
                       ├─ Deployer  (internal/applications/) — app deployment via mesh tunnels (upload job + exec)
                       └─ Pulumi Automation API  — subprocess management
@@ -265,6 +281,32 @@ POSTGRES_PASSWORD={{ key "postgres/adminpassword" }}
 The deployer uses `template.New(name).Delims("[[", "]]")`. Do not use `<<` `>>` — they
 conflict with HCL heredoc syntax (`<<EOF`).
 
+### Cloud provider abstraction — always through `cloud.Provider`
+All cloud-metadata access (list compute types, images, namespaces, zones; credential verification; Level-8 runtime validation) goes through the `cloud.Provider` interface at `internal/cloud/provider.go`. The OCI implementation lives under `internal/cloud/oci/`; future providers (AWS, Azure, GCP) slot in as sibling subpackages.
+
+- **Never import OCI-specific types into handlers, services, or the engine.** Depend on `cloud.ComputeType`, `cloud.Image`, etc. Provider-specific fields (e.g. OCI's `ProcessorDescription`) are reached through the typed `OCIExtras` accessor at `internal/cloud/oci/extras.go` — never `map[string]any`.
+- **`cloud.Registry` is dependency-injected**, not a package global. Constructed once in `cmd/server/main.go` and threaded through handlers alongside other services. Its cache is keyed on `(TenantID, AccountID, CredentialsFingerprint)` from day one — multi-tenant retrofit is zero-cost.
+- **Cross-field runtime validation (Level 8)** runs at `PutStack` via `provider.Validate(ctx, resourceGraph, accountRef)`. This is the catch-all that stops cross-field-invalid OCI configurations (e.g. fixed shape + `shapeConfig`, shape/image mismatch) reaching `pulumi up`. Providers with no runtime rules embed `cloud.NoValidator`.
+- **`context.Context` is threaded through every public method** on the OCI client. `http.NewRequestWithContext` everywhere — timeouts and cancellation compose. `mapOCIError` wraps 4xx/5xx into `cloud.ErrNotFound` / `ErrUnauthenticated` / `ErrPermissionDenied` / `ErrRateLimited` via `%w`; handlers discriminate via `errors.Is`.
+
+### Shape sizing — tagged union, not boolean flag
+`cloud.ComputeType.Sizing` is a tagged union — `FixedSizing{VCPU, MemGiB}` or `RangeSizing{VCPURange, MemGiBRange, MemPerVCPUDefault}`. UI code switches on the concrete type; backend renderers do the same. **Do not model this as `IsFlexible bool + nullable ranges`** — that pattern invited the original shape-config bug by conflating "no metadata" with "no range". OCI's `.Flex` suffix is a name-heuristic fallback when live metadata is absent.
+
+### Compute config emission — always the `{{ computeConfig }}` template helper
+Blueprint YAMLs must not hardcode provider-specific `shapeConfig: { ocpus: X, memoryInGbs: Y }` snippets. Use the provider-neutral helper:
+```yaml
+properties:
+  shape: "{{ .Config.shape }}"
+  {{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}
+```
+The helper delegates to `cloud.Registry.RenderComputeConfig`, which returns a YAML fragment only when the shape's sizing model supports it. For OCI, fixed shapes return empty string — safe to inject inline; the blank line parses cleanly as YAML. All nine gallery templates under `frontend/src/lib/blueprint-graph/templates/*.yaml` use this helper; `frontend/src/lib/blueprint-graph/resource-defaults.ts` seeds it for new instance resources in the visual editor.
+
+### Frontend cross-field coupling — pure function, not inline Svelte logic
+Form-layer coupling rules (hide/clear ocpus/memory when a fixed shape is selected; refetch image list scoped to shape) live in the pure TypeScript function `getCoupledFieldState` at `frontend/src/lib/blueprint-graph/coupled-fields.ts`. `ConfigForm.svelte` consumes the result via `$derived`. The function is unit-tested with plain Vitest — the project has no Svelte component-test framework, and won't introduce one. **New cross-field form rules belong in this module or one like it, not embedded as inline effects in the component.**
+
+### ConfigField UI type back-compat aliases
+`internal/blueprints/yaml_config.go` accepts provider-neutral `ui_type` names (`compute-type`, `compute-image`, `compute-namespace`, `compute-zone`) as deprecated aliases for the OCI-specific names (`oci-shape`, `oci-image`, `oci-compartment`, `oci-ad`). Resolution logs a one-time deprecation warning. These are sunsetting — when all user-forked blueprints have been migrated, remove the alias map.
+
 ### Consul KV secrets for Nomad job deployment (`consulEnv`)
 Each catalog application can declare `consulEnv` — a map of env var name → Consul KV
 path. Before `nomad job run`, the deployer reads each value from Consul and exports it.
@@ -287,6 +329,14 @@ Full detail: `docs/coding-principles.md`
 - **Services own business logic**: credential resolution, referential integrity, recovery logic live in `internal/services/`.
 - **Stores are dumb**: only SQL. No cross-table rules, no domain logic.
 - **Repository interfaces**: stores implement interfaces from `internal/ports/`; handlers/services depend on interfaces, never on concrete types.
+- **Provider abstraction for cloud metadata**: `internal/cloud/Provider` is the seam for every cloud-metadata operation. Handlers/services/engine depend on `cloud.ComputeType`/`cloud.Image`/etc. Provider-specific concerns live in `internal/cloud/<providerID>/` and expose typed accessors (e.g. `oci.ExtrasFor(ct)`), never `map[string]any`.
+- **Registries are dependency-injected**: `cloud.Registry`, `blueprints.BlueprintRegistry` are constructed once in `main.go` and threaded through. No package-level mutable state except template-helper plug points (`SetComputeConfigRenderer` is process-wide by nature). No `init()` self-registration.
+- **Multi-tenant keys from day one**: new per-account caches include `TenantID` in the key even when multi-tenant is a no-op today. Retrofitting cache keys is a cross-cutting audit; paying the cost now is free.
+- **Context propagation at I/O boundaries**: every public method that performs network / IO takes `context.Context` as first parameter. `http.NewRequestWithContext` is mandatory.
+- **Sentinel errors at the provider seam**: wrap transport errors with `cloud.ErrNotFound` / `ErrUnauthenticated` / `ErrPermissionDenied` / `ErrRateLimited` via `%w`. Callers use `errors.Is`.
+- **Runtime validation goes through `Provider.Validate`**: cross-field / semantic checks that require live cloud metadata run at stack-config submit time, not at `pulumi up`. Level-8 (`LevelRuntimeCompat`) in `cloud/validation.go`.
+- **Tagged unions over boolean+optional**: for "kind of thing with different shapes of data" (e.g. `Sizing`: Fixed vs Range), model as a tagged union with `isSizing()` marker, not `IsFlexible bool + nullable ranges`. Clearer intent; forces exhaustive switches.
+- **Cross-field form coupling is pure**: form-layer coupling rules live in pure TS modules under `src/lib/blueprint-graph/` and are unit-tested with Vitest. `$effect` in Svelte components only *applies* the rule — it does not own it. No Svelte component tests.
 - **Config field grouping**: blueprints organize `ConfigField` items into groups via `meta.groups` with `key`, `label`, and `fields` list. Fields with `Secret: true` are Consul KV auto-managed credentials with per-app `_autoCredentials` toggle.
 - **Blueprint registration**: explicit `RegisterBuiltins(r)` in `main.go`. No `init()` self-registration.
 - **XState usage**: Use XState ONLY for complex operation lifecycles with multiple phases, guards, and temporal dependencies (e.g., `stack-machine.ts` for stack ops, `group-deploy-machine.ts` for group deploy). Do NOT use XState for simple UI state (dialog open/close, form values, tab selection) — use Svelte 5 `$state` runes for those. See `docs/frontend.md` for detailed guidelines.
@@ -317,10 +367,16 @@ Full detail: `docs/roadmap.md`
 | BE-2 | Deduplicate Up/Destroy/Refresh/Preview in engine | **done** |
 | BE-4 | Decompose God Object Handler (BE-3 done) | **done** |
 | BE-6 | OCI Object Storage state backend + state migration | **done** |
+| Cloud Provider Abstraction | `internal/cloud/` layer + Provider interface + Registry + Level-8 runtime validation; OCI moved to `internal/cloud/oci/` | **done** |
+| Shape-aware config | `{{ computeConfig }}` helper + group-scoped `getCoupledFieldState` in ConfigForm; shape-scoped image list; gallery templates adopted | **done** |
 | Mesh Sync | Sync Nebula mesh PKI to S3 for cross-instance portability | **done** |
 | Agent | Auto-update agent binaries through mesh (high-risk, needs careful design) | pending |
 | FE-1 | 3-step stack creation wizard | **done** |
 | FE-4 | Client-side config field validation (reuse visual editor's `typed-value.ts`) | pending |
+| Frontend rename | `OciShape` → `ComputeType` etc. across types.ts, api.ts, components; delete dead `OciShapePicker`/`OciImagePicker` | pending (back-compat extended types in place) |
+| Built-in Nomad adoption | Migrate `blueprints/nomad-*.yaml` to `{{ computeConfig }}` helper | pending (flex-only today; safe to defer) |
+| Provider conformance suite | `internal/cloud/providertest` — interface contract tests for new providers | pending (add when AWS lands) |
+| Accounts → Provider via Registry | Migrate `accounts.go` handlers from `oci.NewClient` to `registry.ProviderFor` | pending (functional today; exercises cache when done) |
 | FE-9 | Node graph editor (Svelte Flow) — third editor mode | pending |
 | Visual Editor | Bug fixes: P1-1, P2-1–P2-7, P3-1–P3-4, G1-6 | pending |
 | Cloud-init | User-provided boot scripts (`{{ gzipBase64 }}` done; `{{ userInit }}` for multi-part composition pending) | partial |

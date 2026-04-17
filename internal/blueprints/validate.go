@@ -8,7 +8,7 @@ import (
 	"text/template"
 
 	"github.com/trustos/pulumi-ui/internal/agentinject"
-	"github.com/trustos/pulumi-ui/internal/oci"
+	"github.com/trustos/pulumi-ui/internal/cloud/oci"
 	"gopkg.in/yaml.v3"
 )
 

@@ -18,6 +18,23 @@ type TemplateContext struct {
 	Config map[string]string
 }
 
+// computeConfigRenderer is the pluggable renderer for the {{ computeConfig }}
+// template helper. main.go installs the cloud.Registry-backed implementation
+// via SetComputeConfigRenderer; unset it falls back to returning empty
+// (which is the safe default — no shapeConfig emitted).
+//
+// Keeping this a package-level var rather than a Renderer struct is a
+// deliberate concession: every existing RenderTemplate caller stays
+// free-function. Future providers slot in at startup-registration time.
+var computeConfigRenderer func(providerID, region, computeType, cpu, memGiB string) string
+
+// SetComputeConfigRenderer installs the process-wide renderer used by the
+// {{ computeConfig }} helper. Call once from main.go after building the
+// cloud.Registry.
+func SetComputeConfigRenderer(fn func(providerID, region, computeType, cpu, memGiB string) string) {
+	computeConfigRenderer = fn
+}
+
 // buildFuncMap returns the complete template.FuncMap used for all blueprint
 // rendering and validation. Keeping a single source ensures they stay in sync.
 func buildFuncMap() template.FuncMap {
@@ -28,7 +45,21 @@ func buildFuncMap() template.FuncMap {
 	fm["groupRef"] = templateGroupRef
 	fm["gzipBase64"] = templateGzipBase64
 	fm["gossipKey"] = templateGossipKey
+	fm["computeConfig"] = templateComputeConfig
 	return fm
+}
+
+// templateComputeConfig is the body of the {{ computeConfig }} helper.
+// Returns a YAML fragment like `shapeConfig: { ocpus: X, memoryInGbs: Y }`
+// for providers that emit one (e.g. OCI flex shapes); empty string
+// otherwise. Empty string is safe to inject inline — blueprints may
+// write {{ computeConfig "oci" .Config.region .Config.shape .Config.ocpus .Config.memoryInGbs }}
+// on its own line and the blank line parses cleanly as YAML.
+func templateComputeConfig(providerID, region, computeType, cpu, memGiB string) string {
+	if computeConfigRenderer == nil {
+		return ""
+	}
+	return computeConfigRenderer(providerID, region, computeType, cpu, memGiB)
 }
 
 // RenderTemplate renders a Go-templated Pulumi YAML body using the supplied

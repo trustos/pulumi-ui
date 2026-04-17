@@ -14,10 +14,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/trustos/pulumi-ui/internal/blueprints"
+	"github.com/trustos/pulumi-ui/internal/cloud"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
 	nebulaPKI "github.com/trustos/pulumi-ui/internal/nebula"
-	"github.com/trustos/pulumi-ui/internal/blueprints"
 	"github.com/trustos/pulumi-ui/internal/stacks"
 )
 
@@ -242,6 +243,16 @@ func (h *StackHandler) PutStack(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := cfg.Validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if verrs := h.runRuntimeCompat(r.Context(), prog, body.Config, body.OciAccountID); len(verrs) > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error":           "configuration is incompatible with your cloud account",
+			"validationErrors": verrs,
+		})
 		return
 	}
 
@@ -854,4 +865,41 @@ func (h *StackHandler) generateNebulaPKI(stackName string) error {
 	}
 
 	return nil
+}
+
+// runRuntimeCompat is Level-8 validation — the provider-specific runtime
+// cross-field check that runs at config submit time. Returns any
+// violations; empty slice (or nil) means OK. When the blueprint doesn't
+// render to a usable resource graph (custom blueprint, programmatic
+// blueprint) or when no OCI account is attached, the check is skipped.
+func (h *StackHandler) runRuntimeCompat(ctx context.Context, prog blueprints.Blueprint, cfgMap map[string]string, ociAccountID *string) []cloud.ValidationError {
+	if h.CloudRegistry == nil || ociAccountID == nil || *ociAccountID == "" {
+		return nil
+	}
+	yamlProg, ok := prog.(blueprints.YAMLBlueprintProvider)
+	if !ok {
+		return nil
+	}
+	rendered, err := blueprints.RenderTemplate(yamlProg.YAMLBody(), cfgMap)
+	if err != nil {
+		return nil
+	}
+	graph, err := blueprints.ParseResourceGraph(rendered)
+	if err != nil {
+		return nil
+	}
+	account, err := h.Accounts.Get(*ociAccountID)
+	if err != nil || account == nil {
+		return nil
+	}
+	ref := cloud.AccountRef{
+		AccountID:  *ociAccountID,
+		ProviderID: "oci",
+		Region:     account.Region,
+	}
+	provider, err := h.CloudRegistry.ProviderFor(ctx, ref)
+	if err != nil {
+		return nil
+	}
+	return provider.Validate(ctx, graph, ref)
 }

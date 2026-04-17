@@ -31,12 +31,17 @@ func TestShapesURL(t *testing.T) {
 }
 
 func TestImagesURL(t *testing.T) {
-	url := ImagesURL("us-ashburn-1", "ocid1.tenancy.oc1..ccc", "Canonical Ubuntu")
+	url := ImagesURL("us-ashburn-1", "ocid1.tenancy.oc1..ccc", "Canonical Ubuntu", "")
 	assert.Contains(t, url, "iaas.us-ashburn-1.oraclecloud.com")
 	assert.Contains(t, url, "/20160918/images")
 	assert.Contains(t, url, "compartmentId=ocid1.tenancy.oc1..ccc")
 	assert.Contains(t, url, "operatingSystem=Canonical+Ubuntu")
 	assert.Contains(t, url, "shape=VM.Standard.A1.Flex")
+}
+
+func TestImagesURL_ShapeOverride(t *testing.T) {
+	url := ImagesURL("us-ashburn-1", "ocid1.tenancy.oc1..ccc", "Canonical Ubuntu", "VM.Standard.E2.1.Micro")
+	assert.Contains(t, url, "shape=VM.Standard.E2.1.Micro")
 }
 
 func TestUserURL(t *testing.T) {

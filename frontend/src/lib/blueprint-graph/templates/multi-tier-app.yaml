@@ -137,7 +137,7 @@ resources:
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
       createVnicDetails: { subnetId: "${web-subnet.id}", assignPublicIp: true }
       metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
-      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+      {{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}
     options:
       dependsOn:
         - ${web-subnet}
@@ -151,7 +151,7 @@ resources:
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
       createVnicDetails: { subnetId: "${app-subnet.id}", assignPublicIp: false }
       metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
-      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+      {{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}
     options:
       dependsOn:
         - ${app-subnet}
@@ -165,7 +165,7 @@ resources:
       sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
       createVnicDetails: { subnetId: "${db-subnet.id}", assignPublicIp: false }
       metadata: { ssh_authorized_keys: "{{ .Config.sshPublicKey }}" }
-      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+      {{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}
     options:
       dependsOn:
         - ${db-subnet}

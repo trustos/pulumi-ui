@@ -161,29 +161,42 @@ Key difference from built-in programs: OCI credentials are passed as Pulumi prov
 | `nebula` | `internal/nebula/` | Nebula PKI generation (per-stack CA + host certificates: UI cert at .1, agent cert at .2) |
 | `stacks` | `internal/stacks/` | YAML `StackConfig` schema, validation, config field metadata |
 | `db` | `internal/db/` | SQLite connection, migrations, all CRUD stores (including `StackConnectionStore` for Nebula mesh state) |
-| `oci` | `internal/oci/` | OCI HTTP signature client: credential verification, shapes, images |
-| `oci/configparser` | `internal/oci/configparser/` | Parses OCI SDK config files (INI format) for account import |
+| `cloud` | `internal/cloud/` | Provider-neutral cloud-metadata layer — `Provider` interface, `ComputeType` (tagged `Sizing` union), `Image`, `Namespace`, `Zone`, `AccountRef`, sentinel errors, `ValidationError` (Level 8), `ResourceGraph`. Dep-injected `*Registry` with per-account Provider cache + pure `ComputeConfigRenderer` map |
+| `cloud/oci` | `internal/cloud/oci/` | OCI implementation of `cloud.Provider` — factory, context-aware HTTP signature client, `OCIExtras` typed accessor, Level-8 validator (shape/shapeConfig + shape/image), `AccountAdapter` bridge to `internal/db`. `RenderComputeConfig` is the pure renderer for `{{ computeConfig }}` |
+| `cloud/oci/configparser` | `internal/cloud/oci/configparser/` | Parses OCI SDK config files (INI format) for account import |
 | `crypto` | `internal/crypto/` | AES-256-GCM encrypt/decrypt, key derivation |
 | `keystore` | `internal/keystore/` | Encryption key resolution: env override → load from store → auto-generate; `file` and `consul` backends |
 
 **Import rules:**
-- `api` imports `engine`, `db`, `auth`, `stacks`, `blueprints`, `mesh` — but not `crypto` directly
+- `api` imports `engine`, `db`, `auth`, `stacks`, `blueprints`, `mesh`, `cloud`, `cloud/oci` — but not `crypto` directly
 - `mesh` imports `db`, `nebula`, `github.com/slackhq/nebula/service` — no other internal packages
 - `auth` imports `db` only (reads users/sessions)
 - `engine` imports `blueprints`, `db`, `agentinject`, `applications`, `nebula` — but not `api`
 - `agentinject` imports `gopkg.in/yaml.v3` — no other internal packages
 - `applications` does not import `engine` (uses a `LogFunc` callback to avoid cycles)
-- `blueprints` imports `agentinject` (for `ComposeAndEncode`, `GzipBase64`, `CfgKeyAgentBootstrap`), `github.com/Masterminds/sprig/v3` (template functions), `gopkg.in/yaml.v3` (config parser) — no other internal packages
+- `blueprints` imports `agentinject`, `cloud` (for `ResourceGraph`, `ValidationError` aliases), `github.com/Masterminds/sprig/v3`, `gopkg.in/yaml.v3` — no other internal packages
 - `nebula` imports `github.com/slackhq/nebula` — no internal packages
-- `oci` has no internal imports (standalone HTTP client used by `api/accounts.go`)
+- `cloud` imports `ports` only (for `AccountRepository` in the Registry adapter); pure internal types otherwise. No cloud-provider SDK imports — all OCI specifics live in `cloud/oci/`.
+- `cloud/oci` imports `cloud`, `ports`, `gopkg.in/yaml.v3` — no imports from `api`, `engine`, or `blueprints`. Future providers (`cloud/aws`, etc.) follow the same rule: depend on `cloud`, not on sibling providers.
 - `crypto` has no internal imports (pure stdlib crypto)
 - `keystore` has no internal imports (only stdlib `net/http` and `os`); imported only by `main`
+
+**Direction of dependency between `blueprints` and `cloud`:** `blueprints` imports
+`cloud` for the `ValidationError` / `ResourceGraph` types and the registry-backed
+template helper. `cloud` never imports `blueprints`. This avoids the obvious cycle —
+a lesson learnt during the provider-abstraction refactor.
 
 **Target architecture** (see `docs/roadmap.md`):
 ```
 Handler → Service (internal/services/) → Repository interface (internal/ports/) → DB Store
+Handler → cloud.Registry.ProviderFor(ref) → cloud.Provider (interface)
+                                                  ├─ cloud/oci/    — current
+                                                  ├─ cloud/aws/    — future
+                                                  └─ cloud/azure/  — future
 ```
 Business logic moves out of handlers into services. Stores implement narrow interfaces.
+Cloud-metadata access goes through a single provider seam; handlers never import
+provider-specific types.
 
 ---
 

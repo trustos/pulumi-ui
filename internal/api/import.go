@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/trustos/pulumi-ui/internal/auth"
-	"github.com/trustos/pulumi-ui/internal/oci/configparser"
+	"github.com/trustos/pulumi-ui/internal/cloud/oci/configparser"
 )
 
 // importProfilePreview is a single profile shown in the preview step.

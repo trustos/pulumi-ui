@@ -44,20 +44,25 @@ func ShapesURL(region, compartmentID string) string {
 		computeBase(region), url.QueryEscape(compartmentID))
 }
 
-// ImagesURL returns the endpoint to list available platform images for VM.Standard.A1.Flex
-// in the given region, filtered by OS and lifecycle state AVAILABLE (no deprecated images).
-// Results are sorted newest first.
+// ImagesURL returns the endpoint to list available platform images for
+// the given shape in the given region, filtered by OS and lifecycle
+// state AVAILABLE (no deprecated images). Results are sorted newest
+// first.
 //
-//	GET /images?compartmentId={id}&operatingSystem={os}&shape=VM.Standard.A1.Flex&lifecycleState=AVAILABLE&...
+//	GET /images?compartmentId={id}&operatingSystem={os}&shape={shape}&lifecycleState=AVAILABLE&...
 //
 // Common OS names accepted by OCI: "Oracle Linux", "Canonical Ubuntu".
-func ImagesURL(region, compartmentID, operatingSystem string) string {
+// Pass an empty shape to default to VM.Standard.A1.Flex.
+func ImagesURL(region, compartmentID, operatingSystem, shape string) string {
+	if shape == "" {
+		shape = "VM.Standard.A1.Flex"
+	}
 	return fmt.Sprintf(
 		"%s/images?compartmentId=%s&operatingSystem=%s&shape=%s&lifecycleState=AVAILABLE&sortBy=TIMECREATED&sortOrder=DESC&limit=50",
 		computeBase(region),
 		url.QueryEscape(compartmentID),
 		url.QueryEscape(operatingSystem),
-		url.QueryEscape("VM.Standard.A1.Flex"),
+		url.QueryEscape(shape),
 	)
 }
 

@@ -2,10 +2,12 @@
   import { untrack } from 'svelte';
   import type { ConfigField, OciShape, OciImage, OciCompartment, OciAvailabilityDomain, SshKey } from '$lib/types';
   import { buildInitialValues } from '$lib/blueprint-graph/config-form-init';
+  import { getCoupledFieldState, sizingConstraints } from '$lib/blueprint-graph/coupled-fields';
   import { listShapes, listImages, listCompartments, listAvailabilityDomains, listSSHKeys } from '$lib/api';
   import { Input } from '$lib/components/ui/input';
   import { Textarea } from '$lib/components/ui/textarea';
   import * as Select from '$lib/components/ui/select';
+  import { Alert, AlertTitle, AlertDescription } from '$lib/components/ui/alert';
   import { Combobox } from '$lib/components/ui/combobox';
   import { Button } from '$lib/components/ui/button';
   import PortListEditor from '$lib/components/PortListEditor.svelte';
@@ -44,11 +46,15 @@
 
   // Group fields by their group key, preserving insertion order.
   // Fields without a group are collected under the empty-string key.
+  // Fields flagged as coupling-hidden (e.g. cpu/memory for a fixed shape)
+  // are filtered out so they don't render at all.
   const groupedFields = $derived(() => {
+    const hidden = coupledState.hiddenKeys;
     const order: string[] = [];
     const map: Record<string, { label: string; fields: typeof fields }> = {};
     for (const f of fields) {
-      if (f.hidden) continue; // Skip auto-wired fields hidden from the config form
+      if (f.hidden) continue;
+      if (hidden.has(f.key)) continue;
       const key = f.group ?? '';
       if (!map[key]) {
         order.push(key);
@@ -168,16 +174,62 @@
     };
   });
 
+  // Shape-aware coupling state: which sibling cpu/memory fields are
+  // hidden, which need their stored values cleared, and the per-group
+  // selected compute-type name (used below to scope image refetches).
+  const coupledState = $derived(getCoupledFieldState(fields, values, shapes));
+  const selectedShapeForImages = $derived(() => {
+    // Single-group blueprints: the image list follows the form's first
+    // oci-shape field. Multi-group blueprints keep a single image list
+    // keyed on the first compute-type encountered; per-group image lists
+    // are a future refinement.
+    const groups = Object.values(coupledState.imageShapeByGroup);
+    return groups[0] ?? '';
+  });
+
+  // Clear hidden field values. Guarded with an emptiness check so the
+  // effect does not retrigger itself when values is reactive.
+  $effect(() => {
+    const toClear = coupledState.clearKeys;
+    if (toClear.length === 0) return;
+    untrack(() => {
+      for (const k of toClear) {
+        if ((values[k] ?? '') !== '') values[k] = '';
+      }
+    });
+  });
+
+  // Inline alert shown when the shape changes and the auto-pick-Ubuntu
+  // fallback fails to find a replacement in the refreshed list — the
+  // user is left without a selection and needs to choose one.
+  let imagesRefreshedAlert = $state(false);
+  let lastFetchedImageShape = $state('');
+
   $effect(() => {
     if (!accountId || !needsImages) return;
+    const shape = selectedShapeForImages();
     let cancelled = false;
     imagesLoading = true;
     imagesError = '';
-    listImages(accountId)
+
+    // Clear the stored image value BEFORE refetching so the
+    // auto-pick-Ubuntu logic below can fire cleanly on the new list.
+    // Use untrack to avoid this branch re-running solely because we
+    // read values inside the effect.
+    let shapeChanged = false;
+    untrack(() => {
+      const imageField = fields.find(f => f.type === 'oci-image');
+      if (imageField && lastFetchedImageShape !== '' && lastFetchedImageShape !== shape) {
+        shapeChanged = true;
+        if (values[imageField.key]) values[imageField.key] = '';
+      }
+    });
+
+    listImages(accountId, shape || undefined)
       .then(data => {
         if (cancelled) return;
         images = data;
-        // Auto-select the most recent Ubuntu Minimal image if no value is set yet.
+        lastFetchedImageShape = shape;
         const imageField = fields.find(f => f.type === 'oci-image');
         if (imageField && !values[imageField.key]) {
           const ubuntuMinimal = data.find(img =>
@@ -186,7 +238,12 @@
           );
           const fallback = data.find(img => img.operatingSystem.toLowerCase().includes('ubuntu'));
           const pick = ubuntuMinimal ?? fallback ?? data[0];
-          if (pick) values[imageField.key] = pick.id;
+          if (pick) {
+            values[imageField.key] = pick.id;
+            imagesRefreshedAlert = false;
+          } else if (shapeChanged) {
+            imagesRefreshedAlert = true;
+          }
         }
       })
       .catch(err => {
@@ -297,6 +354,14 @@
               {/if}
 
             {:else if field.type === 'oci-image'}
+              {#if imagesRefreshedAlert}
+                <Alert variant="info" class="mb-2">
+                  <AlertTitle>Image list refreshed</AlertTitle>
+                  <AlertDescription>
+                    The previous image was not compatible with the new compute type. Pick an image below.
+                  </AlertDescription>
+                </Alert>
+              {/if}
               {#if imagesError}
                 <p class="text-xs text-destructive">{imagesError}</p>
                 <Input id={fid(field.key)} name={fid(field.key)} autocomplete="off" bind:value={values[field.key]} placeholder="ocid1.image.oc1.." />

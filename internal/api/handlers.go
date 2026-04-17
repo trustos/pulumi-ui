@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/trustos/pulumi-ui/internal/blueprints"
+	"github.com/trustos/pulumi-ui/internal/cloud"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
 	"github.com/trustos/pulumi-ui/internal/logbuffer"
@@ -39,6 +40,7 @@ type StackHandler struct {
 	Stacks        *db.StackStore
 	Ops           *db.OperationStore
 	Registry      *blueprints.BlueprintRegistry
+	CloudRegistry *cloud.Registry
 	ConnStore     *db.StackConnectionStore
 	NodeCertStore *db.NodeCertStore
 	Engine        *engine.Engine

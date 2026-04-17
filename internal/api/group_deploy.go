@@ -18,7 +18,7 @@ import (
 	"github.com/trustos/pulumi-ui/internal/blueprints"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
-	"github.com/trustos/pulumi-ui/internal/oci"
+	"github.com/trustos/pulumi-ui/internal/cloud/oci"
 	"github.com/trustos/pulumi-ui/internal/stacks"
 )
 
@@ -220,7 +220,7 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 	// Pool instances are now RUNNING. Resolve their IPs via OCI API, set
 	// primaryNodeIps config, and re-up to create per-node agent NLB backends.
 	send(engine.SSEEvent{Type: "output", Data: "── Creating per-node agent backends ──"})
-	primaryIPs, err := resolvePoolInstanceIPs(primaryMember, outputs)
+	primaryIPs, err := resolvePoolInstanceIPs(opCtx, primaryMember, outputs)
 	if err != nil {
 		log.Printf("[group-deploy] WARNING: could not resolve primary pool IPs: %v", err)
 	} else if len(primaryIPs) > 0 {
@@ -419,7 +419,7 @@ func (h *PlatformHandler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[group-deploy] phase 3.5: failed to get outputs for %s: %v", worker.stackName, err)
 			continue
 		}
-		wIPs, err := resolvePoolInstanceIPs(worker, wOutputs)
+		wIPs, err := resolvePoolInstanceIPs(opCtx, worker, wOutputs)
 		if err != nil {
 			log.Printf("[group-deploy] phase 3.5: WARNING: could not resolve pool IPs for %s: %v", worker.stackName, err)
 		} else if len(wIPs) > 0 {
@@ -949,7 +949,7 @@ func (h *PlatformHandler) updateStackConfig(stackName, blueprint string, config 
 
 // resolvePoolInstanceIPs queries OCI API to get private IPs for all instances
 // in an InstancePool. Uses poolId and compartmentId from Pulumi stack outputs.
-func resolvePoolInstanceIPs(member *memberWithCreds, outputs auto.OutputMap) ([]string, error) {
+func resolvePoolInstanceIPs(ctx context.Context, member *memberWithCreds, outputs auto.OutputMap) ([]string, error) {
 	poolID := ""
 	compartmentID := ""
 	if v, ok := outputs["poolId"]; ok {
@@ -971,7 +971,7 @@ func resolvePoolInstanceIPs(member *memberWithCreds, outputs auto.OutputMap) ([]
 		return nil, fmt.Errorf("create OCI client: %w", err)
 	}
 
-	instances, err := client.ListInstancePoolInstances(compartmentID, poolID)
+	instances, err := client.ListInstancePoolInstances(ctx, compartmentID, poolID)
 	if err != nil {
 		return nil, fmt.Errorf("list pool instances: %w", err)
 	}
@@ -987,7 +987,7 @@ func resolvePoolInstanceIPs(member *memberWithCreds, outputs auto.OutputMap) ([]
 			log.Printf("[group-deploy] pool instance %s state=%s, skipping", inst.ID, state)
 			continue
 		}
-		ip, err := client.GetInstancePrivateIP(compartmentID, inst.ID)
+		ip, err := client.GetInstancePrivateIP(ctx, compartmentID, inst.ID)
 		if err != nil {
 			log.Printf("[group-deploy] failed to get IP for instance %s: %v", inst.ID, err)
 			continue

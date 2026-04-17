@@ -17,13 +17,14 @@ import (
 	"github.com/trustos/pulumi-ui/internal/api"
 	"github.com/trustos/pulumi-ui/internal/applications"
 	"github.com/trustos/pulumi-ui/internal/blueprints"
+	"github.com/trustos/pulumi-ui/internal/cloud"
+	"github.com/trustos/pulumi-ui/internal/cloud/oci"
 	"github.com/trustos/pulumi-ui/internal/crypto"
 	"github.com/trustos/pulumi-ui/internal/db"
 	"github.com/trustos/pulumi-ui/internal/engine"
 	"github.com/trustos/pulumi-ui/internal/keystore"
 	"github.com/trustos/pulumi-ui/internal/logbuffer"
 	"github.com/trustos/pulumi-ui/internal/mesh"
-	"github.com/trustos/pulumi-ui/internal/oci"
 )
 
 // The frontend/dist/ directory is built by `cd frontend && npm run build`
@@ -110,6 +111,11 @@ func main() {
 	users := db.NewUserStore(dbPair)
 	sessions := db.NewSessionStore(dbPair)
 	accounts := db.NewAccountStore(dbPair, enc)
+
+	cloudRegistry := cloud.NewRegistry(oci.NewAccountAdapter(accounts))
+	cloudRegistry.Register(oci.ProviderID, oci.Factory)
+	cloudRegistry.RegisterRenderer(oci.ProviderID, oci.RenderComputeConfig)
+	blueprints.SetComputeConfigRenderer(cloudRegistry.RenderComputeConfig)
 	passphrases := db.NewPassphraseStore(dbPair, enc)
 	sshKeys := db.NewSSHKeyStore(dbPair, enc)
 	customBlueprints := db.NewCustomBlueprintStore(dbPair)
@@ -186,7 +192,8 @@ func main() {
 	adminH := &api.AdminHandler{DB: dbPair.WriteDB, Accounts: accounts, Passphrases: passphrases, Creds: creds, Users: users, DataDir: dataDir, KeyFilePath: dataDir + "/encryption.key", RestartCh: restartCh}
 	stackH := &api.StackHandler{
 		Accounts: accounts, Creds: creds, SSHKeys: sshKeys, Passphrases: passphrases,
-		Stacks: stackStore, Ops: ops, Registry: registry, ConnStore: connStore,
+		Stacks: stackStore, Ops: ops, Registry: registry, CloudRegistry: cloudRegistry,
+		ConnStore: connStore,
 		NodeCertStore: nodeCertStore, Engine: eng, MeshManager: meshMgr, Hooks: hookStore,
 		ExecuteHooks: platformH.ExecuteHooksForStack,
 	}

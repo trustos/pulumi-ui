@@ -427,8 +427,9 @@ export async function listShapes(accountId: string): Promise<OciShape[]> {
   return res.json();
 }
 
-export async function listImages(accountId: string): Promise<OciImage[]> {
-  const res = await fetch(`/api/accounts/${accountId}/images`);
+export async function listImages(accountId: string, shape?: string): Promise<OciImage[]> {
+  const qs = shape ? `?shape=${encodeURIComponent(shape)}` : '';
+  const res = await fetch(`/api/accounts/${accountId}/images${qs}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

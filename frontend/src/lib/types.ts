@@ -1,6 +1,15 @@
+export type Sizing =
+  | { kind: 'fixed'; vcpu: number; memGiB: number }
+  | { kind: 'range'; vcpuRange: { min: number; max: number }; memGiBRange: { min: number; max: number }; memPerVCPUDefault?: number };
+
 export interface OciShape {
   shape: string;
   processorDescription: string;
+  name?: string;
+  displayName?: string;
+  architecture?: 'arm64' | 'x86_64' | string;
+  sizing?: Sizing;
+  extras?: Record<string, unknown>;
 }
 
 export interface OciImage {

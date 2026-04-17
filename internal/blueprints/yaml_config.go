@@ -1,6 +1,7 @@
 package blueprints
 
 import (
+	"fmt"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -217,11 +218,34 @@ func ParseConfigFields(yamlBody string) ([]ConfigField, string, error) {
 	return fields, clean, nil
 }
 
+// deprecatedUITypeAliases maps legacy ui_type values to their current
+// forms. Kept in place for two release cycles so existing custom
+// blueprints keep parsing cleanly; `yamlTypeToFieldType` logs a
+// per-process warning the first time each alias is resolved.
+//
+// Sunset: once the frontend fully adopts the compute-* names, migrate
+// stored blueprints and remove this map.
+var deprecatedUITypeAliases = map[string]string{
+	"compute-type":      "oci-shape",
+	"compute-image":     "oci-image",
+	"compute-namespace": "oci-compartment",
+	"compute-zone":      "oci-ad",
+}
+
+var deprecationLogged = map[string]bool{}
+
 // yamlTypeToFieldType converts a Pulumi YAML config type string to a
 // ConfigField type string, with convention- and metadata-based overrides.
 func yamlTypeToFieldType(key, pulumiType string, uiTypeByField map[string]string) string {
 	// Explicit ui_type from meta.fields wins.
 	if t, ok := uiTypeByField[key]; ok {
+		if alias, deprecated := deprecatedUITypeAliases[t]; deprecated {
+			if !deprecationLogged[t] {
+				deprecationLogged[t] = true
+				fmt.Printf("[blueprints] deprecated ui_type %q resolved to %q; update blueprint YAML\n", t, alias)
+			}
+			return alias
+		}
 		return t
 	}
 	// Convention-based key overrides — OCI picker types.

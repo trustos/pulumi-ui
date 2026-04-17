@@ -554,6 +554,9 @@ diverge only in a parameter, unify them.
 | Engine operations repeat an 8-step pattern | `Up`, `Destroy`, `Refresh`, `Preview` in `engine.go` | BE-2 |
 | `resolveCredentials` business logic in handler | `internal/api/stacks.go` | BE-1 |
 | Referential integrity in store | `PassphraseStore.Delete` checks stacks table | BE-3 |
+| Provider-specific `shapeConfig:` literals across blueprints | Every blueprint that accepted user shape choice inlined `shapeConfig: { ocpus: X, memoryInGbs: Y }` | **resolved** — unified via `{{ computeConfig }}` helper + `cloud.Registry.RenderComputeConfig` |
+| Cloud metadata access scattered via `oci.NewClient` | 14 Go files built OCI clients directly and exposed OCI types to handlers | **resolved** — funnelled through `cloud.Provider`; OCI types live behind `internal/cloud/oci/` |
+| Key-name heuristics for cpu/memory fields duplicated across components | Proposed form-coupling logic was drifting toward copy-paste per consumer | **resolved** — centralised in `getCoupledFieldState` at `frontend/src/lib/blueprint-graph/coupled-fields.ts` |
 
 ### 15.3 Rules
 
@@ -694,3 +697,297 @@ the cost of debugging a silent corruption hours later.
    returns 400, not a deploy that silently uses a default passphrase. A blueprint with
    an undefined `${varName}` fails validation, not a deploy that creates resources
    with empty strings.
+
+---
+
+## 19. Cloud Provider Abstraction
+
+All cloud-metadata access — listing compute types, images, namespaces (OCI
+compartments), zones (OCI availability domains), credential verification, and runtime
+cross-field validation — goes through the `cloud.Provider` interface at
+`internal/cloud/provider.go`. OCI is the first implementation under `internal/cloud/oci/`;
+future providers (AWS, Azure, GCP) plug in as sibling subpackages without any change
+to handlers, services, engine, or blueprints.
+
+### 19.1 Package layout
+
+```
+internal/cloud/
+  types.go         ComputeType (tagged Sizing union), Image, Namespace, Zone, AccountRef, Credentials
+  provider.go      Provider interface + NoValidator default + ComputeConfigRenderer
+  registry.go      *Registry — dep-injected, per-account Provider cache
+  validation.go    ValidationError, ValidationLevel (incl. LevelRuntimeCompat = 8), ResourceGraph
+  errors.go        Sentinel errors: ErrNotFound, ErrUnauthenticated, ErrPermissionDenied, ErrRateLimited
+  oci/             OCI implementation (moved from internal/oci/)
+    provider.go    Factory + Provider impl + RenderComputeConfig
+    convert.go     Wire-type → provider-neutral mappers
+    extras.go      OCIExtras struct + typed ExtrasFor accessor
+    validator.go   Level-8: shape/shapeConfig + shape/image checks
+    resolver.go    AccountAdapter bridges db store to cloud.AccountResolver
+    client.go      OCI REST client (context-aware, sentinel-wrapping)
+    endpoints.go   URL builders; ImagesURL takes shape
+```
+
+### 19.2 Rules
+
+1. **Handlers, services, engine, and blueprints depend on `cloud.*` only.** Never
+   import provider-specific types (e.g. `oci.Shape`) outside the provider package.
+   `internal/cloud/oci/` is the only place where OCI wire formats are visible.
+
+2. **Provider-specific fields live behind a typed accessor.** When a provider has
+   attributes that don't generalise (e.g. OCI's `ProcessorDescription`,
+   `NetworkingBandwidthGbps`), attach them via `ComputeType.WithExtras(x)` and expose a
+   typed accessor in the provider package: `oci.ExtrasFor(ct) (OCIExtras, bool)`.
+   Do **not** use `map[string]any` — untyped bags metastasise.
+
+3. **`cloud.Registry` is dependency-injected.** Construct once in
+   `cmd/server/main.go`, pass into handlers and the template helper. No package-level
+   mutable state. The cache is keyed on `(TenantID, AccountID, CredentialsFingerprint)`
+   from day one; multi-tenant retrofits are free.
+
+4. **Context everywhere.** Every public method that performs I/O takes
+   `context.Context` as the first parameter. `http.NewRequestWithContext` is
+   mandatory. Providers that forget this block deploys on cancellation.
+
+5. **Sentinel errors wrap transport errors.** Providers wrap 4xx/5xx responses with
+   the appropriate `cloud.Err*` sentinel via `%w`. Handlers discriminate via
+   `errors.Is`. Raw stringly-typed transport errors at the API boundary are banned.
+
+6. **Runtime validation is a Provider method.** Cross-field/semantic checks requiring
+   live metadata go in `Provider.Validate(ctx, graph, ref) []cloud.ValidationError`
+   and return `Level: LevelRuntimeCompat (8)`. Providers with no runtime rules embed
+   `cloud.NoValidator`. The Level-8 call is wired into `PutStack` in `internal/api/stacks.go`
+   and fires **before** persistence — the user sees structured errors before any
+   Pulumi operation attempts.
+
+7. **Credential rotation is implicit.** The Registry cache key includes the
+   credentials fingerprint. When a user updates an account (new API key upload),
+   the fingerprint changes → cache miss → fresh `Provider` instance automatically.
+   No explicit invalidation needed except on account delete.
+
+8. **Pure rendering is decoupled from Provider construction.** `Provider.Validate`
+   needs credentials; `RenderComputeConfig` does not. Template helpers go through
+   `cloud.Registry.RenderComputeConfig(providerID, region, type, cpu, mem)`, which
+   dispatches to pure functions registered via `Registry.RegisterRenderer`. Template
+   rendering never blocks on OCI round-trips.
+
+### 19.3 Tagged unions over boolean + optional
+
+Model "kinds of thing with different shapes of data" as tagged unions with a marker
+method, not as a boolean flag plus nullable pointers:
+
+```go
+// CORRECT
+type Sizing interface { isSizing() }
+type FixedSizing struct { VCPU, MemGiB float64 }
+type RangeSizing struct { VCPURange, MemGiBRange Range; MemPerVCPUDefault float64 }
+func (FixedSizing) isSizing() {}
+func (RangeSizing) isSizing() {}
+
+// WRONG — boolean flag + nullable pointers
+type ComputeType struct {
+    IsFlexible   bool
+    CPUOptions   *Range  // nil-checked everywhere
+    MemoryOptions *Range
+}
+```
+
+Why: a tagged union forces consumers to write exhaustive switches; a boolean flag
+lets a missing `CPUOptions` (absent metadata) look identical to `IsFlexible: false`
+(intentionally fixed). The original shape-config bug flowed from exactly this
+conflation. The JSON wire format emits the union as a discriminator object —
+`{"kind": "fixed", ...}` or `{"kind": "range", ...}` — so the frontend can switch
+the same way.
+
+### 19.4 Where to draw the provider boundary
+
+- **In scope for the abstraction**: credential verification, listing regions /
+  compute types / images / namespaces / zones, runtime validation, compute-config
+  rendering. These generalise cleanly across OCI, AWS, Azure, GCP.
+- **Out of scope**: Pulumi program authorship. Blueprints remain Pulumi-OCI-specific
+  today (`oci:Core/instance:Instance`, etc.). Abstracting the provisioning layer is
+  an order-of-magnitude larger problem; we explicitly accept the split.
+
+---
+
+## 20. Cross-Field Form Coupling
+
+Reactive form rules that make cross-field-invalid inputs unreachable in the UI are
+extracted into **pure functions** under `frontend/src/lib/blueprint-graph/`. Svelte
+components consume the result via `$derived` and apply clears through `$effect` with
+guards. The components do not own the rule.
+
+### 20.1 Canonical example
+
+The shape↔cpu↔memory↔image coupling lives in
+`frontend/src/lib/blueprint-graph/coupled-fields.ts`:
+
+```ts
+export function getCoupledFieldState(
+  fields: ConfigField[],
+  values: Record<string, string>,
+  shapes: OciShape[],
+): CoupledFieldState { /* returns hiddenKeys, clearKeys, imageShapeByGroup */ }
+```
+
+It is tested with plain Vitest (`coupled-fields.test.ts`, 9 tests covering
+group-scoped coupling, idempotent clears, multi-tier forms, and fallback from
+metadata-free shapes to name-suffix heuristics). `ConfigForm.svelte` consumes it in
+~10 lines.
+
+### 20.2 Rules
+
+1. **Coupling rules are pure functions.** Input: field definitions, current values,
+   metadata catalog. Output: a `{hiddenKeys, clearKeys, ...}` struct. No side
+   effects, no Svelte runes, no API calls inside. The Svelte component passes its
+   reactive inputs in and renders / writes based on the output.
+
+2. **Group-scoped, not form-scoped.** Multi-tier blueprints (primary + replica
+   shapes) and multi-account blueprints (per-role shapes) use `ConfigField.group`.
+   Coupling logic iterates groups and resolves each one independently. "First
+   `oci-shape` field in the form" is a bug waiting to happen.
+
+3. **Guarded effects.** When a `$effect` writes back to `values[key]`, guard the
+   write: `if (values[key] !== '') values[key] = ''`. Unguarded writes create
+   self-triggering effect loops that Svelte's reactivity system will happily run
+   forever. `untrack` around the write is also advisable when the effect reads
+   multiple pieces of state.
+
+4. **Metadata-driven, name-fallback.** Prefer explicit metadata (e.g. `OciShape.sizing`
+   discriminator) to name heuristics (`shape.endsWith('.Flex')`). Name fallback is
+   acceptable only when live metadata is unavailable. Back-compat with old wire
+   formats lives in the same utility, not scattered across components.
+
+5. **No Svelte component tests.** This project has no Svelte component-test
+   framework and will not introduce one for a single fix. Extracting reactive logic
+   into a pure function is the project convention for coverage. Component render
+   behaviour is validated manually or via Playwright E2E (when we add one), never
+   Jest/Vitest.
+
+6. **Image-list UX on shape change.** The canonical sequence when a form's
+   compute-type value changes:
+   1. Clear the stored image value synchronously (before the refetch kicks off) so
+      any "auto-pick Ubuntu" logic lands cleanly on the fresh list.
+   2. Refetch `listImages(accountId, newShape)`.
+   3. On fulfilment, auto-pick an Ubuntu image if present. If auto-pick fails, show
+      an inline shadcn `<Alert>` prompting the user to select one.
+
+   Order matters — clearing after the refetch creates a race where auto-pick sets a
+   value and the clear immediately undoes it.
+
+### 20.3 Anti-patterns
+
+- **Inline coupling in `$effect`.** Tempting but untestable. Rule of thumb: if the
+  effect contains more than one `if` checking form state, extract the decision into
+  a pure function.
+- **Hardcoded field-key names.** `if (key === 'ocpus' || key === 'ocpusPerNode')` is
+  a code smell. Gallery + built-in blueprints use inconsistent key names; drive
+  decisions off field types or metadata. If you must use a name, encapsulate the
+  heuristic in one utility function.
+- **Component state leaking into data flow.** Coupling state (what's hidden, what
+  needs clearing) is a function of inputs + metadata, not a component-local
+  variable. Keeping it in the component prevents unit testing and makes it invisible
+  to other components that might need the same rule.
+
+---
+
+## 21. Template Helpers for Provider-Specific Output
+
+Blueprint YAMLs emit provider-specific fragments (e.g. OCI's `shapeConfig: { ocpus:
+X, memoryInGbs: Y }`) through **template helpers registered with the cloud
+registry**, not through inlined literals.
+
+### 21.1 The pattern
+
+```yaml
+# CORRECT — provider-neutral, gracefully empty for shapes that can't take shapeConfig
+properties:
+  shape: "{{ .Config.shape }}"
+  {{ computeConfig "oci" "" .Config.shape .Config.ocpus .Config.memoryInGbs }}
+
+# WRONG — hardcoded literal bakes OCI semantics into every template
+properties:
+  shape: "{{ .Config.shape }}"
+  shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
+```
+
+`computeConfig` delegates to `cloud.Registry.RenderComputeConfig`, which dispatches
+to `oci.RenderComputeConfig` — a pure function that:
+- Returns `shapeConfig: { ocpus: X, memoryInGbs: Y }` for flex-family shapes.
+- Returns `""` (empty string) for fixed-family shapes. The blank line parses cleanly
+  as YAML; no effect on Pulumi resource inputs.
+
+AWS's renderer (when it lands) emits nothing — AWS instance types don't have an
+analogous concept.
+
+### 21.2 Rules
+
+1. **Never hardcode provider-specific YAML snippets in blueprints.** If two
+   blueprints emit the same provider-specific fragment, it belongs in a template
+   helper. When a new cross-cutting concern appears, add a helper in
+   `internal/blueprints/template.go` or a provider-level equivalent.
+
+2. **Template helpers must be pure.** Blueprint rendering runs during save-time
+   validation and at every preview/up — it cannot block on OCI round-trips. Rich
+   metadata (e.g. `Sizing` from `/shapes`) is consumed by the UI layer and Level-8
+   validator, not by template rendering. Renderers lean on name-suffix heuristics.
+
+3. **Back-compat for the YAML that Pulumi sees.** The helper's output must produce
+   identical **parsed** YAML for deployed stacks. Flow-style `{ ocpus: 1, memoryInGbs:
+   6 }` and block-style `shapeConfig:\n  ocpus: 1\n  memoryInGbs: 6` both parse to
+   the same map — Pulumi sees no diff on refresh/update of existing deployments.
+   Verify this when migrating a template: the helper replaces the literal without
+   re-provisioning resources.
+
+4. **Sunsettable aliases for renames.** When renaming `ui_type` values
+   (`oci-shape` → `compute-type`), resolve deprecated names with a one-time
+   deprecation warning (`internal/blueprints/yaml_config.go:deprecatedUITypeAliases`).
+   Sunset after two release cycles — permanent aliases become permanent tech debt.
+
+---
+
+## 22. Backward Compatibility at API Boundaries
+
+The rules in §17 (general backward compatibility) apply, plus two extras specific to
+shared API types between Go and TypeScript.
+
+### 22.1 JSON payload evolution
+
+When the Go side of an API contract changes (e.g. `cloud.ComputeType` superseding
+the older `oci.Shape`), emit **both** old and new field names in the JSON output.
+Old frontend code reading `s.shape` keeps working; new code reads `s.name`. The
+`MarshalJSON` method on `cloud.ComputeType` demonstrates the pattern:
+
+```go
+out := struct {
+    Shape                string `json:"shape"`                 // legacy alias
+    ProcessorDescription string `json:"processorDescription,omitempty"`
+    Name                 string `json:"name"`                  // new canonical
+    Sizing               any    `json:"sizing,omitempty"`
+    Extras               any    `json:"extras,omitempty"`
+}{ /* … */ }
+```
+
+This removes the need for a synchronised frontend-rename ceremony at the same time
+as a backend refactor. The rename happens in its own PR, on its own schedule.
+
+### 22.2 Frontend type extensions
+
+Mirror the dual-field strategy on the TypeScript side: when extending a shared
+interface, add the new fields as **optional** alongside the old ones. Old consumers
+keep reading `s.shape`/`s.processorDescription`; new consumers opt into `s.sizing`
+and friends.
+
+```ts
+export interface OciShape {
+  shape: string;                    // legacy
+  processorDescription: string;     // legacy
+  name?: string;                    // canonical
+  architecture?: 'arm64' | 'x86_64' | string;
+  sizing?: Sizing;
+  extras?: Record<string, unknown>;
+}
+```
+
+A hard rename (`OciShape` → `ComputeType`) is a separate, mechanical follow-up
+commit once the data-shape migration has stabilised.
